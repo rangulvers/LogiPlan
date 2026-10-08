@@ -5,6 +5,7 @@ import { clamp } from '../../util/format.js';
 /** The eight handle names used by the renderer's hit test, clockwise from the top-left corner. */
 export const HANDLES = Object.freeze(['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w']);
 
+/** Is `name` one of the eight resize handles (and not the renderer's 'move')? */
 export const isHandle = (name) => HANDLES.includes(name);
 
 /**

@@ -7,6 +7,7 @@ import { rectsOverlap, inBounds } from '../../util/grid.js';
 
 /** Pointer travel (CSS px) before a press counts as a drag, per pointer type. Touch is less precise. */
 export const DRAG_PX = Object.freeze({ mouse: 4, pen: 4, touch: 10 });
+/** Pointer travel (CSS px) at which a press of this pointer type becomes a drag. */
 export const dragThreshold = (pointerType) => DRAG_PX[pointerType] ?? DRAG_PX.mouse;
 
 /** A [cx, cy] cell pulled inside the grid. */
@@ -43,7 +44,7 @@ export function dragRect(a, b, grid) {
  */
 export function blockReason(layout, rect, ignore = {}) {
   const { cols, rows } = layout.grid;
-  if (!inBounds(rect.x, rect.y, cols, rows) || !inBounds(rect.x + rect.w - 1, rect.y + rect.h - 1, cols, rows)) return 'it would leave the baseplate';
+  if (!inBounds(rect.x, rect.y, cols, rows) || !inBounds(rect.x + rect.w - 1, rect.y + rect.h - 1, cols, rows)) return 'it would leave the plant area';
   if (isRectFree(layout, rect, ignore)) return null;
   if (layout.stations.some((s) => s.id !== ignore.ignoreStation && rectsOverlap(rect, s))) return 'another station is in the way';
   if (layout.obstacles.some((o) => o.id !== ignore.ignoreObstacle && rectsOverlap(rect, o))) return 'a wall or rack is in the way';

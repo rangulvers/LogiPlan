@@ -13,8 +13,8 @@ import { h } from '../../util/dom.js';
 import { icon } from '../icons.js';
 import { DISPATCH_STRATEGIES, ROUTING_MODES } from '../../model/defaults.js';
 import { updateSettings } from '../../model/layout.js';
-import { round } from '../../util/format.js';
-import { numberField, selectField, rangeField, segmentedField, section, humanSeconds } from './fields.js';
+import { round, formatDuration } from '../../util/format.js';
+import { numberField, selectField, rangeField, segmentedField, section } from './fields.js';
 
 /** The three what-if factors: settings key, label, slider range, wording (`short` continues a sentence, `hint` explains the factor). */
 export const FACTORS = Object.freeze([
@@ -51,7 +51,7 @@ export function nextSeed(current, rand = Math.random) {
 /** What the warm-up and run length mean together: { warn, text }. Times in seconds. */
 export function measuredWindow(warmup, duration) {
   if (warmup >= duration) return { warn: true, text: 'The warm-up must be shorter than the run, otherwise nothing is measured.' };
-  return { warn: false, text: `Results are measured over the last ${humanSeconds(duration - warmup)} of each run.` };
+  return { warn: false, text: `Results are measured over the last ${formatDuration(duration - warmup)} of each run.` };
 }
 
 /** Dice icon (the icon set has none): same 24x24 stroke style as icons.js. */

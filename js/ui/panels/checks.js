@@ -3,7 +3,7 @@
 //
 //   const panel = createChecksPanel(ctx);   // panel.el, panel.update(state), panel.destroy()
 //   panel.count                              // errors + warnings, for the tab badge
-//   panel.onCount = (n) => badge.set(n);     // optional; called whenever the count changes (also by the first update)
+//   panel.onCount = (n) => badge.set(n);     // optional; called with the current count when assigned, and whenever it changes
 //
 // The issues come from ctx.issues(), which the shell caches per layout identity, so update() is cheap: the list is only
 // redrawn when the issues (or the dismissed notes) changed, and keyboard focus survives a redraw. Notes (info level) can be
@@ -57,6 +57,7 @@ export function createChecksPanel(ctx) {
   let signature = null;
   let count = 0;
   let notified = null;
+  let onCount = null;
 
   const summary = h('div', { class: 'row row--wrap', style: { padding: '12px 12px 0' } });
   const list = h('div', { class: 'stack', style: { padding: '12px', '--gap': '16px', outline: 'none' }, tabindex: '-1' });
@@ -100,8 +101,8 @@ export function createChecksPanel(ctx) {
       groups.warning.length ? h('span', { class: 'chip chip--warn' }, icon('warning', { size: 14 }), plural(groups.warning.length, 'warning', 'warnings')) : null,
       groups.info.length ? h('span', { class: 'chip chip--info' }, icon('info', { size: 14 }), plural(groups.info.length, 'note', 'notes')) : null,
     ].filter(Boolean);
-    if (!groups.error.length && !groups.warning.length) chips.unshift(h('span', { class: 'chip chip--good' }, icon('check', { size: 14 }), 'No errors or warnings'));
-    return chips;
+    if (chips.length && !groups.error.length && !groups.warning.length) chips.unshift(h('span', { class: 'chip chip--good' }, icon('check', { size: 14 }), 'No errors or warnings'));
+    return chips; // nothing at all to report: the empty state below says so
   }
 
   function restoreButton(hidden) {
@@ -145,14 +146,18 @@ export function createChecksPanel(ctx) {
     shown = [issues, dismissals];
     if (count !== notified) {
       notified = count;
-      panel.onCount?.(count);
+      onCount?.(count);
     }
   }
 
   const panel = {
     el,
-    onCount: null,
     get count() { return count; },
+    get onCount() { return onCount; },
+    set onCount(fn) {
+      onCount = typeof fn === 'function' ? fn : null;
+      onCount?.(count); // the shell may assign this after the first draw: deliver the current count right away
+    },
     update() {
       if (shown && shown[0] === ctx.issues() && shown[1] === dismissals) return;
       draw();

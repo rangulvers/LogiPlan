@@ -152,14 +152,14 @@ function throwIfAborted(signal) {
   if (signal && signal.aborted) throw abortError();
 }
 
-/** Progress callback for item `index` of `total` of a longer job: the item's fraction is scaled into the whole. */
-function nested(onProgress, index, total, label) {
+/** Progress callback for item `index` of `total` of a longer job: the item's fraction is scaled into the whole, its label kept. */
+function nested(onProgress, index, total) {
   if (typeof onProgress !== 'function') return undefined;
-  return (p) => onProgress({ fraction: (index + p.fraction) / total, simTime: p.simTime, label });
+  return (p) => onProgress({ fraction: (index + p.fraction) / total, simTime: p.simTime, label: p.label });
 }
 
-function positiveOrThrow(name, value) {
-  if (!(typeof value === 'number' && Number.isFinite(value) && value > 0)) throw new RangeError(`${name} must be a positive number of seconds`);
+function checkDuration(value) {
+  if (!(typeof value === 'number' && Number.isFinite(value) && value > 0)) throw new RangeError('duration must be a positive number of seconds');
   return value;
 }
 
@@ -180,7 +180,7 @@ export async function runSimulation(layout, opts = {}) {
   const { seed, onProgress, signal, yieldEveryMs = 30, label = '' } = opts;
   throwIfAborted(signal);
   const plant = normalizeLayout(layout);
-  const duration = opts.duration === undefined ? plant.settings.duration : positiveOrThrow('duration', opts.duration);
+  const duration = opts.duration === undefined ? plant.settings.duration : checkDuration(opts.duration);
   if (opts.warmup !== undefined) {
     if (!(typeof opts.warmup === 'number' && opts.warmup >= 0 && Number.isFinite(opts.warmup))) throw new RangeError('warmup must be a non-negative number of seconds');
     plant.settings.warmup = opts.warmup;
@@ -188,13 +188,16 @@ export async function runSimulation(layout, opts = {}) {
     plant.settings.warmup = Math.min(plant.settings.warmup, duration / 2);
   }
   const sim = new Simulation(plant, { seed });
-  const progress = typeof onProgress === 'function' ? () => onProgress({ fraction: Math.min(1, sim.time / duration), simTime: sim.time, label }) : () => {};
+  const finished = () => sim.time >= duration - sim.dt * 1e-6;
+  const progress = typeof onProgress === 'function'
+    ? () => onProgress({ fraction: finished() ? 1 : sim.time / duration, simTime: sim.time, label })
+    : () => {};
   const slice = Number.isFinite(yieldEveryMs) ? Math.max(0, yieldEveryMs) : Infinity;
   progress();
-  while (sim.time < duration - sim.dt * 1e-6) {
+  while (!finished()) {
     sim.advance(duration - sim.time, { maxMillis: slice });
     progress();
-    if (sim.time < duration - sim.dt * 1e-6) {
+    if (!finished()) {
       await yieldToEventLoop();
       throwIfAborted(signal);
     }
@@ -221,7 +224,7 @@ export async function runReplications(layout, opts = {}) {
     const seed = seedPlus(first, r);
     seeds.push(seed);
     const name = replications > 1 ? `${label ? `${label}: ` : ''}run ${r + 1} of ${replications}` : label || '';
-    runs.push(await runSimulation(plant, { ...runOpts, seed, label: name, onProgress: nested(onProgress, r, replications, name) }));
+    runs.push(await runSimulation(plant, { ...runOpts, seed, label: name, onProgress: nested(onProgress, r, replications) }));
   }
   return { runs, seeds, summary: summarizeRuns(runs) };
 }
@@ -387,13 +390,13 @@ export function listSweepParameters(layout) {
  */
 export async function sweep(layout, param, values, opts = {}) {
   const parameterObject = typeof param === 'string' ? listSweepParameters(layout).find((p) => p.key === param) : param;
-  if (!parameterObject || typeof parameterObject.apply !== 'function') throw new TypeError(`sweep: unknown parameter ${String(typeof param === 'string' ? param : '')}`.trim());
+  if (!parameterObject || typeof parameterObject.apply !== 'function') throw new TypeError(`sweep: unknown parameter ${typeof param === 'string' ? JSON.stringify(param) : typeof param}`);
   if (!Array.isArray(values)) throw new TypeError('sweep: values must be an array of numbers');
   const { onProgress, label, ...rest } = opts;
   const results = [];
   for (let i = 0; i < values.length; i++) {
-    const name = `${parameterObject.label} = ${values[i]}${parameterObject.unit ? ` ${parameterObject.unit}` : ''}`;
-    const { runs, summary } = await runReplications(parameterObject.apply(layout, values[i]), { ...rest, label: name, onProgress: nested(onProgress, i, values.length, name) });
+    const name = `${label ? `${label}: ` : ''}${parameterObject.label} = ${values[i]}${parameterObject.unit ? ` ${parameterObject.unit}` : ''}`;
+    const { runs, summary } = await runReplications(parameterObject.apply(layout, values[i]), { ...rest, label: name, onProgress: nested(onProgress, i, values.length) });
     results.push({ value: values[i], summary, runs });
   }
   return results;
@@ -411,7 +414,7 @@ export async function compareScenarios(scenarios, opts = {}) {
   const results = [];
   for (let i = 0; i < scenarios.length; i++) {
     const { id, name, layout } = scenarios[i];
-    const { runs, summary } = await runReplications(layout, { ...rest, label: name, onProgress: nested(onProgress, i, scenarios.length, name) });
+    const { runs, summary } = await runReplications(layout, { ...rest, label: `${label ? `${label}: ` : ''}${name}`, onProgress: nested(onProgress, i, scenarios.length) });
     results.push({ id, name, summary, runs });
   }
   return results;

@@ -16,8 +16,8 @@ export const TOOL_KEYS = Object.freeze({
 /** Speed factors the Z key cycles through (share of the normal speed). */
 export const SPEED_ZONE_FACTORS = Object.freeze([0.5, 0.25, 0.75]);
 
+/** Is `tool` one of the five station-placing tools (named after the station type)? */
 export const isStationTool = (tool) => Object.hasOwn(STATION_TYPES, tool);
-export const isPlacementTool = (tool) => tool === 'obstacle' || isStationTool(tool);
 /** Tools that paint along a dragged path of cells. */
 export const isStrokeTool = (tool) => tool === 'road' || tool === 'oneway' || tool === 'speedzone' || tool === 'erase';
 

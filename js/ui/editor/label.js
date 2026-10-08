@@ -17,7 +17,8 @@ const LABEL_MAX = 200;
 export function openTextBox(doc, { x, y, value = '', onSubmit, onCancel }) {
   const field = textField({ value, placeholder: 'Label text', maxLength: LABEL_MAX, hint: 'Enter to confirm, Esc to cancel' });
   field.input.setAttribute('aria-label', 'Label text');
-  const el = h('div', { class: 'popover', role: 'group', 'aria-label': 'Edit label', style: { position: 'fixed', left: `${x}px`, top: `${y}px`, zIndex: 'var(--z-float)', width: '240px' } }, field.el);
+  const style = { position: 'fixed', left: `${x}px`, top: `${y}px`, zIndex: 'var(--z-float)', width: '240px' };
+  const el = h('div', { class: 'popover', role: 'group', 'aria-label': 'Edit label', style }, field.el);
   let open = true;
 
   const close = () => {
@@ -55,7 +56,6 @@ export function createLabelTool(ed) {
     down() {
       return true;
     },
-    move() {},
     up(p) {
       const grid = ed.layout().grid;
       const at = { x: Math.min(grid.cols, Math.max(0, Math.round(p.ux * 2) / 2)), y: Math.min(grid.rows, Math.max(0, Math.round(p.uy * 2) / 2)) };
@@ -73,7 +73,6 @@ export function createLabelTool(ed) {
         },
       });
     },
-    cancel() {},
     hover(p) {
       ed.view.hover = { kind: 'cell', cell: p.cell };
       ed.hoverStatus(p);

@@ -43,14 +43,14 @@ export function createPlaceTool(ed, tool) {
   /** Create the brick as one undo step, select it and apply the Shift rule. Returns true if something was placed. */
   function place(rect, shift) {
     let id = null;
-    const ok = ed.commit(`Add ${noun()}`, (draft) => {
+    const ok = ed.commit(`Add ${noun().toLowerCase()}`, (draft) => {
       const item = isObstacle
         ? addObstacle(draft, { ...rect, kind: ed.ui().toolOptions.kind })
         : addStation(draft, { type: tool, ...rect, name: newStationName(draft, tool) });
       id = item ? item.id : null;
       return id !== null;
     });
-    if (ok) ed.select(isObstacle ? 'obstacle' : 'station', [id]);
+    if (ok) ed.setSelection({ kind: isObstacle ? 'obstacle' : 'station', ids: [id] });
     if (ok && shift) ed.setTool('select');
     return ok;
   }

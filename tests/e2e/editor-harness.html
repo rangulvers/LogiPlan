@@ -1,0 +1,272 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LogiPlan editor harness</title>
+  <link rel="stylesheet" href="../../css/tokens.css">
+  <link rel="stylesheet" href="../../css/components.css">
+  <style>
+    /* Test page only: a stand-in for the app shell (tool palette, undo buttons, canvas, status line, toasts). */
+    html, body { height: 100%; margin: 0; overflow: hidden; }
+    .shell { display: grid; grid-template-columns: auto 1fr; grid-template-rows: auto 1fr auto; height: 100%; }
+    .topbar { grid-column: 1 / -1; display: flex; align-items: center; gap: var(--sp-2); padding: var(--sp-2) var(--sp-3); background: var(--surface); border-bottom: 1px solid var(--border); }
+    .topbar .input { width: 180px; }
+    .undo-label { color: var(--text-dim); font-size: var(--fs-sm); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .palette { padding: var(--sp-2); background: var(--surface); border-right: 1px solid var(--border); overflow-y: auto; }
+    .stage { position: relative; min-width: 0; min-height: 0; }
+    #plant { display: block; width: 100%; height: 100%; }
+    .statusbar { grid-column: 1 / -1; padding: var(--sp-1) var(--sp-3); min-height: 24px; background: var(--surface); border-top: 1px solid var(--border); color: var(--text-dim); font-size: var(--fs-sm); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    @media (max-width: 700px) {
+      .shell { grid-template-columns: 1fr; grid-template-rows: auto 1fr auto auto; }
+      .palette { grid-row: 3; grid-column: 1; border-right: 0; border-top: 1px solid var(--border); overflow-x: auto; overflow-y: hidden; }
+      .palette .toolbar { flex-direction: row; width: max-content; }
+      .palette .toolbar__group { flex-direction: row; }
+      .palette .toolbar__sep { width: 1px; height: auto; align-self: stretch; }
+      .statusbar { grid-row: 4; }
+      .topbar .input { width: 110px; }
+    }
+  </style>
+</head>
+<body>
+<div class="shell">
+  <div class="topbar">
+    <input id="project-name" class="input input--sm" type="text" value="Test plant" aria-label="Project name">
+    <button id="undo" class="btn btn--icon btn--sm" type="button" aria-label="Undo" disabled></button>
+    <button id="redo" class="btn btn--icon btn--sm" type="button" aria-label="Redo" disabled></button>
+    <span id="undo-label" class="undo-label"></span>
+  </div>
+  <nav class="palette" aria-label="Tools"><div id="toolbar" class="toolbar toolbar--vertical" role="toolbar" aria-label="Tools"></div></nav>
+  <div class="stage"><canvas id="plant" aria-label="Plant layout"></canvas></div>
+  <div id="status" class="statusbar" role="status" aria-live="polite"></div>
+</div>
+<div id="toasts" class="toast-region" aria-live="polite"></div>
+<script type="module">
+// Test page for the canvas editor (js/ui/editor.js): the real store, camera, renderer and editor on a realistic plant,
+// with a minimal stand-in for the app shell around them. tests/e2e/editor.mjs drives it through window.harness.
+import { createStore } from '../../js/store/store.js';
+import { Camera } from '../../js/ui/camera.js';
+import { Renderer } from '../../js/ui/renderer.js';
+import { Editor } from '../../js/ui/editor.js';
+import { EXAMPLES } from '../../js/model/examples.js';
+import { createLayout } from '../../js/model/layout.js';
+import { createRunner } from '../../js/ui/runner.js';
+import { icon } from '../../js/ui/icons.js';
+import { TOOL_KEYS } from '../../js/ui/editor/tools.js';
+
+const params = new URLSearchParams(location.search);
+const canvas = document.getElementById('plant');
+const statusEl = document.getElementById('status');
+const toolbar = document.getElementById('toolbar');
+const toasts = [];
+const statusLog = [];
+
+const store = createStore({ storage: undefined });
+const camera = new Camera();
+const renderer = new Renderer(canvas, { camera, theme: params.get('theme') || 'light' });
+document.documentElement.dataset.theme = params.get('theme') || 'light';
+
+// ---- stand-in for the app context -------------------------------------------------------------------------
+
+function toast(message, { kind = 'info', ms = 3500, action = null } = {}) {
+  toasts.push({ message, kind });
+  const el = document.createElement('div');
+  el.className = `toast toast--${kind}`;
+  el.setAttribute('role', 'status');
+  el.style.pointerEvents = 'auto';
+  const text = document.createElement('span');
+  text.className = 'toast__msg';
+  text.textContent = message;
+  el.append(icon(kind === 'warn' ? 'warning' : kind === 'error' ? 'error' : 'info', { size: 16, class: 'toast__icon' }), text);
+  if (action) {
+    const b = document.createElement('button');
+    b.className = 'toast__action';
+    b.type = 'button';
+    b.textContent = action.label;
+    b.addEventListener('click', () => { action.onClick(); el.remove(); });
+    el.append(b);
+  }
+  document.getElementById('toasts').append(el);
+  setTimeout(() => el.remove(), ms);
+}
+
+function setStatus(text) {
+  statusEl.textContent = text;
+  statusLog.push(text);
+}
+
+function fitView() {
+  camera.fit(store.getState().layout, canvas.clientWidth, canvas.clientHeight, 24);
+  renderer.render(1);
+}
+
+const ctx = { store, renderer, camera, canvas, toast, setStatus, actions: { fitView, setTool: (name) => store.setUi({ tool: name }) } };
+// ?runner=1 pretends the app's runner owns the render loop; ?runner=real runs the real simulation runner
+const runner = params.get('runner') === 'real' ? createRunner({ store, renderer }) : null;
+if (runner) ctx.runner = runner;
+else if (params.get('runner')) ctx.runner = { stub: true };
+
+// ---- tool palette: buttons call store.setUi, the editor follows (and the other way round) ---------------------
+
+const TOOL_BUTTONS = [
+  ['select', 'Select'], ['pan', 'Pan'], null,
+  ['road', 'Road'], ['oneway', 'One-way road'], ['speedzone', 'Speed zone'], ['erase', 'Erase'], null,
+  ['source', 'Goods in'], ['process', 'Workstation'], ['storage', 'Storage'], ['sink', 'Goods out'], ['depot', 'Parking'], null,
+  ['obstacle', 'Wall'], ['label', 'Label'], ['flow', 'Flow'],
+];
+const keyOf = Object.fromEntries(Object.entries(TOOL_KEYS).map(([k, t]) => [t, k.toUpperCase()]));
+let group = null;
+for (const entry of TOOL_BUTTONS) {
+  if (!entry) {
+    toolbar.append(Object.assign(document.createElement('div'), { className: 'toolbar__sep' }));
+    group = null;
+    continue;
+  }
+  if (!group) toolbar.append(group = Object.assign(document.createElement('div'), { className: 'toolbar__group' }));
+  const [tool, label] = entry;
+  const b = document.createElement('button');
+  b.className = 'btn btn--icon';
+  b.type = 'button';
+  b.dataset.tool = tool;
+  b.setAttribute('aria-label', label);
+  b.setAttribute('aria-pressed', 'false');
+  b.dataset.tip = `${label} (${keyOf[tool]})`;
+  b.dataset.tipPos = 'right';
+  b.append(icon(tool, { size: 18 }));
+  b.addEventListener('click', () => store.setUi({ tool }));
+  group.append(b);
+}
+
+const undoBtn = document.getElementById('undo');
+const redoBtn = document.getElementById('redo');
+undoBtn.append(icon('undo'));
+redoBtn.append(icon('redo'));
+undoBtn.addEventListener('click', () => store.undo());
+redoBtn.addEventListener('click', () => store.redo());
+
+function syncChrome(state) {
+  for (const b of toolbar.querySelectorAll('[data-tool]')) b.setAttribute('aria-pressed', String(b.dataset.tool === state.ui.tool));
+  undoBtn.disabled = !state.canUndo;
+  redoBtn.disabled = !state.canRedo;
+  undoBtn.dataset.tip = state.undoLabel ? `Undo ${state.undoLabel}` : 'Undo';
+  document.getElementById('undo-label').textContent = state.undoLabel ? `Undo: ${state.undoLabel}` : '';
+}
+store.subscribe(syncChrome);
+
+// ---- the layouts under test ---------------------------------------------------------------------------------
+
+const BUILDERS = {
+  empty: () => createLayout({ name: 'Empty plant', cols: 40, rows: 24, cellSize: 2 }),
+  small: () => createLayout({ name: 'Small plant', cols: 16, rows: 12, cellSize: 2 }),
+  ...Object.fromEntries(EXAMPLES.map((e) => [e.id, () => e.build()])),
+};
+
+function load(name) {
+  store.newProject(BUILDERS[name]());
+  renderer.sim = null;
+  renderer.layout = store.getState().layout;
+  fitView();
+}
+
+// ---- editor ---------------------------------------------------------------------------------------------------
+
+new ResizeObserver(() => { renderer.resize(); renderer.render(1); }).observe(canvas);
+let editor = new Editor({ canvas, store, camera, renderer, ctx });
+
+let looping = !!ctx.runner && !runner;
+if (looping) {
+  const loop = () => {
+    if (!looping) return;
+    if (renderer.layout !== store.getState().layout) renderer.layout = store.getState().layout;
+    renderer.render(1);
+    requestAnimationFrame(loop);
+  };
+  requestAnimationFrame(loop);
+}
+
+/** A scripted vehicle on a road cell, so tests can click a vehicle (selects its fleet). */
+function placeVehicle(cx, cy) {
+  const layout = store.getState().layout;
+  const fleet = layout.fleets[0];
+  const cs = layout.grid.cellSize;
+  const x = (cx + 0.5) * cs;
+  const y = (cy + 0.5) * cs;
+  const v = {
+    id: `${fleet.id}#1`, fleetId: fleet.id, fleet, name: fleet.name, color: fleet.color, state: 'idle', order: null, load: [], battery: 1, visible: true,
+    x, y, heading: 0, prevX: x, prevY: y, prevHeading: 0, tv: { length: fleet.length, width: 0.7, waiting: false, disabled: false, onRoad: true },
+  };
+  renderer.sim = { layout, settings: layout.settings, time: 0, dt: 0.1, stations: [], vehicles: [v], logistics: { stations: [], stationById: new Map(), vehicles: [v], flows: [] }, traffic: { vehicles: [], activeDeadlocks: [] } };
+  renderer.render(1);
+  return v.id;
+}
+
+/** A client position on the curve of a flow (found by hit testing along the line between its stations). */
+function flowPoint(id) {
+  const layout = store.getState().layout;
+  const flow = layout.flows.find((f) => f.id === id);
+  const a = layout.stations.find((s) => s.id === flow.from);
+  const b = layout.stations.find((s) => s.id === flow.to);
+  const cs = layout.grid.cellSize;
+  const r = canvas.getBoundingClientRect();
+  for (let t = 0.3; t <= 0.7; t += 0.02) {
+    const [sx, sy] = camera.worldToScreen(((a.x + a.w / 2) * (1 - t) + (b.x + b.w / 2) * t) * cs, ((a.y + a.h / 2) * (1 - t) + (b.y + b.h / 2) * t) * cs);
+    for (let off = -30; off <= 30; off += 3) {
+      const hit = renderer.hitTest(sx, sy + off);
+      if (hit.kind === 'flow' && hit.id === id) return { x: r.left + sx, y: r.top + sy + off };
+    }
+  }
+  return null;
+}
+
+/** A client position over the baseplate with nothing under it (no station, flow, label, obstacle, vehicle or road). */
+function emptyPoint() {
+  const roads = store.getState().layout.roads;
+  const r = canvas.getBoundingClientRect();
+  for (let y = 40; y < r.height - 40; y += 23) {
+    for (let x = 40; x < r.width - 40; x += 29) {
+      const hit = renderer.hitTest(x, y);
+      const [cx, cy] = hit.cell;
+      const { cols, rows } = store.getState().layout.grid;
+      if (hit.kind === 'cell' && cx >= 0 && cy >= 0 && cx < cols && cy < rows && !roads[`${cx},${cy}`]) return { x: r.left + x, y: r.top + y };
+    }
+  }
+  return null;
+}
+
+function cellToClient(cx, cy, fx = 0.5, fy = 0.5) {
+  const cs = store.getState().layout.grid.cellSize;
+  const [sx, sy] = camera.worldToScreen((cx + fx) * cs, (cy + fy) * cs);
+  const r = canvas.getBoundingClientRect();
+  return { x: r.left + sx, y: r.top + sy };
+}
+
+window.harness = {
+  ready: false,
+  store, camera, renderer, canvas, toasts, statusLog, runner,
+  get editor() { return editor; },
+  load,
+  cellToClient,
+  flowPoint,
+  emptyPoint,
+  placeVehicle,
+  stopLoop() { looping = false; },
+  frames: () => renderer.stats.frames,
+  status: () => statusEl.textContent,
+  layout: () => store.getState().layout,
+  state: () => store.getState(),
+  view: () => renderer.view,
+  setTheme(mode) {
+    renderer.theme = mode;
+    document.documentElement.dataset.theme = mode;
+    renderer.render(1);
+  },
+  destroyEditor() { editor.destroy(); },
+  createEditor() { editor = new Editor({ canvas, store, camera, renderer, ctx }); return editor; },
+  render: () => renderer.render(1),
+};
+
+load(params.get('layout') || 'empty');
+window.harness.ready = true;
+</script>
+</body>
+</html>

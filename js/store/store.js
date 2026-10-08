@@ -9,29 +9,42 @@
 //   store.undo() / redo() / replaceLayout() / setUi() / select() / clearSelection()
 //   store.loadProject() / newProject() / addScenario() / switchScenario() / renameScenario() / deleteScenario() /
 //         duplicateScenario() / renameProject()
-//   store.persist() / restore() / markClean() / destroy(),  store.lastPersistError, store.lastRestoreError
+//   store.persist() / restore() / hasBackup() / restoreBackup() / markClean() / destroy(),
+//   store.lastPersistError, store.lastRestoreError, store.lastRestoreWarnings
 //
 // State objects (state, project, scenario entries, ui, selection, overlays) are frozen and replaced, never edited, and a
 // part that did not change keeps its identity: a ui-only change leaves state.project and state.layout untouched, a layout
 // commit leaves state.ui.overlays untouched. Layouts are immutable by contract (not frozen: that would cost milliseconds
-// per commit); caches may key on `state.layout`.
+// per commit); caches may key on `state.layout`, and also on its members, which keep their identity until an edit changes them.
 //
 // Notifications: info = { type, layoutChanged, kind, label? }. `type` is 'commit' | 'undo' | 'redo' | 'ui' | 'load' (the
 // spec's five) plus 'scenario' (add / switch / rename / delete / duplicate), 'project' (renameProject, markClean) and
-// 'persist' (autosave started or stopped failing; the state is unchanged). `kind` is layoutChangeKind(previous layout,
-// new layout) so the simulation runner knows whether to rebuild; it is 'none' when state.layout kept its identity.
-// Listeners run in subscription order; an exception in one goes to onError and never stops the others. A change made
-// from inside a listener is delivered to all listeners after the current round, in order, so nobody sees states out of order.
+// 'persist' (autosave started or stopped failing, or it kept an older save as a backup: info.backedUp; the state is
+// unchanged). `kind` is layoutChangeKind(previous layout, new layout) so the simulation runner knows whether to rebuild;
+// it is 'none' when state.layout kept its identity. Listeners run in subscription order; an exception in one goes to
+// onError and never stops the others. A change made from inside a listener is delivered to all listeners after the
+// current round, in order, so nobody sees states out of order. When a chain of listener-made changes reaches
+// NOTIFY_CHAIN_LIMIT notifications, every listener that answers with yet another change is unsubscribed and reported
+// through onError (the others keep hearing everything), so a buggy panel cannot freeze the tab or bury the user's undo
+// history under its own commits.
 //
 // Readings of the spec (also reported to the team):
-//  * History keeps references, not copies: commit() clones the layout once into a draft, the mutator edits the draft and
-//    the previous layout object (never touched again) goes on the undo stack. 100 steps per scenario; a new commit clears redo.
+//  * Drafts and history share structure. commit() hands the mutator a draft whose big members (roads, stations, ...) are
+//    copied the first time the mutator reads or writes them; afterwards every member that was never opened, or ended up
+//    equal to the original, is replaced by the ORIGINAL object. Layouts are immutable by contract, so consecutive layouts and
+//    the history entries share everything an edit did not touch: a rename or slider commit on a 300 KB plant costs
+//    about a millisecond and one undo step costs memory in proportion to the edit, not to the plant. The previous layout
+//    object (never touched again) goes on the undo stack: 100 steps per scenario; a new commit clears redo.
 //  * A commit is atomic: a mutator that returns false, changes nothing (deep-equal result), or throws leaves the store
 //    untouched (a throw is re-thrown as it is). A result that breaks checkInvariants is rolled back and throws an Error
-//    whose message names the label.
+//    whose message names the label. The road part of that check is skipped when the roads, the grid size and the
+//    rectangles of stations and obstacles are those of the (valid) layout before the edit.
+//  * Everything that replaces or moves the document (commit, undo, redo, replaceLayout, loadProject, newProject,
+//    restore, scenario changes) throws if it is called from inside a mutator: the outer commit would silently overwrite it.
 //  * Coalescing: a commit whose `coalesce` key equals that of the previous commit, made at most 800 ms earlier (sliding
 //    window, measured with options.now), joins that undo step and keeps its label. If the merged edits end up equal to
 //    the layout before the burst, the step disappears (nothing to undo) and that earlier layout object becomes current again.
+//    Adding, duplicating and switching scenarios end the burst of the scenario that is left.
 //  * replaceLayout(layout, { label }) is undoable (an accidental "load example" can be taken back); loadProject, newProject
 //    and restore start a new document with empty histories. Every kind of whole-layout replacement (including switching
 //    scenarios) clears the selection; commit / undo / redo keep the ids that still exist.
@@ -39,15 +52,26 @@
 //    that cell is a road. Unknown selection kinds select nothing.
 //  * Scenarios: names are unique (case-insensitive; a clash gets a number: "B" -> "B 2"), at most MAX_SCENARIOS (the limit
 //    of serialize.js). addScenario and duplicateScenario make the new scenario active and return its id (null at the limit).
+//    Ids are never reused while a document lives ("sc4" after "sc3" was deleted), so caches keyed by scenario id (experiment
+//    results, charts) cannot show the data of a deleted scenario for a new one.
 //    Deleting the LAST scenario is refused (returns false, nothing changes): a project always has one, and destroying work
 //    silently is worse than a button that does nothing (use newProject to start over).
 //  * dirty: true after any change to project content, false after loadProject / newProject / markClean(). It is saved with
 //    the autosave, so a restored session that had unsaved work still counts as dirty.
 //  * Persistence writes exportProject(project) plus a "session" member { ui: { theme, overlays, rightTab }, dirty } under one
-//    key, 400 ms (trailing) after the last change that matters; selection, tool and ephemeral flags are never saved. Call
-//    persist() on pagehide to flush. Storage may be missing or throw (quota, privacy mode): the store keeps working and
-//    exposes the failure as lastPersistError (null while saving works). restore() returns false for missing or corrupt data
-//    and leaves the current state alone.
+//    key, 400 ms (trailing) after the last change that matters but at the latest PERSIST_MAX_WAIT_MS after the first unsaved
+//    change (continuous editing still saves); selection, tool and ephemeral flags are never saved. Call persist() on
+//    pagehide to flush. Storage may be missing or throw (quota, privacy mode): the store keeps working and exposes the
+//    failure as lastPersistError (null while saving works). restore() returns false for missing or corrupt data and leaves
+//    the current state alone.
+//  * Several tabs share one storage key. Before a save replaces text that this tab did not write or read itself (another
+//    tab's project, the previous session's when restore() was not used, a save that restore() had to downgrade), that text
+//    is copied to `${storageKey}:backup`; hasBackup() / restoreBackup() bring it back, and a restoreBackup() followed by the
+//    next save swaps the two, so nothing is ever lost to a second tab. If the copy cannot be stored the save is refused
+//    (lastPersistError) rather than destroying the other version.
+//  * When the whole project no longer fits the storage quota the scenario on screen is saved alone (lastPersistError then
+//    says so): losing the older variants is better than losing the work in progress. restore() keeps importProject's
+//    warnings in lastRestoreWarnings.
 //  * setUi merges `toolOptions` one level deep and `overlays` per flag; `theme`, `heat`, flags and `followSim` are validated
 //    (bad values ignored); `selection` is cleaned against the layout; any other key is stored as given.
 //  * toolOptions starts as { factor: 0.5, kind: 'wall' } (speed zone factor, obstacle kind); rightTab as 'properties'.
@@ -60,8 +84,12 @@ import { nextId } from '../util/ids.js';
 export const HISTORY_LIMIT = 100;
 /** Commits with the same coalesce key at most this far apart (ms) form one undo step. */
 export const COALESCE_MS = 800;
-/** Autosave waits this long (ms) after the last change. */
+/** Autosave waits this long (ms) after the last change ... */
 export const PERSIST_DEBOUNCE_MS = 400;
+/** ... but never longer than this (ms) after the first change that is not saved yet. */
+export const PERSIST_MAX_WAIT_MS = 5000;
+/** Notifications in a row (the first plus those caused by listeners) after which the listener causing more is cut off. */
+export const NOTIFY_CHAIN_LIMIT = 1000;
 /** Scenarios per project (the limit of serialize.js, so a saved project always loads completely). */
 export const MAX_SCENARIOS = 100;
 /** Kinds a selection may have. */
@@ -74,11 +102,13 @@ const OVERLAY_FLAGS = ['grid', 'studs', 'flows', 'docks', 'ids', 'labels'];
 const PREF_KEYS = ['theme', 'overlays', 'rightTab'];
 const UNSAFE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 const CELL_KEY_RE = /^\d+,\d+$/;
+const SCENARIO_ID_RE = /^sc(\d+)$/;
 
 const frozen = Object.freeze;
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const NO_SELECTION = frozen({ kind: null, ids: frozen([]) });
 const NO_COMMIT = frozen({ label: '', kind: 'none' });
+const NO_ROADS = frozen({});
 
 const defaultNow = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
 const defaultOnError = (err) => {
@@ -140,9 +170,12 @@ function cleanSelection(selection, layout) {
   const raw = Array.isArray(selection.ids) ? selection.ids : (selection.ids == null ? [] : [selection.ids]);
   const exists = existenceTest(kind, layout);
   const ids = [];
+  const seen = new Set();
   for (const candidate of raw) {
     const id = kind === 'cell' ? cellId(candidate) : candidate;
-    if (id !== null && !ids.includes(id) && exists(id)) ids.push(id);
+    if (id === null || seen.has(id) || !exists(id)) continue;
+    seen.add(id);
+    ids.push(id);
   }
   return ids.length ? frozen({ kind, ids: frozen(ids) }) : NO_SELECTION;
 }
@@ -190,6 +223,65 @@ function mergeUi(current, patch, layout) {
     }
   }
   return next === current ? current : frozen(next);
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// drafts: what a mutator edits
+// ---------------------------------------------------------------------------------------------------------
+
+/** Make `key` of `draft` a plain data property holding `value`. Returns the value. */
+function setOwn(draft, key, value) {
+  Object.defineProperty(draft, key, { value, writable: true, enumerable: true, configurable: true });
+  return value;
+}
+
+/**
+ * The working copy of `base` that a mutator edits. It has the members of `base`, but every object-valued one (roads,
+ * stations, ...) is a getter that deep-copies the member the first time the mutator reads it, and a setter for
+ * replacing it; afterwards it is an ordinary property. A mutator that only renames the plant never pays for the roads.
+ */
+function openDraft(base) {
+  const draft = {};
+  for (const key of Object.keys(base)) {
+    const value = base[key];
+    if (value === null || typeof value !== 'object') {
+      draft[key] = value;
+      continue;
+    }
+    Object.defineProperty(draft, key, {
+      enumerable: true,
+      configurable: true,
+      get: () => setOwn(draft, key, structuredClone(value)),
+      set: (next) => { setOwn(draft, key, next); },
+    });
+  }
+  return draft;
+}
+
+/**
+ * Finish a draft in place: members the mutator never opened, and members it opened but left equal, become the very objects
+ * of `base` again (layouts are immutable, so consecutive layouts can share them). Returns the draft, now a plain object.
+ */
+function closeDraft(draft, base) {
+  for (const key of Object.keys(draft)) {
+    const { get, value } = Object.getOwnPropertyDescriptor(draft, key);
+    const original = Object.hasOwn(base, key) ? base[key] : undefined;
+    const untouched = Boolean(get) || (value !== original && same(value, original));
+    setOwn(draft, key, untouched ? original : value);
+  }
+  return draft;
+}
+
+const sameRect = (p, q) => isObj(p) && isObj(q) && p.x === q.x && p.y === q.y && p.w === q.w && p.h === q.h;
+const sameRects = (a, b) => a === b || (Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((r, i) => sameRect(r, b[i])));
+
+/**
+ * Do the road checks of checkInvariants have nothing new to find? They depend on the roads, the grid size and the rectangles
+ * of stations and obstacles only, and `before` is a valid layout (everything the store holds is).
+ */
+function roadsStillValid(before, draft) {
+  return draft.roads === before.roads && isObj(draft.grid) && draft.grid.cols === before.grid.cols && draft.grid.rows === before.grid.rows
+    && sameRects(draft.stations, before.stations) && sameRects(draft.obstacles, before.obstacles);
 }
 
 // ---------------------------------------------------------------------------------------------------------
@@ -272,6 +364,7 @@ export function createStore(options = {}) {
   const onError = options.onError ?? defaultOnError;
   const setTimer = options.setTimeout ?? ((fn, ms) => globalThis.setTimeout(fn, ms));
   const clearTimer = options.clearTimeout ?? ((id) => globalThis.clearTimeout(id));
+  const backupKey = `${storageKey}:backup`;
 
   let projectName;
   let scenarios;
@@ -282,13 +375,22 @@ export function createStore(options = {}) {
   let lastCommit = NO_COMMIT;
   let project;
   let state;
-  let histories = new Map(); // scenario id -> { undo: [{ label, layout }], redo: [...], mark: { key, at, entry } | null }
+  // scenario id -> { undo: [{ label, layout }], redo: [...], mark: { key, at, entry } | null }. Only the active scenario can hold a
+  // live coalescing mark: whatever makes another scenario active (switch, add, duplicate) clears the mark of the one it leaves.
+  let histories = new Map();
   let persistTimer = null;
+  let unsavedSince = null; // time of the first change the autosave has not written yet
+  let lastSeen = null; // the saved text this tab loaded or wrote itself: replacing it loses nothing (null: none yet)
   let lastPersistError = storage ? null : new Error('No browser storage is available, so changes are not saved automatically.');
   let lastRestoreError = null;
-  const listeners = new Set();
+  let lastRestoreWarnings = frozen([]);
+  let scenarioSeq = 0; // numeric part of the newest scenario id
+  let editing = false; // a mutator is running
+  const listeners = new Set(); // of { fn }: one entry per subscription, so the same function may subscribe twice
   const queue = [];
   let delivering = false;
+  let chain = 0; // notifications queued by listeners during the current delivery
+  let running = null; // the listener entry being called
 
   const activeScenario = () => scenarios.find((s) => s.id === activeId);
   const activeLayout = () => activeScenario().layout;
@@ -309,24 +411,38 @@ export function createStore(options = {}) {
     }
   }
 
+  /** Unsubscribe a listener that keeps answering notifications with new changes (see NOTIFY_CHAIN_LIMIT). */
+  function cutOff(entry) {
+    if (!listeners.delete(entry)) return;
+    reportError(new Error(`A store listener kept answering notifications by changing the store again (${NOTIFY_CHAIN_LIMIT} in a row), so it was unsubscribed.`), { listener: entry.fn });
+  }
+
   function notify(snapshot, info) {
     queue.push([snapshot, info]);
-    if (delivering) return;
+    if (delivering) {
+      chain += 1;
+      if (chain >= NOTIFY_CHAIN_LIMIT && running) cutOff(running);
+      return;
+    }
     delivering = true;
+    chain = 0;
     try {
       while (queue.length) {
         const [s, i] = queue.shift();
-        for (const fn of [...listeners]) {
-          if (!listeners.has(fn)) continue;
+        for (const entry of [...listeners]) {
+          if (!listeners.has(entry)) continue;
+          running = entry;
           try {
-            fn(s, i);
+            entry.fn(s, i);
           } catch (err) {
-            reportError(err, { listener: fn, info: i });
+            reportError(err, { listener: entry.fn, info: i });
           }
         }
+        running = null;
       }
     } finally {
       delivering = false;
+      running = null;
     }
   }
 
@@ -384,61 +500,127 @@ export function createStore(options = {}) {
     activeId = next.activeId;
     histories = new Map();
     dirty = dirtyFlag;
+    scenarioSeq = next.scenarios.reduce((newest, sc) => {
+      const m = SCENARIO_ID_RE.exec(sc.id);
+      return m ? Math.max(newest, Number(m[1])) : newest;
+    }, 0);
   }
 
   // ---- persistence ----
 
-  function sessionText() {
+  /** The text that is saved: the project export plus the "session" member (see the header). */
+  function sessionText(source) {
     const prefs = {};
     for (const key of PREF_KEYS) prefs[key] = ui[key];
-    return `${exportProject(project).slice(0, -1)},"session":${JSON.stringify({ ui: prefs, dirty })}}`;
+    return `${exportProject(source).slice(0, -1)},"session":${JSON.stringify({ ui: prefs, dirty })}}`;
   }
 
+  function cancelAutosave() {
+    if (persistTimer !== null) clearTimer(persistTimer);
+    persistTimer = null;
+    unsavedSince = null;
+  }
+
+  /** (Re)start the autosave timer: 400 ms after the last change, but no later than PERSIST_MAX_WAIT_MS after the first one. */
   function schedulePersist() {
     if (!storage) return;
+    const t = now();
+    if (unsavedSince === null) unsavedSince = t;
     if (persistTimer !== null) clearTimer(persistTimer);
+    const wait = Math.max(0, Math.min(PERSIST_DEBOUNCE_MS, unsavedSince + PERSIST_MAX_WAIT_MS - t));
     persistTimer = setTimer(() => {
       persistTimer = null;
       persist();
-    }, PERSIST_DEBOUNCE_MS);
+    }, wait);
   }
 
-  /** Save now (cancels the pending autosave). True if written; false without storage or on failure (see lastPersistError). */
-  function persist() {
-    if (persistTimer !== null) {
-      clearTimer(persistTimer);
-      persistTimer = null;
-    }
-    if (!storage) return false;
-    let failure = null;
+  /**
+   * Before a save replaces text this tab did not write or read itself, keep that text under the backup key.
+   * Returns true if a copy was made; throws if the copy cannot be stored (the save must then not go ahead).
+   */
+  function keepForeignSave() {
+    let stored;
     try {
-      storage.setItem(storageKey, sessionText());
+      stored = storage.getItem(storageKey);
+    } catch {
+      return false; // unreadable: nothing to protect that we could see
+    }
+    if (typeof stored !== 'string' || stored === '' || stored === lastSeen) return false;
+    try {
+      storage.setItem(backupKey, stored);
+    } catch (err) {
+      throw new Error('Another browser tab (or an earlier session) saved a different version of this project and there is no room to keep a copy of it, so this tab did not overwrite it. Export your project to a file.', { cause: err });
+    }
+    return true;
+  }
+
+  /**
+   * Write the session. If the whole project does not fit, write the scenario on screen alone and return the error to report;
+   * return null when everything was written. Throws if nothing could be written.
+   */
+  function writeSession() {
+    const text = sessionText(project);
+    try {
+      storage.setItem(storageKey, text);
+      lastSeen = text;
+      return null;
+    } catch (err) {
+      if (scenarios.length === 1) throw err;
+      const smaller = sessionText({ name: projectName, scenarios: [activeScenario()], activeId });
+      try {
+        storage.setItem(storageKey, smaller);
+      } catch {
+        throw err;
+      }
+      lastSeen = smaller;
+      return new Error('The whole project is too big for the browser storage, so only the scenario on screen was saved. Export the project to a file to keep the others.', { cause: err });
+    }
+  }
+
+  /**
+   * Save now (cancels the pending autosave). True if something was written; false without storage or when saving failed (see
+   * lastPersistError, which is also set when only the scenario on screen fitted).
+   */
+  function persist() {
+    cancelAutosave();
+    if (!storage) return false;
+    let saved = false;
+    let failure = null;
+    let backedUp = false;
+    try {
+      backedUp = keepForeignSave();
+      failure = writeSession();
+      saved = true;
     } catch (err) {
       failure = err || new Error('Saving failed.');
     }
     const flipped = (failure === null) !== (lastPersistError === null);
     lastPersistError = failure;
-    if (flipped) notify(state, { type: 'persist', layoutChanged: false, kind: 'none' });
-    return failure === null;
+    if (flipped || backedUp) {
+      notify(state, { type: 'persist', layoutChanged: false, kind: 'none', ...(backedUp ? { backedUp } : {}) });
+    }
+    return saved;
   }
 
-  /** Load the autosaved session. True if restored; false (state untouched) when nothing usable is stored. */
-  function restore() {
+  /** Load the session stored under `key`. True if loaded; false (state untouched) when nothing usable is stored there. */
+  function load(key) {
     lastRestoreError = null;
+    lastRestoreWarnings = frozen([]);
     if (!storage) return false;
     try {
-      const text = storage.getItem(storageKey);
+      const text = storage.getItem(key);
       if (typeof text !== 'string' || text === '') return false;
-      const restored = sanitizeProject(importProject(text));
+      const imported = importProject(text);
+      const restored = sanitizeProject(imported);
       const session = readSession(text);
-      if (persistTimer !== null) {
-        clearTimer(persistTimer);
-        persistTimer = null;
-      }
+      cancelAutosave();
       install(restored, { dirtyFlag: session.dirty === true });
       const prefs = {};
-      if (isObj(session.ui)) for (const key of PREF_KEYS) if (session.ui[key] !== undefined) prefs[key] = session.ui[key];
+      if (isObj(session.ui)) for (const pref of PREF_KEYS) if (session.ui[pref] !== undefined) prefs[pref] = session.ui[pref];
       ui = mergeUi(ui, prefs, activeLayout());
+      lastRestoreWarnings = frozen(imported.warnings ?? []);
+      // a text that was only partly understood must not be overwritten unseen: the next save keeps it as a backup
+      lastSeen = lastRestoreWarnings.length ? null : text;
       publish('load', { selection: 'clear', persist: false });
       return true;
     } catch (err) {
@@ -447,12 +629,23 @@ export function createStore(options = {}) {
     }
   }
 
+  /** Is there a saved copy of an older or other-tab version of the project to bring back with restoreBackup()? */
+  function hasBackup() {
+    if (!storage) return false;
+    try {
+      const text = storage.getItem(backupKey);
+      return typeof text === 'string' && text !== '';
+    } catch {
+      return false;
+    }
+  }
+
   // ---- layout edits ----
 
   /**
-   * Edit the layout as one undoable step: `mutator(draft)` gets a deep copy. Returns true if the layout changed; false if the
-   * mutator returned false or left everything as it was. Throws (state untouched) if the mutator throws or its result breaks
-   * the model invariants.
+   * Edit the layout as one undoable step: `mutator(draft)` gets a private copy (copied lazily, see openDraft) and must not keep
+   * it. Returns true if the layout changed; false if the mutator returned false or left everything as it was. Throws (state
+   * untouched) if the mutator throws or its result breaks the model invariants.
    * @param {string} label shown in the undo tooltip ("Move station")
    * @param {(draft: object) => (void|false)} mutator
    * @param {{ coalesce?: string }} [opts] edits with the same key within COALESCE_MS share one undo step
@@ -461,11 +654,19 @@ export function createStore(options = {}) {
     if (typeof mutator !== 'function') throw new TypeError('store.commit(label, mutator): the mutator must be a function');
     const name = cleanText(label, NAME_MAX, 'Edit');
     const before = activeLayout();
-    const draft = cloneLayout(before);
-    if (mutator(draft) === false) return false;
+    const draft = openDraft(before);
+    let result;
+    editing = true;
+    try {
+      result = mutator(draft);
+    } finally {
+      editing = false;
+    }
+    if (result === false) return false;
+    closeDraft(draft, before);
     const kind = layoutChangeKind(before, draft);
     if (kind === 'none') return false;
-    const problems = checkInvariants(draft);
+    const problems = checkInvariants(roadsStillValid(before, draft) ? { ...draft, roads: NO_ROADS } : draft);
     if (problems.length) {
       const shown = problems.slice(0, 3).join('; ');
       throw new Error(`Edit "${name}" was rolled back because it left the layout invalid: ${shown}${problems.length > 3 ? '; ...' : ''}`);
@@ -583,7 +784,9 @@ export function createStore(options = {}) {
     const taken = namesOf(scenarios);
     const clean = cleanText(wanted, NAME_MAX, '');
     const name = clean ? uniqueName(clean, taken) : letterName(taken);
-    const id = nextId('sc', scenarios.map((s) => s.id));
+    let id;
+    do id = `sc${++scenarioSeq}`; while (scenarios.some((s) => s.id === id));
+    history().mark = null;
     scenarios = frozen([...scenarios, scenarioEntry(id, name, layout)]);
     activeId = id;
     dirty = true;
@@ -637,6 +840,12 @@ export function createStore(options = {}) {
 
   // ---- public object ----
 
+  /** `fn`, but refused (with an Error) while a mutator runs: the commit in progress would silently overwrite its effect. */
+  const outsideMutators = (name, fn) => (...args) => {
+    if (editing) throw new Error(`store.${name}() cannot be called from inside a commit mutator: the mutator may only edit the draft it is given.`);
+    return fn(...args);
+  };
+
   install(sanitizeProject({ scenarios: [{ id: 'sc1', name: 'A', layout: createLayout() }] }));
   state = buildState();
 
@@ -644,26 +853,29 @@ export function createStore(options = {}) {
     getState: () => state,
     subscribe(fn) {
       if (typeof fn !== 'function') throw new TypeError('store.subscribe(fn): fn must be a function');
-      listeners.add(fn);
-      return () => listeners.delete(fn);
+      const entry = { fn };
+      listeners.add(entry);
+      return () => listeners.delete(entry);
     },
-    commit,
-    undo: () => travel('undo', 'undo', 'redo'),
-    redo: () => travel('redo', 'redo', 'undo'),
-    replaceLayout,
+    commit: outsideMutators('commit', commit),
+    undo: outsideMutators('undo', () => travel('undo', 'undo', 'redo')),
+    redo: outsideMutators('redo', () => travel('redo', 'redo', 'undo')),
+    replaceLayout: outsideMutators('replaceLayout', replaceLayout),
     setUi,
     select: (kind, ids) => setUi({ selection: { kind, ids } }),
     clearSelection: () => setUi({ selection: NO_SELECTION }),
-    loadProject,
-    newProject,
+    loadProject: outsideMutators('loadProject', loadProject),
+    newProject: outsideMutators('newProject', newProject),
     renameProject,
-    addScenario,
-    switchScenario,
+    addScenario: outsideMutators('addScenario', addScenario),
+    switchScenario: outsideMutators('switchScenario', switchScenario),
     renameScenario,
-    deleteScenario,
-    duplicateScenario,
+    deleteScenario: outsideMutators('deleteScenario', deleteScenario),
+    duplicateScenario: outsideMutators('duplicateScenario', duplicateScenario),
     persist,
-    restore,
+    restore: outsideMutators('restore', () => load(storageKey)),
+    hasBackup,
+    restoreBackup: outsideMutators('restoreBackup', () => load(backupKey)),
     markClean,
     /** Save pending changes, stop the autosave timer and drop all listeners. */
     destroy() {
@@ -675,6 +887,9 @@ export function createStore(options = {}) {
     },
     get lastRestoreError() {
       return lastRestoreError;
+    },
+    get lastRestoreWarnings() {
+      return lastRestoreWarnings;
     },
   };
 }

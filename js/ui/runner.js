@@ -15,7 +15,8 @@
 // injected class everything happens synchronously inside the call).
 //
 // Layout changes (watched through store.subscribe; the change is classified with layoutChangeKind against the layout the
-// simulation was built from, so undoing an edit cancels its rebuild): 'structural' => after 250 ms without further structural
+// simulation was built from, so undoing an edit cancels its rebuild; the compare is cheap because the store's layouts share every
+// member an edit did not touch and layoutChangeKind stops at identical objects): 'structural' => after 250 ms without further structural
 // changes (counted in frames, so no timer is needed) a NEW simulation replaces the old one and statistics restart at time 0;
 // the playing state is kept. 'runtime' (and every later non-structural state) => sim.setRuntime(RUNTIME_KEYS settings) at once.
 // 'cosmetic' => nothing. play() and step() apply a pending rebuild first.
@@ -23,14 +24,18 @@
 // Frame (every animation frame, also while paused): auto-pause when the tab is hidden (it stays paused when the tab comes
 // back); while playing target += min(realDt, 0.1) * speed and sim.advance(target - sim.time, { maxMillis: 10, now });
 // then renderer.sim / renderer.layout are kept current and renderer.render(alpha) draws. Paused frames are thinned to ~30 fps.
+// Listeners may call destroy() at any point of a frame (also from 'state', 'rebuild' and 'error' events raised inside it):
+// the frame stops at the next checkpoint without touching the simulation or the renderer again.
 //
 // Readings of the spec (also reported to the team):
 //  * Interpolation. Simulation.advance rounds a request UP to whole ticks, so the simulation runs up to one tick AHEAD of the
 //    display clock `target`; alpha = 1 + (target - sim.time) / dt (clamped to 0..1) places `target` inside the last tick,
 //    which is what "leftover / dt" means for such an engine. When the runner is behind (target > sim.time) alpha is 1.
 //  * Speed limit. `limited` turns true when the simulation has been more than two ticks behind for over 0.5 s of wall time
-//    and false as soon as it catches up. While behind, the backlog is capped at max(0.5 s * speed, 4 ticks) of simulated time:
-//    a slow machine runs at its own pace instead of racing after old time (and after a pause nothing is fast-forwarded).
+//    and false as soon as it catches up. While behind, the backlog is capped at max(0.5 s * speed, 4 ticks) of simulated time
+//    BEFORE each request to the engine (so a request never exceeds the cap at the current speed): a slow machine runs at its
+//    own pace instead of racing after old time, also when the user lowers the speed afterwards (and after a pause nothing is
+//    fast-forwarded).
 //  * step(seconds) pauses, then advances the simulation to sim.time + seconds in budgeted chunks (one per frame), so a long step
 //    never blocks the page; it resolves with the simulated seconds advanced. A step is as exact as ticks allow (whole ticks of dt).
 //    Further step() calls during a step extend it. pause(), play(), reset() and a rebuild end it early.
@@ -344,23 +349,24 @@ export function createRunner(options = {}) {
 
   // ---- the frame ----
 
-  /** Advance towards the display clock within the frame budget. Returns the interpolation alpha. */
+  /**
+   * Advance towards the display clock within the frame budget. Returns the interpolation alpha. The backlog cap is applied
+   * before the request, with the speed of THIS frame: after a slow phase the old backlog is never worked off at a new,
+   * lower speed in one go. Listeners of 'state' run last (one of them may destroy the runner).
+   */
   function advanceLive(realDt, t) {
     const dt = sim.dt > 0 ? sim.dt : FALLBACK_DT;
-    target += Math.min(realDt, MAX_FRAME_SECONDS) * speed;
+    const cap = Math.max(speed * LAG_CAP_SECONDS, MIN_LAG_CAP_TICKS * dt);
+    target = Math.min(target + Math.min(realDt, MAX_FRAME_SECONDS) * speed, sim.time + cap);
     const want = target - sim.time;
     if (want > 0) sim.advance(want, { maxMillis: FRAME_BUDGET_MS, now: clock });
     const lag = target - sim.time;
-    if (lag > BEHIND_TICKS * dt) {
-      if (behindSince === null) behindSince = t;
-      if (t - behindSince > LIMITED_AFTER_MS) setLimited(true);
-    } else {
-      behindSince = null;
-      setLimited(false);
-    }
-    const cap = Math.max(speed * LAG_CAP_SECONDS, MIN_LAG_CAP_TICKS * dt);
-    if (lag > cap) target = sim.time + cap;
-    return clamp01(1 + lag / dt);
+    const behind = lag > BEHIND_TICKS * dt;
+    if (!behind) behindSince = null;
+    else if (behindSince === null) behindSince = t;
+    const alpha = clamp01(1 + lag / dt);
+    setLimited(behind && t - behindSince > LIMITED_AFTER_MS);
+    return alpha;
   }
 
   /** One budgeted chunk of a step(). */
@@ -393,6 +399,7 @@ export function createRunner(options = {}) {
         endStep();
       }
     }
+    if (destroyed) return; // a 'state', 'rebuild' or 'error' listener may have destroyed the runner: nothing left to draw or announce
     const layout = store.getState().layout;
     if (renderer.layout !== layout) renderer.layout = layout;
     if (renderer.sim !== sim) renderer.sim = sim;

@@ -351,7 +351,8 @@ const PICTURES = { streets: streetLines, blob: blobLines, spurs: spurLines };
  *   chaos (share of random API abuse, 0.3); dwellProb (share of trips that end in a pause of up to 40 s, 0.3);
  *   plainOnly (start and end only on cells that are not junctions); resolve (resolveDeadlocks, true);
  *   slowZones (share of road cells with a speed limit factor of 0.25 .. 0.9, default none);
- *   headway (default: random); fleets (indexes into FLEETS, default 0 and 2); cells (candidate cell sizes, default 2 and 3).
+ *   headway (default: random); fleets (indexes into the vehicle types, default 0 and 2); cells (candidate cell sizes, default 2 and 3);
+ *   bodies (own list of vehicle types { length, speed, accel, decel } that `fleets` indexes into instead of FLEETS).
  * @returns {object} { lines, traffic, checker, vehicles, arrivals, cellSize, handedness }
  */
 export function runReviewScenario(opts) {
@@ -361,6 +362,7 @@ export function runReviewScenario(opts) {
   const ev = rng.fork('events');
   const cells = opts.cells || [2, 3];
   const fleets = opts.fleets || [0, 2];
+  const types = opts.bodies || FLEETS;
   const cellSize = cells[rng.int(cells.length)];
   let lines;
   let graph;
@@ -384,7 +386,7 @@ export function runReviewScenario(opts) {
   const startCells = plainOnly ? domain.filter((x) => graph.controlled[x] === 0) : domain;
   const spawn = (id) => {
     for (let tries = 0; tries < 60; tries++) {
-      const tv = traffic.addVehicle({ id, node: startCells[pick.int(startCells.length)], ...FLEETS[fleets[pick.int(fleets.length)]] });
+      const tv = traffic.addVehicle({ id, node: startCells[pick.int(startCells.length)], ...types[fleets[pick.int(fleets.length)]] });
       if (tv) return tv;
     }
     return null;

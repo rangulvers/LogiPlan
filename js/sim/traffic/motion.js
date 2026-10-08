@@ -18,6 +18,7 @@
 
 import { brakeLimit, brakeAdvance, stoppingDistance, MOVING_SPEED } from './kinematics.js';
 import { stopLineQ, releaseCleared, firstExtensionCell, nodeAhead, needsLock } from './scan.js';
+import { turnRate, manoeuvrePose, manoeuvreBlocker } from './manoeuvre.js';
 
 const EPS = 1e-9;
 
@@ -25,6 +26,25 @@ const EPS = 1e-9;
 function limit(v, d, vTarget, dec, dt) {
   const l = brakeLimit(v, d, vTarget, dec, dt);
   return l < 0 ? 0 : l;
+}
+
+/**
+ * A vehicle in the middle of an in-place manoeuvre stands still (v = 0); the manoeuvre only goes on while its swept
+ * area is free (tv._turnGo), otherwise the vehicle waits for the one in its way.
+ */
+function planManoeuvre(sys, tv, dt) {
+  tv._turnGo = false;
+  if (tv.disabled) return; // a broken vehicle stops in the middle of the manoeuvre
+  const waitsForLocks = tv._req >= 0; // a long vehicle first takes the locks of the cells it will sweep
+  const blocker = waitsForLocks ? tv._gate : manoeuvreBlocker(sys, tv, dt);
+  if (blocker === null) {
+    tv._turnGo = !waitsForLocks;
+    return;
+  }
+  tv._blk = waitsForLocks ? 2 : 1;
+  tv._blkTv = blocker;
+  tv._blkNode = waitsForLocks ? tv._req : -1;
+  tv._vFree = tv.vmax * sys.speedFactor * sys.graph.edges[tv.edge].limit;
 }
 
 /** Decide end-of-tick speed (tv._nv) and advance (tv._adv) for a driving vehicle. */
@@ -40,7 +60,9 @@ export function planMotion(sys, tv, dt) {
   tv._blkTv = null;
   tv._blkNode = -1;
   tv._vFree = 0;
-  if (tv._turn >= 0) { tv._nv = 0; tv._adv = 0; return; }
+  tv._nv = 0;
+  tv._adv = 0;
+  if (tv._turn >= 0) { planManoeuvre(sys, tv, dt); return; }
 
   const half = tv.length / 2;
   const q = ri * L + tv.s;
@@ -56,7 +78,8 @@ export function planMotion(sys, tv, dt) {
     const node = tv._nodes[i];
     const ctrl = graph.controlled[node] === 1;
     const zoneStart = i * L - r - (ctrl ? half + sys.standoff : 0);
-    if (i > ri && zoneStart > q + dLook) break;
+    const lineStart = sys._lockable[node] === 1 ? i * L - r - half - sys.standoff : zoneStart; // where a stop line may lie
+    if (i > ri && Math.min(zoneStart, lineStart) > q + dLook) break;
     const prev = i > 0 ? route[i - 1] : -1; // the first edge starts on its lane line, after any in-place manoeuvre
     const next = i < n ? route[i] : -1;
     if (ctrl || geo.isCorner(prev, next)) {
@@ -70,8 +93,11 @@ export function planMotion(sys, tv, dt) {
       const le = vTop * edges[route[i]].limit;
       if (le < vTop) limOther = Math.min(limOther, limit(v, i * L - q, le, dec, dt));
     }
-    if (i > ri && needsLock(sys, tv, node, i === n)) {
-      dStop = stopLineQ(sys, tv, i, q) - q;
+    const lock = i > ri && needsLock(sys, tv, node, i, i === n);
+    if (lock || (i > ri && node === tv._swingNode)) {
+      // without the lock: the stop line before the cell; with it, held up only by a vehicle in the way of its turn:
+      // up to the cell, where the body starts to swing
+      dStop = (lock ? stopLineQ(sys, tv, i, q) : Math.max(i * L - r, q)) - q;
       limLine = limit(v, dStop, 0, dec, dt);
       lineNode = node;
       break;
@@ -137,28 +163,13 @@ export function laneRemove(list, tv) {
   if (i >= 0) list.splice(i, 1);
 }
 
-/** Progress per second of an in-place manoeuvre (dead-end U-turn, or easing onto the lane line). */
-function turnRate(sys, tv) {
-  const length = tv._prev >= 0 && sys.geo.isReversal(tv._prev, tv.edge)
-    ? sys.geo.turnCurve(tv._prev, tv.edge)[8]
-    : sys.geo.easeLength(tv._x0, tv._y0, tv._h0, tv.edge);
-  const speed = Math.max(1e-3, 0.5 * tv.vmax * sys.speedFactor * sys.graph.edges[tv.edge].limit);
-  return speed / length;
-}
-
-/** Pose of a vehicle in the middle of an in-place manoeuvre at progress u. */
-function manoeuvrePose(sys, tv, out, u) {
-  if (tv._prev >= 0 && sys.geo.isReversal(tv._prev, tv.edge)) sys.geo.turnPose(out, tv._prev, tv.edge, u);
-  else sys.geo.easePose(out, tv._x0, tv._y0, tv._h0, tv.edge, u);
-}
-
 /** Move the vehicle by its plan. Pushes the vehicle to sys._arrived when its route ends. */
 export function applyMotion(sys, tv, dt) {
   const { geo, L } = sys;
   const route = tv._route;
   const n = route.length;
   if (tv._turn >= 0) { // in-place manoeuvre (dead-end U-turn / easing into the lane): at rest, v = 0
-    if (!tv.disabled) tv._turn += dt * turnRate(sys, tv);
+    if (tv._turnGo) tv._turn += dt * turnRate(sys, tv);
     if (tv._turn >= 1) tv._turn = -1;
     const out = sys._pose;
     if (tv._turn >= 0) manoeuvrePose(sys, tv, out, tv._turn);

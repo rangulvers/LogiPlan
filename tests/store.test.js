@@ -1,12 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  createStore, HISTORY_LIMIT, COALESCE_MS, PERSIST_DEBOUNCE_MS, MAX_SCENARIOS, SELECTION_KINDS,
+  createStore, HISTORY_LIMIT, COALESCE_MS, PERSIST_DEBOUNCE_MS, PERSIST_MAX_WAIT_MS, NOTIFY_CHAIN_LIMIT, MAX_SCENARIOS, SELECTION_KINDS,
 } from '../js/store/store.js';
 import * as L from '../js/model/layout.js';
-import { exportProject } from '../js/model/serialize.js';
+import { exportProject, importProject } from '../js/model/serialize.js';
 import { createRng } from '../js/util/rng.js';
 import { lPath } from '../js/util/grid.js';
+import { EXAMPLES } from '../js/model/examples.js';
 
 // ---------------------------------------------------------------------------------------------------------
 // helpers
@@ -32,6 +33,19 @@ function fakeStorage(initial = {}) {
       data.delete(key);
     },
   };
+}
+
+/** fakeStorage with a quota (UTF-16 units of keys plus values, like browsers): writes that would exceed it throw QuotaExceededError. */
+function quotaStorage(quota, initial = {}) {
+  const storage = fakeStorage(initial);
+  const write = storage.setItem;
+  storage.setItem = function setItem(key, value) {
+    let used = key.length + String(value).length;
+    for (const [k, v] of storage.data) if (k !== key) used += k.length + v.length;
+    if (used > quota) throw new DOMException('The quota has been exceeded.', 'QuotaExceededError');
+    write.call(this, key, value);
+  };
+  return storage;
 }
 
 function fakeTimers() {
@@ -186,6 +200,193 @@ test('commit refuses a mutator that is not a function and cleans empty labels', 
   assert.throws(() => store.commit('x', 'nope'), TypeError);
   store.commit('', rename('Renamed'));
   assert.equal(store.getState().undoLabel, 'Edit');
+});
+
+test('a mutator sees a complete private copy: keys, JSON, structuredClone, spread and the model API behave as on a plain layout', () => {
+  const { store } = plantWithTwoStations();
+  const before = store.getState().layout;
+  const snapshot = structuredClone(before);
+  const seen = {};
+  store.commit('Inspect', (l) => {
+    seen.keys = Object.keys(l);
+    seen.json = JSON.stringify(l);
+    seen.cloned = structuredClone(l);
+    seen.spread = Object.keys({ ...l });
+    seen.has = ['roads' in l, Object.hasOwn(l, 'stations')];
+    seen.cloneLayout = L.cloneLayout(l);
+    l.name = 'Inspected';
+  });
+  assert.deepEqual(seen.keys, Object.keys(snapshot));
+  assert.equal(seen.json, JSON.stringify(snapshot));
+  assert.deepEqual(seen.cloned, snapshot);
+  assert.deepEqual(seen.spread, Object.keys(snapshot));
+  assert.deepEqual(seen.has, [true, true]);
+  assert.deepEqual(seen.cloneLayout, snapshot);
+  assert.deepEqual(before, snapshot, 'the old layout is untouched');
+  assert.deepEqual(Object.keys(store.getState().layout), Object.keys(snapshot), 'member order is kept');
+});
+
+test('writing into a member changes only the draft; the layout before and every other member stay as they were', () => {
+  const { store } = plantWithTwoStations();
+  const before = store.getState().layout;
+  const snapshot = structuredClone(before);
+  store.commit('Scribble', (l) => {
+    l.stations[0].name = 'Renamed source';
+    l.roads['3,5'].limit = 0.5;
+    l.settings.demandFactor = 2;
+    l.fleets.length = 0;
+    l.flows.pop();
+  });
+  assert.deepEqual(before, snapshot);
+  const after = store.getState().layout;
+  assert.equal(after.stations[0].name, 'Renamed source');
+  assert.equal(after.roads['3,5'].limit, 0.5);
+  assert.equal(after.fleets.length, 0);
+  assert.equal(after.flows.length, 0);
+});
+
+test('members an edit did not change are shared with the layout before it; changed members are new objects', () => {
+  const { store } = plantWithTwoStations();
+  const MEMBERS = ['grid', 'roads', 'obstacles', 'labels', 'stations', 'flows', 'fleets', 'settings'];
+  const sharedAfter = (label, edit) => {
+    const before = store.getState().layout;
+    assert.equal(store.commit(label, edit), true, label);
+    const after = store.getState().layout;
+    return MEMBERS.filter((key) => after[key] === before[key]);
+  };
+  assert.deepEqual(sharedAfter('Rename', rename('Shared')), MEMBERS, 'a rename shares every member');
+  assert.deepEqual(sharedAfter('Demand', (l) => { l.settings.demandFactor = 1.5; }), MEMBERS.filter((k) => k !== 'settings'));
+  assert.deepEqual(sharedAfter('Fleet', (l) => { L.updateFleet(l, 'v1', { count: 4 }); }), MEMBERS.filter((k) => k !== 'fleets'));
+  assert.deepEqual(sharedAfter('Machines', (l) => { L.updateStation(l, 's1', { name: 'Dock A' }); }), MEMBERS.filter((k) => k !== 'stations'));
+  assert.deepEqual(sharedAfter('Road limit', (l) => { L.setRoadLimit(l, 3, 5, 0.5); }), MEMBERS.filter((k) => k !== 'roads'));
+});
+
+test('a member the mutator only read keeps its identity: looking is not changing', () => {
+  const { store } = plantWithTwoStations();
+  const before = store.getState().layout;
+  store.commit('Look, then rename', (l) => {
+    Object.keys(l.roads);
+    JSON.stringify(l.stations);
+    l.flows.map((f) => f.id);
+    l.fleets.length = l.fleets.length;
+    l.name = 'Looked';
+  });
+  const after = store.getState().layout;
+  for (const key of ['roads', 'stations', 'flows', 'fleets', 'grid', 'settings']) assert.equal(after[key], before[key], key);
+  assert.equal(after.name, 'Looked');
+});
+
+test('a member that was changed and changed back is shared again, so a net-zero detour costs no history memory', () => {
+  const { store } = plantWithTwoStations();
+  const before = store.getState().layout;
+  store.commit('Detour', (l) => {
+    const cell = l.roads['3,5'];
+    delete l.roads['3,5'];
+    l.roads['3,5'] = cell;
+    l.stations[0].name = 'Temporary';
+    l.stations[0].name = before.stations[0].name;
+    l.name = 'Detoured';
+  });
+  assert.equal(store.getState().layout.roads, before.roads);
+  assert.equal(store.getState().layout.stations, before.stations);
+});
+
+test('history shares everything the edits did not touch: every undo step of a long rename session holds the very same roads', () => {
+  const { store } = plantWithTwoStations();
+  const roads = store.getState().layout.roads;
+  for (let i = 0; i < 30; i++) store.commit('Rename', rename(`Plant ${i}`));
+  for (let i = 0; i < 31; i++) {
+    assert.equal(store.getState().layout.roads, roads, `layout ${i} steps back`);
+    assert.equal(store.undo(), true);
+  }
+  assert.notEqual(store.getState().layout.roads, roads, 'one more step back is the empty plant from before the road was built');
+  assert.equal(store.getState().canUndo, false);
+});
+
+test('a mutator may replace a member as a whole, add keys and drop keys; invalid results are rolled back', () => {
+  const { store } = plantWithTwoStations();
+  assert.equal(store.commit('Replace labels', (l) => { l.labels = [{ id: 'l1', x: 1, y: 1, text: 'Hello' }]; }), true);
+  assert.equal(store.getState().layout.labels[0].text, 'Hello');
+  assert.equal(store.commit('Extra key', (l) => { l.futureThing = { a: 1 }; }), true);
+  assert.deepEqual(store.getState().layout.futureThing, { a: 1 });
+  const before = store.getState();
+  assert.throws(() => store.commit('Drop the roads', (l) => { delete l.roads; }), /rolled back/);
+  assert.throws(() => store.commit('Roads become text', (l) => { l.roads = 'none'; }), /rolled back/);
+  assert.equal(store.getState(), before);
+});
+
+test('the road checks still run whenever roads, grid or the rectangles of stations and obstacles change', () => {
+  const { store } = plantWithTwoStations();
+  const before = store.getState();
+  // a station dragged over the road by hand
+  assert.throws(() => store.commit('Station onto road', (l) => { l.stations[0].x = 3; l.stations[0].y = 5; }), /rolled back/);
+  // an obstacle over the road
+  assert.throws(() => store.commit('Obstacle onto road', (l) => { l.obstacles.push({ id: 'o1', x: 4, y: 5, w: 1, h: 1, kind: 'wall' }); }), /rolled back/);
+  // a road link into the void, and a road cell outside the grid
+  assert.throws(() => store.commit('Dangling link', (l) => { l.roads['5,5'].out |= 2; }), /rolled back/);
+  assert.throws(() => store.commit('Road outside', (l) => { l.roads['99,99'] = { out: 0 }; }), /rolled back/);
+  // the grid shrinks under the road
+  assert.throws(() => store.commit('Shrink', (l) => { l.grid.cols = 4; l.grid.rows = 4; }), /rolled back/);
+  // a road cell appears under a station
+  assert.throws(() => store.commit('Road under station', (l) => { l.roads['2,2'] = { out: 0 }; }), /rolled back/);
+  assert.equal(store.getState(), before);
+});
+
+test('shrinking the grid by hand below an untouched road is caught, although stations and roads were not edited', () => {
+  const { store } = makeStore();
+  store.commit('Build', (l) => {
+    L.addStation(l, { type: 'source', x: 1, y: 1 });
+    L.paintRoadPath(l, [[20, 20], [21, 20]]);
+  });
+  const before = store.getState();
+  assert.throws(() => store.commit('Shrink', (l) => { l.grid.cols = 10; l.grid.rows = 10; }), /rolled back/);
+  assert.equal(store.getState(), before);
+  assert.equal(store.commit('Shrink properly', (l) => { L.resizeGrid(l, 10, 10); }), true, 'the model API drops the roads outside, so this one is valid');
+  assert.deepEqual(L.checkInvariants(store.getState().layout), []);
+});
+
+test('edits to the other checked parts are still validated when the road check is skipped', () => {
+  const { store } = plantWithTwoStations();
+  assert.throws(() => store.commit('Bad param', (l) => { l.stations[0].params.batch = -4; }), /rolled back/);
+  assert.throws(() => store.commit('Bad flow', (l) => { l.flows[0].to = 'ghost'; }), /rolled back/);
+  assert.throws(() => store.commit('Bad setting', (l) => { l.settings.dt = 99; }), /rolled back/);
+  assert.throws(() => store.commit('Blank name', (l) => { l.name = '   '; }), /rolled back/);
+});
+
+test('a mutator cannot reach back into the store: commit, undo, load, scenario changes and restore throw, and nothing is half done', () => {
+  const { store } = makeStore();
+  store.commit('First', rename('first'));
+  const attempts = {
+    commit: () => store.commit('Inner', rename('inner')),
+    undo: () => store.undo(),
+    redo: () => store.redo(),
+    replaceLayout: () => store.replaceLayout(L.createLayout({ name: 'Other' })),
+    loadProject: () => store.loadProject({ scenarios: [{ layout: L.createLayout() }] }),
+    newProject: () => store.newProject(),
+    addScenario: () => store.addScenario('B'),
+    duplicateScenario: () => store.duplicateScenario('sc1'),
+    switchScenario: () => store.switchScenario('sc1'),
+    deleteScenario: () => store.deleteScenario('sc1'),
+    restore: () => store.restore(),
+    restoreBackup: () => store.restoreBackup(),
+  };
+  for (const [name, attempt] of Object.entries(attempts)) {
+    const before = store.getState();
+    let reported = null;
+    assert.throws(() => store.commit('Outer', (l) => {
+      try {
+        attempt();
+      } catch (err) {
+        reported = err;
+        throw err;
+      }
+      l.notes = 'outer edit';
+    }), /cannot be called from inside a commit mutator/, name);
+    assert.ok(reported instanceof Error && reported.message.includes(name), name);
+    assert.equal(store.getState(), before, `${name}: nothing happened`);
+  }
+  assert.equal(store.commit('After', rename('after')), true, 'the store is usable again (the guard does not stick)');
+  assert.equal(store.commit('Reading is fine', (l) => { store.getState(); store.setUi({ tool: 'road' }); l.notes = 'ok'; }), true);
 });
 
 test('listeners are told the change kind: cosmetic, runtime or structural', () => {
@@ -413,6 +614,19 @@ test('cell selections use road cell keys; [cx, cy] pairs are accepted and non-ro
   assert.deepEqual(store.getState().ui.selection, { kind: 'cell', ids: ['3,5', '4,5'] });
   store.commit('Erase road', (l) => { L.eraseRoadCell(l, 4, 5); });
   assert.deepEqual(store.getState().ui.selection, { kind: 'cell', ids: ['3,5'] });
+});
+
+test('selecting thousands of cells at once keeps order, drops duplicates and non-roads, and survives commits', () => {
+  const { store } = makeStore();
+  store.commit('Big road', (l) => { L.paintRoadPath(l, Array.from({ length: 40 }, (_, i) => [i, 3])); });
+  const ids = [];
+  for (let n = 0; n < 8000; n++) ids.push([n % 40, n % 3 === 0 ? 4 : 3], `${n % 40},3`);
+  assert.equal(store.select('cell', ids), true);
+  const selected = store.getState().ui.selection.ids;
+  assert.equal(selected.length, 40);
+  assert.deepEqual(selected.slice(0, 3), ['0,3', '1,3', '2,3']);
+  store.commit('Rename', rename('x'));
+  assert.equal(store.getState().ui.selection.ids.length, 40);
 });
 
 test('a commit that removes selected things prunes the selection to what still exists', () => {
@@ -729,8 +943,38 @@ test('deleteScenario picks the left neighbour (or the right one for the first), 
   assert.equal(store.deleteScenario('nope'), false);
   assert.deepEqual(names(store), ['C']);
   const id = store.addScenario('D');
-  assert.equal(store.getState().canUndo, false, 'a reused id starts with a fresh history');
-  assert.equal(id, 'sc1');
+  assert.equal(store.getState().canUndo, false, 'a new scenario starts with a fresh history');
+  assert.equal(id, 'sc4', 'ids of deleted scenarios are not handed out again');
+});
+
+test('scenario ids are never reused while a document lives, also after loading a project with its own ids', () => {
+  const { store } = makeStore();
+  const used = new Set(['sc1']);
+  for (let i = 0; i < 6; i++) {
+    const id = store.addScenario();
+    assert.equal(used.has(id), false, id);
+    used.add(id);
+    if (i % 2) store.deleteScenario(id);
+  }
+  store.loadProject({ scenarios: [{ id: 'sc7', name: 'Seven', layout: L.createLayout() }, { id: 'mine', name: 'Mine', layout: L.createLayout() }] });
+  assert.equal(store.addScenario(), 'sc8');
+  store.newProject();
+  assert.equal(store.getState().project.activeId, 'sc1');
+  assert.equal(store.addScenario(), 'sc2');
+});
+
+test('adding or duplicating a scenario ends the coalescing burst of the scenario that is left', () => {
+  for (const leave of [(store) => store.addScenario('B'), (store) => store.duplicateScenario('sc1')]) {
+    const { store, clock } = makeStore();
+    store.commit('One', rename('one'), { coalesce: 'name' });
+    clock.advance(50);
+    leave(store);
+    store.switchScenario('sc1');
+    clock.advance(50);
+    store.commit('Two', rename('two'), { coalesce: 'name' });
+    store.undo();
+    assert.equal(store.getState().layout.name, 'one');
+  }
 });
 
 test('deleting a scenario that is not active leaves the active one and its selection alone', () => {
@@ -868,6 +1112,97 @@ test('a listener removed during a round is not called later in that round', () =
   assert.equal(calledSecond, 0);
 });
 
+test('subscribing the same function twice gives two subscriptions; an unsubscribe function only ever removes its own', () => {
+  const { store } = makeStore();
+  let calls = 0;
+  const fn = () => { calls++; };
+  const offFirst = store.subscribe(fn);
+  store.subscribe(fn);
+  store.commit('x', rename('x'));
+  assert.equal(calls, 2);
+  offFirst();
+  offFirst();
+  store.commit('y', rename('y'));
+  assert.equal(calls, 3, 'the second subscription survived the first unsubscribe, also when it was called twice');
+  const off = store.subscribe(fn);
+  off();
+  store.subscribe(fn);
+  off();
+  store.commit('z', rename('z'));
+  assert.equal(calls, 5, 'a stale unsubscribe function does not remove a newer subscription of the same function');
+});
+
+test('a listener that keeps answering with new changes is cut off after NOTIFY_CHAIN_LIMIT notifications; the others hear everything and the store stays usable', () => {
+  const { store, errors } = makeStore();
+  const heard = [];
+  let badCalls = 0;
+  store.subscribe((s, info) => {
+    if (info.type !== 'commit') return;
+    badCalls++;
+    store.commit('Echo', rename(`echo ${badCalls}`));
+  });
+  store.subscribe((s) => heard.push(s.version));
+  assert.doesNotThrow(() => store.commit('Trigger', rename('trigger')));
+  assert.equal(badCalls, NOTIFY_CHAIN_LIMIT, 'called exactly as often as the limit allows');
+  assert.equal(errors.length, 1);
+  assert.ok(errors[0].err instanceof Error && /unsubscribed/.test(errors[0].err.message));
+  assert.equal(heard.length, NOTIFY_CHAIN_LIMIT + 1, 'the good listener was told about every change, the last one included');
+  assert.deepEqual(heard, [...heard].sort((a, b) => a - b));
+  assert.equal(heard.at(-1), store.getState().version);
+  const calls = badCalls;
+  store.commit('Later', rename('later'));
+  assert.equal(badCalls, calls, 'the offender is gone for good');
+  assert.equal(heard.at(-1), store.getState().version);
+  assert.equal(errors.length, 1);
+});
+
+test('a listener that is cut off in the middle of a call is reported once, however many further changes that call makes', () => {
+  const { store, errors } = makeStore();
+  let n = 0;
+  store.subscribe((s, info) => {
+    if (info.type !== 'commit') return;
+    for (let i = 0; i < 3; i++) store.commit('Burst', rename(`burst ${n++}`)); // three answers per notification
+  });
+  store.commit('Trigger', rename('trigger'));
+  assert.equal(errors.length, 1);
+  assert.ok(n < NOTIFY_CHAIN_LIMIT + 10, `the loop ended (${n} commits)`);
+});
+
+test('two listeners that keep answering each other are cut off too, and a long but finite chain below the limit is left alone', () => {
+  {
+    const { store, errors } = makeStore();
+    let a = 0;
+    let b = 0;
+    store.subscribe((s) => { if (s.layout.name.startsWith('a')) { b++; store.commit('B', rename(`b${b}`)); } });
+    store.subscribe((s) => { if (s.layout.name.startsWith('b')) { a++; store.commit('A', rename(`a${a}`)); } });
+    store.commit('Start', rename('a0'));
+    assert.equal(errors.length, 2, 'once the limit is reached, every listener that answers with another change is cut off');
+    assert.ok(errors.every(({ err }) => /unsubscribed/.test(err.message)));
+    assert.ok(a + b <= NOTIFY_CHAIN_LIMIT + 2);
+    store.commit('Done', rename('quiet'));
+    assert.equal(store.getState().layout.name, 'quiet');
+    assert.equal(errors.length, 2);
+  }
+  {
+    const { store, errors } = makeStore();
+    const chainLength = Math.floor(NOTIFY_CHAIN_LIMIT * 0.6);
+    let remaining = 0;
+    let n = 0;
+    store.subscribe((s, info) => {
+      if (info.type === 'commit' && remaining > 0) {
+        remaining--;
+        store.commit('Settle', rename(`settle ${n++}`));
+      }
+    });
+    for (let i = 0; i < 3; i++) {
+      remaining = chainLength;
+      store.commit('Start', rename(`start ${n++}`));
+      assert.equal(remaining, 0, `chain ${i} ran to its end`);
+    }
+    assert.equal(errors.length, 0, 'each outer change starts a new chain: three chains of 60% of the limit are no reason to cut anybody off');
+  }
+});
+
 test('version grows with every change and not with refused ones', () => {
   const { store } = makeStore();
   const v0 = store.getState().version;
@@ -897,6 +1232,33 @@ test('autosave waits 400 ms after the LAST change (injected timers) and then wri
   assert.equal(storage.data.has('logiplan:v1'), true);
   assert.equal(JSON.parse(storage.data.get('logiplan:v1')).scenarios[0].layout.name, 'y');
   assert.equal(store.lastPersistError, null);
+});
+
+test('autosave never waits longer than PERSIST_MAX_WAIT_MS after the first unsaved change, however busy the user is', () => {
+  const { store, clock, timers, storage } = makeStore();
+  const started = clock.t;
+  let delay = PERSIST_DEBOUNCE_MS;
+  while (delay === PERSIST_DEBOUNCE_MS) {
+    store.commit('Drag', rename(`n${clock.t}`));
+    delay = timers.delays.at(-1);
+    if (delay === PERSIST_DEBOUNCE_MS) clock.advance(300); // the user never pauses for 400 ms
+  }
+  assert.ok(delay < PERSIST_DEBOUNCE_MS);
+  assert.equal(clock.t + delay, started + PERSIST_MAX_WAIT_MS, 'the save lands exactly at the maximum wait');
+  assert.equal(storage.writes, 0);
+  timers.fire();
+  assert.equal(storage.writes, 1);
+  clock.advance(delay);
+  store.commit('Next', rename('next window'));
+  assert.equal(timers.delays.at(-1), PERSIST_DEBOUNCE_MS, 'a new window starts after the save');
+});
+
+test('a change that arrives after the maximum wait (a throttled background tab) is saved without further delay', () => {
+  const { store, clock, timers } = makeStore();
+  store.commit('One', rename('one'));
+  clock.advance(PERSIST_MAX_WAIT_MS * 3);
+  store.commit('Two', rename('two'));
+  assert.equal(timers.delays.at(-1), 0);
 });
 
 test('persist() writes at once and cancels the pending autosave; storageKey is honoured', () => {
@@ -1039,6 +1401,187 @@ test('a quota error is handled quietly: persist() is false, lastPersistError is 
   assert.equal(store.lastPersistError, null);
   assert.equal(log.at(-1).info.type, 'persist');
   assert.equal(JSON.parse(storage.data.get('logiplan:v1')).scenarios[0].layout.name, 'y');
+});
+
+const KEY = 'logiplan:v1';
+const BACKUP = 'logiplan:v1:backup';
+
+test('a save never silently replaces what another tab saved: the older text is kept as a backup, announced, and nothing else is', () => {
+  const storage = fakeStorage();
+  const tabA = makeStore({ storage });
+  const tabB = makeStore({ storage });
+  assert.equal(tabB.store.restore(), false, 'nothing saved yet when tab B started');
+  tabA.store.commit('A work', rename('Plant of tab A'));
+  tabA.store.persist();
+  const textA = storage.data.get(KEY);
+  assert.equal(storage.data.has(BACKUP), false, 'a tab writing its own key makes no backup');
+  const log = record(tabB.store);
+  tabB.store.commit('B work', rename('Plant of tab B'));
+  assert.equal(tabB.store.hasBackup(), false);
+  assert.equal(tabB.store.persist(), true);
+  assert.ok(storage.data.get(KEY).includes('Plant of tab B'));
+  assert.equal(storage.data.get(BACKUP), textA, 'tab A\'s project is kept');
+  assert.equal(tabB.store.hasBackup(), true);
+  const notes = log.filter((e) => e.info.type === 'persist');
+  assert.deepEqual(notes.map((e) => e.info.backedUp), [true]);
+  assert.equal(notes[0].state, tabB.store.getState());
+  assert.equal(tabB.store.lastPersistError, null);
+  tabB.store.commit('More B work', rename('Plant of tab B, again'));
+  tabB.store.persist();
+  assert.equal(storage.data.get(BACKUP), textA, 'its own earlier save is no conflict');
+  assert.equal(log.filter((e) => e.info.type === 'persist').length, 1);
+  // tab A comes back and saves over tab B in turn: B's version is kept
+  tabA.store.commit('A again', rename('Plant of tab A, again'));
+  tabA.store.persist();
+  assert.ok(storage.data.get(BACKUP).includes('Plant of tab B, again'));
+});
+
+test('restoreBackup() brings the kept version back, and the next save swaps the two versions instead of losing one', () => {
+  const storage = fakeStorage();
+  const tabA = makeStore({ storage });
+  tabA.store.commit('A work', rename('Plant of tab A'));
+  tabA.store.persist();
+  const tabB = makeStore({ storage });
+  tabB.store.commit('B work', rename('Plant of tab B'));
+  tabB.store.persist();
+  const winner = storage.data.get(KEY);
+  const kept = storage.data.get(BACKUP);
+  const tabC = makeStore({ storage });
+  assert.equal(tabC.store.restore(), true);
+  assert.equal(tabC.store.getState().layout.name, 'Plant of tab B');
+  assert.equal(tabC.store.restoreBackup(), true);
+  assert.equal(tabC.store.getState().layout.name, 'Plant of tab A');
+  assert.equal(tabC.store.getState().canUndo, false);
+  assert.equal(storage.data.get(KEY), winner, 'restoring does not write');
+  tabC.store.commit('C work', rename('Plant of tab A, revised'));
+  tabC.store.persist();
+  assert.equal(storage.data.get(BACKUP), winner, 'the version that was on disk is now the backup');
+  assert.ok(storage.data.get(KEY).includes('Plant of tab A, revised'));
+  assert.notEqual(kept, winner);
+});
+
+test('restoreBackup() without a backup is false and changes nothing; a corrupt backup is reported like a corrupt save', () => {
+  const { store, storage } = makeStore();
+  const before = store.getState();
+  assert.equal(store.hasBackup(), false);
+  assert.equal(store.restoreBackup(), false);
+  assert.equal(store.getState(), before);
+  assert.equal(store.lastRestoreError, null);
+  storage.data.set(BACKUP, '');
+  assert.equal(store.hasBackup(), false, 'an empty text is no backup');
+  storage.data.set(BACKUP, '{broken');
+  assert.equal(store.hasBackup(), true);
+  assert.equal(store.restoreBackup(), false);
+  assert.ok(store.lastRestoreError instanceof Error);
+  assert.equal(store.getState(), before);
+});
+
+test('a store that never restored keeps the previous session\'s save as a backup before its first save replaces it', () => {
+  const first = makeStore();
+  first.store.commit('Old work', rename('Yesterday'));
+  first.store.persist();
+  const yesterday = first.storage.data.get(KEY);
+  const second = makeStore({ storage: first.storage }); // the user chose "new empty plant" instead of "continue"
+  second.store.commit('New work', rename('Today'));
+  second.store.persist();
+  assert.equal(first.storage.data.get(BACKUP), yesterday);
+  assert.ok(first.storage.data.get(KEY).includes('Today'));
+  // a store that restored first has seen the text: no backup
+  const third = makeStore({ storage: fakeStorage({ [KEY]: first.storage.data.get(KEY) }) });
+  assert.equal(third.store.restore(), true);
+  third.store.commit('Work', rename('Tomorrow'));
+  third.store.persist();
+  assert.equal(third.storage.data.has(BACKUP), false);
+});
+
+test('if the other version cannot be kept, the save is refused instead of destroying it', () => {
+  const seed = makeStore();
+  seed.store.commit('Work of the other tab', rename('Plant of the other tab'));
+  seed.store.persist();
+  const theirs = seed.storage.data.get(KEY);
+  const storage = quotaStorage(theirs.length + 200, { [KEY]: theirs });
+  const { store, errors } = makeStore({ storage });
+  const log = record(store);
+  store.commit('My work', rename('My plant'));
+  assert.equal(store.persist(), false);
+  assert.equal(storage.data.get(KEY), theirs, 'the other tab\'s project is untouched');
+  assert.equal(storage.data.has(BACKUP), false);
+  assert.match(store.lastPersistError.message, /another browser tab/i);
+  assert.equal(store.lastPersistError.cause.name, 'QuotaExceededError');
+  assert.deepEqual(log.filter((e) => e.info.type === 'persist').map((e) => e.info.backedUp), [undefined]);
+  assert.equal(store.getState().layout.name, 'My plant', 'editing goes on');
+  assert.deepEqual(errors, []);
+});
+
+test('an unreadable storage during a save does not stop the save', () => {
+  const { store, storage } = makeStore();
+  store.commit('x', rename('x'));
+  storage.failRead = new DOMException('blocked', 'SecurityError');
+  assert.equal(store.persist(), true);
+  assert.equal(JSON.parse(storage.data.get(KEY)).scenarios[0].layout.name, 'x');
+});
+
+test('a save that restore() could only partly understand is kept as a backup before the downgraded copy replaces it', () => {
+  const source = makeStore();
+  source.store.persist();
+  const newer = JSON.parse(source.storage.data.get(KEY));
+  newer.schema = 99;
+  newer.scenarios[0].layout.schema = 99;
+  newer.scenarios[0].layout.futureThing = { a: 1 };
+  const text = JSON.stringify(newer);
+  const { store, storage } = makeStore({ storage: fakeStorage({ [KEY]: text }) });
+  assert.equal(store.restore(), true);
+  assert.equal(store.lastRestoreWarnings.length, 1);
+  assert.match(store.lastRestoreWarnings[0], /newer version/);
+  assert.ok(Object.isFrozen(store.lastRestoreWarnings));
+  store.commit('Work', rename('Edited with an old app'));
+  store.persist();
+  assert.equal(storage.data.get(BACKUP), text, 'the original, with the details this version does not know, is kept');
+  assert.equal(JSON.parse(storage.data.get(KEY)).schema, 1);
+  // a normal restore has nothing to warn about
+  assert.equal(store.restore(), true);
+  assert.deepEqual(store.lastRestoreWarnings, []);
+});
+
+test('when the whole project no longer fits the quota, the scenario on screen is saved alone and the shell is told; it recovers when the project shrinks', () => {
+  const storage = quotaStorage(12_000);
+  const { store } = makeStore({ storage });
+  const log = record(store);
+  store.replaceLayout(EXAMPLES[1].build(), { label: 'Load example' });
+  assert.equal(store.persist(), true);
+  assert.equal(store.lastPersistError, null);
+  const copy = store.duplicateScenario('sc1');
+  store.commit('Work on the variant', (l) => { l.name = 'Variant with a faster fleet'; L.updateFleet(l, l.fleets[0].id, { count: 7 }); });
+  assert.equal(store.persist(), true, 'something was written');
+  assert.match(store.lastPersistError.message, /only the scenario on screen/);
+  assert.equal(store.lastPersistError.cause.name, 'QuotaExceededError');
+  assert.deepEqual(log.filter((e) => e.info.type === 'persist').map((e) => e.state === store.getState()), [true]);
+  const saved = importProject(storage.data.get(KEY));
+  assert.equal(saved.scenarios.length, 1);
+  assert.equal(saved.scenarios[0].layout.name, 'Variant with a faster fleet');
+  assert.equal(importProject(storage.data.get(KEY)).activeId, copy);
+  const reloaded = makeStore({ storage });
+  assert.equal(reloaded.store.restore(), true);
+  assert.deepEqual(reloaded.store.getState().layout, store.getState().layout);
+  assert.equal(store.persist(), true);
+  assert.equal(log.filter((e) => e.info.type === 'persist').length, 1, 'a repeated partial save is not news');
+  store.deleteScenario('sc1');
+  assert.equal(store.persist(), true);
+  assert.equal(store.lastPersistError, null);
+  assert.equal(log.filter((e) => e.info.type === 'persist').length, 2, 'recovery is announced');
+});
+
+test('a single scenario that does not fit is simply not saved: the old copy stays and the reason is the storage\'s', () => {
+  const small = makeStore();
+  small.store.persist();
+  const old = small.storage.data.get(KEY);
+  const storage = quotaStorage(old.length + 300, { [KEY]: old });
+  const { store } = makeStore({ storage });
+  store.restore();
+  store.replaceLayout(EXAMPLES[1].build(), { label: 'Load example' });
+  assert.equal(store.persist(), false);
+  assert.equal(storage.data.get(KEY), old);
+  assert.equal(store.lastPersistError.name, 'QuotaExceededError');
 });
 
 test('a failing write keeps the previous good copy in storage', () => {

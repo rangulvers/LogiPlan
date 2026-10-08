@@ -7,34 +7,50 @@
 //  * Every tick is PLANNED for all vehicles from the start-of-tick state and only then APPLIED, so results do not
 //    depend on vehicle order. Per-edge ordered lane lists give each vehicle its leader (the rear-most vehicle of the
 //    edges ahead, parked vehicles on node centres, vehicles that left the lane but whose tail is still in it). The
-//    advance is hard-clamped to (gap - headway); speed targets follow v^2 <= v_leader^2 + 2 * decel * (gap - headway).
+//    advance is hard-clamped to (gap - headway); speed targets follow v^2 <= 2 * decel * (gap - headway + the leader's
+//    braking distance), the leader credited with at most the follower's own deceleration.
 //  * Controlled cells (zone blocking): a vehicle needs the lock of a cell while ANY part of its footprint overlaps it.
 //    It stops at a stop line before the cell and requests the lock when that line is within braking distance; grants
-//    are FIFO among requests that can proceed, atomically for the cell and every further controlled cell the vehicle
-//    would still overlap while clearing it (no hold-and-wait), and only if there is room beyond the exit for the
-//    vehicle's length + headway (no box-blocking). The lock is released when the rear passes the cell exit. Parked
-//    vehicles hold the lock of their cell. A plain bend (corner) is a lockable cell only while somebody is parked in it.
+//    are FIFO among requests that can proceed, atomically for the cell and every further lockable cell (junction or
+//    bend) the vehicle could end up waiting in front of while its rear is still inside the last one (no hold-and-wait),
+//    and only if there is room beyond the exit of the last cell for the vehicle's length + headway (no box-blocking).
+//    The lock is released when the rear passes the cell exit. Parked vehicles hold the lock of their cell. A plain
+//    bend (corner) is lockable: it is locked while somebody is parked in it, by a vehicle that has it in its chain,
+//    and by a vehicle longer than a cell that turns in it.
+//  * Long vehicles (longer than a cell) swing wide of their lane when they turn: the rear of a rigid body sweeps into
+//    the opposite lane. They therefore lock the cell they turn in, wait until no vehicle is within reach of the swing,
+//    and every stop line keeps the nose of the longest vehicle clear (standoff = headway + length / 2).
 //  * In-place manoeuvres (v = 0): a U-turn at a dead end, and easing onto the lane line when a route starts from the
-//    centre line or from the lane of another road. They take time; the vehicle keeps its locks and is an obstacle.
+//    centre line or from the lane of another road. They take time; the vehicle keeps its locks and is an obstacle. A
+//    manoeuvre only advances while the final pose keeps the headway to what is ahead and the swept bodies stay clear of
+//    every other vehicle (also of those approaching); a long vehicle first locks all junctions and bends around it.
 //  * Deadlocks: once a second the wait-for graph (tv.blockedBy) is searched for cycles. A cycle whose members all
 //    waited >= deadlockTime is a deadlock (counted and reported once per membership); with resolveDeadlocks the
 //    longest-waiting member that holds up the fewest others is relocated to a free node.
+//  * Placing a vehicle (addVehicle, attach, relocate, findFreeNode) needs room for its body AND that every vehicle
+//    driving towards the node can still stop in front of it with its own deceleration.
 //
-// Approximations and choices
-//  * Vehicles longer than a cell: locks, stop lines and headway use the full footprint, so a long vehicle holds several
-//    cells and stops further back (the stop line keeps the overhang of the longest vehicle as extra standoff). The
-//    recommended maximum is 1.5 * cellSize; longer vehicles stay free of lane and lock conflicts, but their rigid
-//    rectangle swings wide of the lane in tight corners, and a vehicle parked on a node centre is only guarded against
-//    overhanging a neighbouring cell it does not hold along the straight continuation of its last edge (or, when it
-//    was placed on a node centre without a heading, in any direction).
-//  * Corners are shorter than the abstract 2 * (half cell) they stand for; followers add the difference to their gap.
+// Approximations and limits
+//  * Verified (independent fuzz, all invariants on every tick, dt 0.1 .. 0.5 s, 2 m cells): vehicles up to 1.75 cells long
+//    (the tugger preset), up to 2 cells on street layouts. Longer vehicles keep lane order and locks but may come closer
+//    than the headway or overlap. Vehicles up to one cell long do not lock their turns: in dense traffic their bodies can
+//    overlap by up to 0.3 m for an instant in a corner (about 0.1 m in the shipped examples), and two vehicles on
+//    neighbouring nodes can be closer than the headway when their average length exceeds 0.75 cells (cell - length).
+//    Vehicles longer than a cell lock stretches of road at once (see the chain above) and so meet the limits of exclusive
+//    locks more often.
+//  * Locks are per cell and exclusive: two vehicles that want each other's cell - docked on adjacent junctions or
+//    bends and sent to swap places, or a ring with every cell taken - cannot be untied by the protocol. They are
+//    reported as deadlocks after deadlockTime and resolved by relocation. Dense blocks of junction cells (every cell a
+//    crossing) deadlock far more often than street layouts, because each vehicle locks its way through the block.
+//  * Corners are shorter than the abstract 2 * (half cell) they stand for; followers add the difference between the
+//    two centres to their gap, plus a small capped allowance for the rigid bodies.
 //  * A vehicle with a route has node = -1 even while it still stands on its start node (node >= 0 means parked).
 //  * The `rng` option is accepted for API compatibility; the engine is deterministic without randomness.
 
 import { Geometry } from './traffic/geometry.js';
 import { TV } from './traffic/vehicle.js';
-import { MOVING_SPEED } from './traffic/kinematics.js';
-import { evaluateRequest, grantLocks, releaseAll, cancelRequest } from './traffic/scan.js';
+import { MOVING_SPEED, stoppingDistance } from './traffic/kinematics.js';
+import { evaluateRequest, evaluateSpin, scanAhead, grantLocks, releaseAll, cancelRequest } from './traffic/scan.js';
 import { planMotion, applyMotion, laneRemove } from './traffic/motion.js';
 import { findWaitCycles, cycleKey, isStandingDeadlock, pickVictim } from './traffic/deadlock.js';
 
@@ -80,6 +96,7 @@ export class TrafficSystem {
     };
 
     this.L = graph.cellSize;
+    this.swingLength = graph.cellSize; // vehicles longer than a cell swing wide in corners and lock their turns
     this.r = graph.cellSize / 2;
     this._edges = graph.edges;
     this._out = graph.out;
@@ -97,11 +114,21 @@ export class TrafficSystem {
     this._nextDeadlockCheck = DEADLOCK_CHECK_INTERVAL;
     this._pose = { x: 0, y: 0, h: 0 };
     this._maxLength = 1;
-    this.standoff = this.headway; // stop-line distance before a controlled cell (grows with the longest vehicle)
+    this._maxSpeed = 0; // highest vmax of any vehicle (bound for neighbourhood searches)
+    this.standoff = this._standoff(); // stop-line distance before a locked cell (grows with the longest vehicle)
     this._seq = 0;
   }
 
   // ---- vehicles -------------------------------------------------------------------------------------------
+
+  /**
+   * Distance between the front bumper of a vehicle waiting for a lock and the boundary of the cell: one headway to
+   * whatever is inside, plus - when vehicles longer than a cell exist, which swing wide as they turn in the cell -
+   * the reach of the nose of the longest one beyond the boundary of the cell (half its length).
+   */
+  _standoff() {
+    return this.headway + (this._maxLength > this.swingLength ? this._maxLength / 2 : 0);
+  }
 
   /**
    * Add a vehicle, stationary on the centre of `node`.
@@ -116,7 +143,8 @@ export class TrafficSystem {
     tv._seq = this._seq++;
     tv.heading = Number.isFinite(spec.heading) ? spec.heading : this._defaultHeading(node);
     this._maxLength = Math.max(this._maxLength, tv.length);
-    this.standoff = this.headway + Math.max(0, (this._maxLength - this.L) / 2);
+    this._maxSpeed = Math.max(this._maxSpeed, tv.vmax);
+    this.standoff = this._standoff();
     this.vehicles.push(tv);
     this._placeFresh(tv, node);
     return tv;
@@ -270,7 +298,11 @@ export class TrafficSystem {
     }
     for (let i = 0; i < count; i++) {
       const tv = active[i];
-      if (tv._turn >= 0) continue;
+      if (tv._turn >= 0) { // manoeuvring in place: the cells it sweeps and what stands ahead of its final pose
+        evaluateSpin(this, tv);
+        scanAhead(this, tv, this.headway + 1);
+        continue;
+      }
       const vTop = tv.vmax * this.speedFactor;
       const vNext = Math.min(vTop, tv.v + tv.accel * dt);
       const brake = (vTop * vTop) / (2 * tv.decel) + vTop * dt;
@@ -324,7 +356,7 @@ export class TrafficSystem {
     }
     if (this._reachesNeighbours(tv.length)) { // parked heading unknown: hold neighbouring controlled cells until the first drive resolves them
       for (const m of this._neighbours(node)) {
-        if (g.controlled[m] !== 1) continue;
+        if (this._lockable[m] !== 1) continue;
         this._lock[m] = tv;
         tv._held.push(m);
         tv._heldQ.push(0);
@@ -335,17 +367,20 @@ export class TrafficSystem {
   /**
    * When a route starts, recompute where each cell the vehicle still holds is cleared. The route coordinate system
    * restarts at the start node, and a new route may leave in another direction (even back the way it came), so a
-   * cell is identified by its position on the new route (or its straight continuation); cells that are not on it
-   * (behind or beside the vehicle) are cleared as soon as the rear has moved half a cell.
+   * cell is identified by its position on the new route (or its straight continuation) - but only where the body
+   * reaches it now. A cell the body overhangs behind or beside the start node is cleared as soon as the rear has
+   * moved half a cell, even if the route comes back to it later (a dead-end turn-around): that is a new visit.
    */
   _resolveHolds(tv) {
     const n = tv._route.length;
+    const reach = tv.length / 2 + 1e-9;
     for (let k = 0; k < tv._held.length; k++) {
       let i = tv._nodes.indexOf(tv._held[k]);
       if (i < 0) {
         const e = tv._ext.findIndex((x) => this.graph.edges[x].to === tv._held[k]);
         if (e >= 0) i = n + 1 + e;
       }
+      if (i * this.L - this.r > reach) i = -1;
       tv._heldQ[k] = i >= 0 ? i * this.L + this.r : -this.r;
     }
   }
@@ -437,7 +472,11 @@ export class TrafficSystem {
     return length / 2 > this.r;
   }
 
-  /** Room for a vehicle of `length` centred on `node`: headway kept along the neighbouring lanes and in the plane, no foreign lock. */
+  /**
+   * Room for a vehicle of `length` centred on `node`: headway kept along the neighbouring lanes and in the plane, no
+   * foreign lock, and every vehicle that is driving towards the node can still stop in front of it with its own
+   * deceleration (a vehicle must not be dropped in front of traffic that has no way to avoid it).
+   */
   _roomAt(node, length, ignore) {
     const g = this.graph;
     if (this._lock[node] !== null && this._lock[node] !== ignore) return false;
@@ -454,14 +493,28 @@ export class TrafficSystem {
     }
     const gx = g.x(node);
     const gy = g.y(node);
+    const clear = this._lockable[node] === 1 ? Math.max(length / 2 + this.headway, this.r + this.standoff) : length / 2 + this.headway;
     for (const o of this.vehicles) {
       if (!o.onRoad || o === ignore) continue;
       const min = (length + o.length) / 2 + this.headway - 1e-9;
       const dx = o.x - gx;
       const dy = o.y - gy;
-      if (dx * dx + dy * dy < min * min) return false;
+      const d2 = dx * dx + dy * dy;
+      if (d2 < min * min) return false;
+      if (o.v > MOVING_SPEED && o.driving && !this._canStopBefore(o, node, clear, d2)) return false;
     }
     return true;
+  }
+
+  /**
+   * Can the moving vehicle `o`, whose route leads through `node`, still stop with its own deceleration when something
+   * stands on the node (its nose `clear` m before the node centre)? `d2` = squared distance of o's pose from the node.
+   */
+  _canStopBefore(o, node, clear, d2) {
+    const need = o.length / 2 + clear + stoppingDistance(o.v, o.decel);
+    if (d2 > (need + this.r) * (need + this.r)) return true; // the road to the node is longer than the straight line
+    const i = o._nodes.indexOf(node, o._ri + 1);
+    return i < 0 || i * this.L - (o._ri * this.L + o.s) >= need - 1e-9;
   }
 
   // ---- internals: bookkeeping -------------------------------------------------------------------------------
@@ -478,7 +531,7 @@ export class TrafficSystem {
     for (const tv of this.vehicles) {
       if (!tv.onRoad) continue;
       // waiting = held back by a vehicle or a junction to less than half of the speed it could drive (a standstill, or a crawl)
-      const waits = tv.driving && !tv.disabled && tv._turn < 0 && tv._blk !== 0 && tv._blkTv !== null
+      const waits = tv.driving && !tv.disabled && tv._blk !== 0 && tv._blkTv !== null
         && tv._vFree > MOVING_SPEED && tv.v < Math.max(MOVING_SPEED, WAIT_SPEED_SHARE * tv._vFree);
       tv.waiting = waits;
       tv.blockedBy = waits ? tv._blkTv : null;

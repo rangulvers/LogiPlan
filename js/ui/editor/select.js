@@ -6,7 +6,7 @@
 // What a press on a thing does:
 //   station / obstacle / label   select it (Shift toggles); dragging moves the whole selection of that kind
 //   resize handle                resize the single selected station or obstacle
-//   flow curve / vehicle         select the flow / the vehicle's fleet
+//   flow curve / vehicle         click selects the flow / the vehicle's fleet; dragging draws a marquee
 //   road cell or empty space     click selects the road cell (or clears the selection); dragging draws a marquee
 
 import { roadAt, getStation, resizeStation, updateObstacle } from '../../model/layout.js';
@@ -23,6 +23,13 @@ const NONE = Object.freeze({ kind: null, ids: Object.freeze([]) });
 const isResizable = (sel) => (sel.kind === 'station' || sel.kind === 'obstacle') && sel.ids.length === 1;
 
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+
+/** "Move by +3, −2 cells (+6, −4 m)" for the status line. */
+function moveText(dx, dy, cellSize) {
+  const sign = (n) => (n > 0 ? `+${n}` : n < 0 ? `\u2212${-n}` : '0');
+  const metres = (n) => sign(Math.round(n * cellSize * 10) / 10);
+  return `Move by ${sign(dx)}, ${sign(dy)} cells (${metres(dx)}, ${metres(dy)} m)`;
+}
 
 /** The renderer's hover state for a hit, or null when nothing selectable is under the pointer. */
 function hoverOf(layout, hit) {
@@ -76,7 +83,7 @@ export function createSelectTool(ed) {
     } else if (!selected) ed.setSelection({ kind: hit.kind, ids: [hit.id] });
     else if (sel.ids.length > 1) g.onClick = () => ed.setSelection({ kind: hit.kind, ids: [hit.id] });
     g.arm = 'move';
-    g.anchor = [p.cx, p.cy];
+    g.anchor = [p.ux, p.uy];
   }
 
   function armResize(p, hit) {
@@ -84,16 +91,18 @@ export function createSelectTool(ed) {
     const item = selectedItems(ed.layout(), sel)[0];
     if (!item) return;
     g.arm = 'resize';
-    g.anchor = [p.cx, p.cy];
+    g.anchor = [p.ux, p.uy];
     g.handle = hit.handle;
     g.sel = sel;
     g.rect0 = { x: item.x, y: item.y, w: item.w, h: item.h };
   }
 
-  function pickOther(p, hit) {
+  /** A flow curve or a vehicle: a click selects it (its fleet, for a vehicle), a drag from it is a marquee like on empty ground. */
+  function armPick(p, hit) {
     const kind = hit.kind === 'flow' ? 'flow' : 'fleet';
     const id = kind === 'flow' ? hit.id : fleetOf(hit.id);
-    ed.setSelection(p.shift ? toggleInSelection(selection(), kind, id) : { kind, ids: [id] });
+    g.arm = 'marquee';
+    g.onClick = () => ed.setSelection(p.shift ? toggleInSelection(selection(), kind, id) : { kind, ids: [id] });
   }
 
   /** The fleet a vehicle belongs to: from the running simulation, else from the "<fleetId>#<n>" id format. */
@@ -129,9 +138,13 @@ export function createSelectTool(ed) {
 
   // ---- drag: move ----
 
+  /** Whole cells the pointer has travelled since the press: the item snaps to the nearest grid position. */
+  function cellDelta(p) {
+    return [Math.round(p.ux - g.anchor[0]) + 0, Math.round(p.uy - g.anchor[1]) + 0];
+  }
+
   function updateMove(p) {
-    const dx = p.cx - g.anchor[0];
-    const dy = p.cy - g.anchor[1];
+    const [dx, dy] = cellDelta(p);
     const layout = ed.layout();
     const check = checkMove(layout, g.sel, dx, dy);
     g.delta = [dx, dy];
@@ -141,9 +154,7 @@ export function createSelectTool(ed) {
     if (g.sel.kind === 'label') showLabelTarget(layout, check);
     else if (g.sel.ids.length === 1) showRectGhost(g.sel.kind, check.moves[0], check.ok);
     else showGroupBox(layout, dx, dy);
-    const cs = layout.grid.cellSize;
-    const sign = (n) => (n > 0 ? `+${n}` : n < 0 ? `−${-n}` : '0');
-    ed.status(check.ok ? `Move by ${sign(dx)}, ${sign(dy)} cells (${sign(Math.round(dx * cs * 10) / 10)}, ${sign(Math.round(dy * cs * 10) / 10)} m)` : `Cannot move here: ${check.reason}.`);
+    ed.status(check.ok ? moveText(dx, dy, layout.grid.cellSize) : `Cannot move here: ${check.reason}.`);
     ed.redraw();
   }
 
@@ -183,7 +194,8 @@ export function createSelectTool(ed) {
   function updateResize(p) {
     const layout = ed.layout();
     const { sel } = g;
-    const rect = resizeRect(g.rect0, g.handle, p.cx - g.anchor[0], p.cy - g.anchor[1], layout.grid);
+    const [dx, dy] = cellDelta(p);
+    const rect = resizeRect(g.rect0, g.handle, dx, dy, layout.grid);
     const ignore = sel.kind === 'station' ? { ignoreStation: sel.ids[0] } : { ignoreObstacle: sel.ids[0] };
     const reason = blockReason(layout, rect, ignore);
     g.rect = rect;
@@ -228,7 +240,6 @@ export function createSelectTool(ed) {
   function clearTransient() {
     ed.view.ghost = null;
     ed.view.marquee = null;
-    ed.syncView();
   }
 
   return {
@@ -238,7 +249,7 @@ export function createSelectTool(ed) {
       g = { mode: 'press', p0: p, arm: null, onClick: null };
       if (isHandle(hit.handle) && isResizable(selection())) armResize(p, hit);
       else if (MOVABLE_KINDS.includes(hit.kind)) armMove(p, hit);
-      else if (hit.kind === 'flow' || hit.kind === 'vehicle') pickOther(p, hit);
+      else if (hit.kind === 'flow' || hit.kind === 'vehicle') armPick(p, hit);
       else armArea(p, hit);
       return true;
     },

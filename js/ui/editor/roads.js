@@ -18,6 +18,9 @@ function strokeKind(tool, alt) {
 }
 
 const pluralCells = (n) => `${n} ${n === 1 ? 'cell' : 'cells'}`;
+const metres = (cells, cellSize) => Math.round(cells * cellSize * 10) / 10;
+const BLOCKED_TEXT = 'A station or wall is in the way: the road stops before it.';
+const NO_ROAD_TEXT = 'Speed zones apply to road cells: draw a road first.';
 
 /**
  * @param {object} ed the editor host (see editor.js)
@@ -47,7 +50,8 @@ export function createPathTool(ed, tool) {
       const dir = lastDirection(cells);
       ed.view.paintPreview = { cells: paint.length ? paint : blocked.slice(0, 1), blocked, oneWay: kind === 'oneway', dir: dir >= 0 ? dir : undefined };
       const n = uniqueCells(paint).length;
-      ed.status(blocked.length ? 'A station or wall is in the way: the road stops before it.' : `${kind === 'oneway' ? 'One-way road' : 'Road'}: ${pluralCells(n)} (${Math.round(n * cs * 10) / 10} m)`);
+      const name = kind === 'oneway' ? 'One-way road' : 'Road';
+      ed.status(blocked.length ? BLOCKED_TEXT : `${name}: ${pluralCells(n)} (${metres(n, cs)} m)`);
     } else if (kind === 'erase') {
       const unique = uniqueCells(cells);
       ed.view.paintPreview = { cells: unique, blocked: unique };
@@ -55,7 +59,8 @@ export function createPathTool(ed, tool) {
     } else {
       const roads = uniqueCells(cells).filter(([cx, cy]) => roadAt(layout, cx, cy));
       ed.view.paintPreview = roads.length ? { cells: roads } : null;
-      ed.status(roads.length ? `${kind === 'clear' ? 'Removing the limit on' : 'Speed limit on'} ${pluralCells(roads.length)}` : 'Speed zones apply to road cells: draw a road first.');
+      const verb = kind === 'clear' ? 'Removing the limit on' : 'Speed limit on';
+      ed.status(roads.length ? `${verb} ${pluralCells(roads.length)}` : NO_ROAD_TEXT);
     }
     ed.redraw();
   }
@@ -100,6 +105,7 @@ export function createPathTool(ed, tool) {
       return true;
     },
     move(p) {
+      ed.view.hover = { kind: 'cell', cell: p.cell };
       addCells(p);
       preview();
     },

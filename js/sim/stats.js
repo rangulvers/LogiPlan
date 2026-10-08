@@ -49,6 +49,8 @@ export const TRAILING_INTERVALS = 10;
 export const LEAD_SAMPLE_CAP = 50000;
 /** Sim seconds between two readings of the transport backlog (a queue walk per flow). */
 export const BACKLOG_INTERVAL = 5;
+/** Tolerance (s) when comparing the accumulated simulation clock with the end of the warm-up: 1000 ticks of 0.1 s do not add up to exactly 100 s. */
+export const WARMUP_EPS = 1e-6;
 /** Number of congestion hot spots in the report. */
 export const HOTSPOT_COUNT = 10;
 /** Deadlock events kept in the report (the counter keeps counting). */
@@ -687,7 +689,7 @@ export class Stats {
 
   _windowReport(dur) {
     const settings = this.sim.settings || (this.sim.layout && this.sim.layout.settings) || {};
-    return { start: this.start, end: this.start + dur, duration: dur, warmingUp: nn(this.sim.time) < nn(settings.warmup) };
+    return { start: this.start, end: this.start + dur, duration: dur, warmingUp: nn(this.sim.time) + WARMUP_EPS < nn(settings.warmup) };
   }
 
   _throughputReport(dur) {

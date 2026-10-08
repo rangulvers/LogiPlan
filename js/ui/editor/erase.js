@@ -20,38 +20,44 @@ export function carveRect(rect, cx, cy) {
   return pieces.filter((p) => p.w > 0 && p.h > 0);
 }
 
-/** Cut one cell out of every obstacle covering it. Returns the number of obstacles touched. */
+/** Cut one cell out of every obstacle covering it. Returns the kinds ('wall', 'rack', 'column') of the obstacles touched. */
 function carveObstacles(draft, cx, cy) {
-  let touched = 0;
+  const kinds = [];
   for (const o of draft.obstacles.filter((e) => inRect(cx, cy, e))) {
     const [first, ...rest] = carveRect(o, cx, cy);
     if (first) updateObstacle(draft, o.id, first);
     else removeObstacle(draft, o.id);
     for (const piece of rest) addObstacle(draft, { ...piece, kind: o.kind });
-    touched++;
+    kinds.push(o.kind);
   }
-  return touched;
+  return kinds;
 }
 
 /**
  * Erase everything under the given cells and the given labels in a layout draft.
  * @param {number[][]} cells [cx, cy] pairs (repeats are harmless)
  * @param {string[]} labelIds labels to delete
- * @returns {{ roads: number, obstacles: number, labels: number }} what was removed
+ * @returns {{ roads: number, obstacles: number, labels: number, kinds: string[] }} what was removed (`kinds`: the
+ *   distinct obstacle kinds that were cut)
  */
 export function eraseCells(draft, cells, labelIds = []) {
-  const result = { roads: 0, obstacles: 0, labels: 0 };
+  const result = { roads: 0, obstacles: 0, labels: 0, kinds: [] };
   for (const [cx, cy] of cells) {
     if (eraseRoadCell(draft, cx, cy)) result.roads++;
-    result.obstacles += carveObstacles(draft, cx, cy);
+    for (const kind of carveObstacles(draft, cx, cy)) {
+      result.obstacles++;
+      if (!result.kinds.includes(kind)) result.kinds.push(kind);
+    }
   }
   for (const id of labelIds) if (removeLabel(draft, id)) result.labels++;
   return result;
 }
 
-/** Undo-step name for an erase: "Erase road", "Erase wall", "Erase label" or just "Erase" for a mix. */
+/** Undo-step name for an erase: "Erase road", "Erase wall" (or rack, column; "Erase obstacle" for several kinds), "Erase label", or "Erase" for a mix. */
 export function eraseLabel(result) {
-  const kinds = ['roads', 'obstacles', 'labels'].filter((k) => result[k] > 0);
-  if (kinds.length !== 1) return 'Erase';
-  return { roads: 'Erase road', obstacles: 'Erase wall', labels: 'Erase label' }[kinds[0]];
+  const parts = ['roads', 'obstacles', 'labels'].filter((k) => result[k] > 0);
+  if (parts.length !== 1) return 'Erase';
+  if (parts[0] === 'roads') return 'Erase road';
+  if (parts[0] === 'labels') return 'Erase label';
+  return result.kinds.length === 1 ? `Erase ${result.kinds[0]}` : 'Erase obstacle';
 }

@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>dashboard harness</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="../../css/tokens.css"><link rel="stylesheet" href="../../css/components.css">
+<style>
+  /* Stand-in for the app shell: a stage plus the right-hand pane that hosts the Results tab (default 420 px wide). */
+  html, body { height: 100%; margin: 0; }
+  body { display: flex; }
+  #stage { flex: 1 1 auto; min-width: 0; padding: 16px; color: var(--text-dim); background: var(--bg); font-size: var(--fs-sm); }
+  #pane { flex: none; width: var(--pane-w, 420px); max-width: 100%; height: 100%; display: flex; flex-direction: column; background: var(--pane-bg, var(--surface)); border-left: 1px solid var(--border); }
+  #scroll { flex: 1 1 auto; overflow: auto; }
+  body.narrow #stage { display: none; }
+  body.narrow #pane { width: 100%; border-left: 0; }
+  html:has(body.tall), body.tall { height: auto; }
+  body.tall #pane, body.tall #scroll { height: auto; overflow: visible; }
+  #debug { white-space: pre-wrap; font-family: var(--font-mono); font-size: var(--fs-xs); }
+</style></head>
+<body>
+<div id="stage"><strong>Harness for the Results dashboard</strong><div id="debug"></div></div>
+<div id="pane"><div id="scroll"></div></div>
+<script type="module">
+import { createStore } from '../../js/store/store.js';
+import { EXAMPLES } from '../../js/model/examples.js';
+import { Simulation } from '../../js/sim/engine.js';
+import { createRunner } from '../../js/ui/runner.js';
+import { createDashboard } from '../../js/ui/dashboard.js';
+
+const params = new URLSearchParams(location.search);
+if (params.get('theme')) document.documentElement.dataset.theme = params.get('theme');
+if (params.get('w')) document.documentElement.style.setProperty('--pane-w', `${params.get('w')}px`);
+if (params.get('bg') === 'bg') document.documentElement.style.setProperty('--pane-bg', 'var(--bg)');
+for (const flag of ['narrow', 'tall']) if (params.get(flag)) document.body.classList.add(flag);
+
+// ---- synthetic reports ----------------------------------------------------------------------------------------------
+const lcg = (seed) => { let s = seed >>> 0; return () => ((s = (Math.imul(s, 1664525) + 1013904223) >>> 0) / 2 ** 32); };
+const NAMES = ['Press line', 'Machining', 'Final assembly', 'Paint shop', 'Welding cell', 'Packing', 'Quality gate', 'Supermarket', 'Kitting', 'Buffer A'];
+const FLEET_NAMES = ['AGV', 'Forklifts', 'Tugger trains', 'Pallet movers', 'Reach trucks', 'Cobots'];
+const longName = (base, i) => `${base} ${i} - hall 4, line 2, south wing, pre-assembly and sub-assembly kitting`;
+
+function shares(rnd, keys, bias = {}) {
+  const raw = keys.map((k) => (bias[k] ?? 1) * (0.05 + rnd()));
+  const sum = raw.reduce((a, b) => a + b, 0);
+  return Object.fromEntries(keys.map((k, i) => [k, raw[i] / sum]));
+}
+
+/** A complete KpiReport shaped like js/sim/stats.js produces it, with as many fleets/stations/flows as asked. */
+function synthReport({ fleets = 3, stations = 8, flows = 6, long = false, seed = 7, duration = 7200 } = {}) {
+  const rnd = lcg(seed);
+  const st = {};
+  for (let i = 0; i < stations; i++) {
+    const type = i === 0 ? 'source' : i === stations - 1 ? 'sink' : i % 4 === 0 ? 'storage' : 'process';
+    const base = NAMES[i % NAMES.length];
+    const name = long ? longName(base, i) : (i < NAMES.length ? base : `${base} ${i}`);
+    const s = shares(rnd, ['busy', 'starved', 'blocked', 'down'], { busy: 6, down: 0.2 });
+    const fill = rnd();
+    st[`s${i}`] = {
+      type, name, utilization: type === 'process' ? s.busy : fill, starved: s.starved, blocked: s.blocked, down: s.down,
+      avgIn: rnd() * 6, maxIn: Math.ceil(rnd() * 12), avgOut: rnd() * 14, maxOut: Math.ceil(rnd() * 24), avgFill: fill, maxFill: Math.min(1, fill + 0.2),
+      produced: 100, consumed: 100, arrivals: 100, yardMax: 0, yardNow: 0, breakdowns: 0,
+    };
+  }
+  const fl = {};
+  for (let i = 0; i < fleets; i++) {
+    const sh = shares(rnd, ['driving', 'waiting', 'loading', 'unloading', 'idle', 'parked', 'charging', 'broken'], { waiting: 0.5, charging: 0.2, broken: 0.05 });
+    fl[`v${i}`] = {
+      name: long ? longName(FLEET_NAMES[i % FLEET_NAMES.length], i) : (i < FLEET_NAMES.length ? FLEET_NAMES[i] : `Fleet ${i + 1}`),
+      count: 1 + Math.floor(rnd() * 8), unplaced: i === 1 ? 2 : 0, utilization: sh.driving + sh.waiting + sh.loading + sh.unloading, shares: sh,
+      trips: 120, tripsPerVehicleHour: 8 + rnd() * 20, distance: 20000, distancePerVehicle: 800 + rnd() * 6000, emptyShare: rnd(),
+      avgPickupWait: 20 + rnd() * 200, avgTransit: 60, minBattery: i % 2 ? 0.1 + rnd() * 0.5 : null,
+    };
+  }
+  const ids = Object.keys(st);
+  const fw = {};
+  for (let i = 0; i < flows; i++) {
+    fw[`f${i}`] = {
+      from: ids[i % ids.length], to: ids[(i + 1) % ids.length], delivered: Math.floor(rnd() * 400), trips: Math.floor(rnd() * 300),
+      avgPickupWait: rnd() * 300, avgTransit: 30 + rnd() * 120, backlog: Math.floor(rnd() * 4), avgBacklog: i === 1 ? 2.4 : rnd() * 0.8,
+    };
+  }
+  const n = Math.max(0, Math.floor(duration / 60));
+  const t = Array.from({ length: n }, (_, k) => 600 + (k + 1) * 60);
+  const wave = (base, amp) => t.map((_, k) => base + amp * Math.sin(k / 5) + rnd() * amp * 0.4);
+  const hotspots = Array.from({ length: 10 }, (_, i) => ({ node: i, cx: 8 + i * 3, cy: 4 + (i % 4) * 5, wait: 900 / (i + 1) }));
+  return {
+    window: { start: 600, end: 600 + duration, duration, warmingUp: false },
+    throughput: { total: 842, perHour: 126.3, bySink: {} },
+    leadTime: { count: 842, mean: 1180, min: 300, p50: 1100, p90: 1700, p95: 1900, max: 2600 },
+    wip: { mean: 18.4, max: 31, now: 22 },
+    stations: st, fleets: fl, flows: fw,
+    traffic: { waitShare: 0.134, vehicleWait: 3100, junctionWait: 1900, brokenWait: 240, deadlocks: 1, hotspots, deadlockEvents: [{ t: 3000, nodes: [], vehicles: [], resolved: true }] },
+    orders: { completed: 600, avgPickupWait: 90, avgTransit: 70 },
+    series: { interval: 60, t, throughput: wave(120, 20), wip: wave(18, 5), vehiclesWorking: wave(6, 1.5), vehiclesWaiting: wave(1.5, 0.8) },
+  };
+}
+
+/** Insights shaped like js/sim/insights.js (the first references the first workstation, the others fleets / cells / nothing). */
+function synthInsights(count = 9) {
+  const make = (i) => {
+    const kinds = [
+      { id: 'bottleneck:s1', severity: 'critical', refs: { stationIds: ['s1'] } },
+      { id: 'traffic', severity: 'warning', refs: { cells: [[8, 4], [11, 9]] } },
+      { id: 'fleet-saturated:v0', severity: 'warning', refs: { fleetIds: ['v0'] } },
+      { id: 'buffer-full:s4', severity: 'warning', refs: { stationIds: ['s4'] } },
+      { id: 'starved:s2', severity: 'info', refs: { stationIds: ['s2'] } },
+      { id: 'empty-driving:v1', severity: 'info', refs: { fleetIds: ['v1'] } },
+      { id: 'fleet-oversized:v2', severity: 'info', refs: { fleetIds: ['v2'] } },
+      { id: 'battery:v1', severity: 'info', refs: {} },
+      { id: 'breakdowns:v0', severity: 'info', refs: { fleetIds: ['v0'] } },
+    ];
+    const k = kinds[i % kinds.length];
+    return {
+      ...k, id: i < kinds.length ? k.id : `${k.id}-${i}`,
+      title: `Insight ${i + 1}: ${k.id.split(':')[0]} needs attention (${70 + i} %)`,
+      detail: `Over 2 h the figure stayed high. This sentence carries the numbers behind insight ${i + 1}, ${12 + i} in total.`,
+      suggestion: i === 7 ? undefined : `Do something about ${k.id}: shorten the cycle time by about ${10 + i} % or add a parallel machine.`,
+    };
+  };
+  return Array.from({ length: count }, (_, i) => make(i));
+}
+
+/** A report in which every leaf is null / missing / NaN (a run that produced no data) but the window looks long enough. */
+function nullReport() {
+  const o = {
+    window: { start: null, end: null, duration: 4000, warmingUp: false },
+    throughput: { total: null, perHour: null, bySink: null },
+    leadTime: { count: 0, mean: null, min: null, p50: null, p90: null, p95: null, max: null },
+    wip: { mean: null, max: null, now: null },
+    stations: {
+      a: { type: 'process', name: null, utilization: null, starved: null, blocked: null, down: null, avgIn: null, maxIn: null, avgFill: null },
+      b: { type: 'storage', name: undefined, utilization: NaN, avgFill: null, avgOut: null, maxOut: null },
+      c: null,
+    },
+    fleets: { v: { name: null, count: null, utilization: null, shares: null, trips: null, tripsPerVehicleHour: null, distancePerVehicle: null, emptyShare: null, avgPickupWait: null, minBattery: null }, w: null },
+    flows: { f: { from: null, to: null, delivered: null, trips: null, avgPickupWait: null, avgTransit: null, backlog: null, avgBacklog: null }, g: undefined },
+    traffic: { waitShare: null, vehicleWait: null, junctionWait: null, brokenWait: null, deadlocks: null, hotspots: [{ cx: null, cy: 3, wait: 2 }, null, { cx: 1, cy: 1, wait: null }], deadlockEvents: null },
+    orders: null,
+    series: { interval: null, t: [null, NaN], throughput: [null, NaN], wip: null, vehiclesWorking: [undefined], vehiclesWaiting: [] },
+  };
+  return o;
+}
+
+// ---- store, runner stand-in, ctx ----------------------------------------------------------------------------------
+const store = createStore({ storage: undefined });
+store.newProject(EXAMPLES.find((e) => e.id === (params.get('example') || 'two-lines')).build());
+
+/** What the dashboard asks of the runner: sim, playing, time, kpis() and insights() (same object while nothing changed). */
+const stub = {
+  sim: null, playing: false, time: 0, version: 0,
+  source: () => null, insightSource: () => [], cache: null, insightCache: null,
+  kpis() {
+    const key = this.sim ? `${this.sim.time}:${this.version}` : `none:${this.version}`;
+    if (!this.cache || this.cache.key !== key) this.cache = { key, report: this.source() };
+    return this.cache.report;
+  },
+  insights() {
+    const report = this.kpis();
+    if (!this.insightCache || this.insightCache.report !== report) this.insightCache = { report, list: report ? this.insightSource(report) : [] };
+    return this.insightCache.list;
+  },
+  play() { this.playing = true; harness.calls.push(['play']); return Promise.resolve(true); },
+  touch() { this.version++; },
+};
+
+const harness = { store, runner: stub, calls: [], ready: false };
+const ctx = {
+  store,
+  runner: stub,
+  toast() {},
+  actions: {
+    focus(refs) {
+      harness.calls.push(['focus', refs]);
+      if (refs.stationIds) store.select('station', refs.stationIds);
+      else if (refs.fleetIds) store.select('fleet', refs.fleetIds);
+    },
+    setRightTab(name) { harness.calls.push(['setRightTab', name]); },
+  },
+};
+harness.ctx = ctx;
+
+const dash = createDashboard(ctx);
+harness.dash = dash;
+// Like the shell: every store change refreshes the panel.
+store.subscribe((state) => dash.update(state));
+document.getElementById('scroll').append(dash.el);
+
+let realSim = null;
+function buildReal(example, seconds) {
+  realSim = new Simulation(EXAMPLES.find((e) => e.id === example).build());
+  realSim.advance(seconds);
+  stub.sim = realSim;
+  stub.time = realSim.time;
+  stub.source = () => realSim.kpis();
+  stub.insightSource = (report) => realSim.insights(report);
+}
+
+function setSynthetic(report, insights) {
+  stub.sim = { time: 1, settings: { warmup: 600 } };
+  stub.time = report?.window?.end ?? 0;
+  stub.source = () => report;
+  stub.insightSource = () => insights;
+  stub.version++;
+}
+
+const tick = () => dash.update(store.getState());
+
+/** Switch what the runner stand-in reports. */
+harness.mode = (mode, opts = {}) => {
+  stub.version++;
+  stub.cache = null;
+  stub.playing = opts.playing ?? false;
+  stub.insightSource = () => [];
+  if (mode === 'none') { stub.sim = null; stub.time = 0; stub.source = () => null; }
+  else if (mode === 'real') buildReal(opts.example || 'two-lines', opts.seconds ?? 3600);
+  else if (mode === 'synth') setSynthetic(synthReport(opts), synthInsights(opts.insights ?? 9));
+  else if (mode === 'null') setSynthetic(nullReport(), [null, { id: 'x' }, { id: 'y', severity: 'bogus', title: null, refs: null }]);
+  else if (mode === 'bare') setSynthetic({}, []);
+  else throw new Error(`unknown mode ${mode}`);
+  tick();
+};
+
+/** Advance the real simulation by `seconds` and push the new report (as the shell would, ~4 Hz). */
+harness.advance = (seconds) => {
+  realSim.advance(seconds);
+  stub.time = realSim.time;
+  tick();
+};
+harness.tick = tick;
+harness.setPlaying = (on) => { stub.playing = on; tick(); };
+harness.report = () => stub.kpis();
+harness.synthReport = synthReport;
+harness.synthInsights = synthInsights;
+harness.nullReport = nullReport;
+harness.setSynthetic = (report, insights) => { setSynthetic(report, insights); tick(); };
+
+/** The real runner (js/ui/runner.js) behind the same dashboard: proves the integration, not just the stand-in. */
+harness.useRealRunner = ({ speed = 1200 } = {}) => {
+  const renderer = { render() {}, layout: null, sim: null };
+  const runner = createRunner({ store, renderer, speed });
+  harness.realRunner = runner;
+  ctx.runner = runner;
+  harness.runner = runner;
+  return runner;
+};
+
+// Optionally emulate the shell's ~4 Hz refresh.
+if (params.get('autorun') === '1') setInterval(tick, 250);
+document.getElementById('debug').textContent = 'The pane on the right hosts the dashboard.';
+
+const mode = params.get('mode') || 'real';
+if (mode === 'runner') {
+  const runner = harness.useRealRunner({ speed: Number(params.get('speed')) || 1200 });
+  runner.play();
+  setInterval(tick, 250);
+  tick();
+} else if (mode === 'synth') {
+  harness.mode('synth', { fleets: Number(params.get('fleets')) || 3, stations: Number(params.get('stations')) || 8, flows: Number(params.get('flows')) || 6, long: params.get('long') === '1' });
+} else {
+  harness.mode(mode, { seconds: Number(params.get('advance')) || 3600, example: params.get('example') || 'two-lines', playing: params.get('playing') === '1' });
+}
+
+window.harness = harness;
+window.ready = true;
+</script></body></html>

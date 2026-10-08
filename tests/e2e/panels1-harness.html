@@ -167,6 +167,8 @@ harness.setSim = async (mode) => {
     harness.runner.sim = { logistics: { stationById: byId } };
   }
   if (mode === 'real') {
+    // js/sim/traffic/scan.js reads process.env (Node only, a tuning leftover reported to its owner): shim it so the real engine loads in the browser.
+    globalThis.process ??= { env: {} };
     const { Simulation } = await import('../../js/sim/engine.js');
     const sim = new Simulation(store.getState().layout);
     sim.advance(900);

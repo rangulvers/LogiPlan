@@ -6,7 +6,8 @@
 //  * roads form loops or dead-end spurs, never one-way dead ends: vehicles cannot turn around mid-road, they only
 //    reverse at the end of a spur;
 //  * depots hold the parked fleet, so idle vehicles do not stand in the aisles.
-// Everything goes through the layout.js mutators. The tips were checked against the real simulation (tests/model.examples.test.js).
+// Everything goes through the layout.js mutators. Outcomes and tips were checked against the real simulation: every claim a tip makes
+// is re-verified by running the variant it describes (tests/sim.experiments.test.js), the outcomes by tests/sim.integration.test.js.
 
 import { lPath } from '../util/grid.js';
 import {
@@ -87,7 +88,8 @@ function buildTwoLines() {
   const layout = createLayout({ name: 'Two lines + warehouse', cols: 56, rows: 33, cellSize: 2 });
   setNotes(layout, 'Three forklifts bring raw material from Goods receiving into the central warehouse and take finished goods to Dispatch. '
     + 'Battery AGVs feed the Press line (2 of every 3 pallets) and Machining (1 of 3) from the warehouse and carry their output to '
-    + 'Final assembly, which needs 2 pressed parts and 1 machined part per product. The roads are a ring with a cross aisle, and every station '
+    + 'Final assembly, which needs 2 pressed parts and 1 machined part per product; as every product takes two pressings, the Press line is the busiest '
+    + 'workstation. The roads are a ring with a cross aisle, and every station '
     + 'sits at the end of a short side road.');
 
   ring(layout, 6, 6, 49, 30);
@@ -102,20 +104,20 @@ function buildTwoLines() {
   road(layout, [[41, 18], [41, 21]]); // Machining
   road(layout, [[22, 18], [22, 22]]); // AGV charging
 
-  const receiving = station(layout, 'source', 'Goods receiving', 10, 2, { w: 3, h: 2 }, { interArrival: arrivals(55, 0.2), outCap: 6 });
+  const receiving = station(layout, 'source', 'Goods receiving', 10, 2, { w: 3, h: 2 }, { interArrival: arrivals(57, 0.2), outCap: 6 });
   const forkliftPark = station(layout, 'depot', 'Forklift park', 17, 2, { w: 3, h: 2 }, { slots: 4, chargers: 0 });
   const dispatch = station(layout, 'sink', 'Dispatch', 44, 2, { w: 3, h: 2 });
   const warehouse = station(layout, 'storage', 'Central warehouse', 22, 10, { w: 6, h: 4 }, { capacity: 80, dwell: 30 });
   const press = station(layout, 'process', 'Press line', 12, 23, { w: 4, h: 3 },
-    { cycle: arrivals(45, 0.1), inCap: 4, outCap: 6, mtbf: 7200, mttr: 420 });
+    { cycle: arrivals(60, 0.1), inCap: 4, outCap: 6, mtbf: 7200, mttr: 420 });
   const machining = station(layout, 'process', 'Machining', 40, 22, { w: 3, h: 3 }, { cycle: arrivals(70, 0.1), inCap: 4, outCap: 4 });
-  const assembly = station(layout, 'process', 'Final assembly', 30, 23, { w: 5, h: 4 }, { cycle: arrivals(115, 0.1), inCap: 4, outCap: 4 });
+  const assembly = station(layout, 'process', 'Final assembly', 30, 23, { w: 5, h: 4 }, { cycle: arrivals(90, 0.1), inCap: 4, outCap: 4 });
   const charging = station(layout, 'depot', 'AGV charging', 20, 23, { w: 4, h: 2 }, { slots: 8, chargers: 4 });
 
   // Compact trucks carrying two pallets: 2 m long, so they fit a 2 m road cell.
   const forklifts = must(addFleet(layout, 'forklift', { name: 'Forklifts', count: 3, capacity: 2, length: 2, home: forkliftPark.id }), 'forklift fleet');
   const agvs = must(addFleet(layout, 'agv', {
-    name: 'AGVs', count: 7, home: charging.id, battery: { enabled: true, runtimeMin: 120, chargeTimeMin: 15, lowPct: 50, resumePct: 85 },
+    name: 'AGVs', count: 7, loadTime: 14, unloadTime: 14, home: charging.id, battery: { enabled: true, runtimeMin: 120, chargeTimeMin: 15, lowPct: 50, resumePct: 85 },
   }), 'AGV fleet');
 
   flow(layout, receiving, warehouse, { fleetId: forklifts.id, batchMin: 2, maxWait: 120 });
@@ -141,7 +143,7 @@ function buildCongestionLab() {
   const layout = createLayout({ name: 'Congestion lab', cols: 48, rows: 28, cellSize: 2 });
   setNotes(layout, 'A deliberately awkward plant. All traffic shares one narrow one-way loop; Packing has its docks directly on the main aisle '
     + '(every stop blocks the lane behind it); a two-way cross aisle crosses the loop at two junctions; trucks unload 4 pallets at a time and every '
-    + 'hand-over takes 24 s; and 8 AGVs, which wait on the aisle instead of driving back to the parking bay, are more than this layout can use. Run it, look at the heat map and the Results tab, then fix it.');
+    + 'hand-over takes 24 s; and 9 AGVs are more than this layout can use. Run it, look at the heat map and the Results tab, then fix it.');
 
   road(layout, [[6, 8], [41, 8], [41, 20], [6, 20], [6, 8]], { oneWay: true }); // the narrow one-way loop
   road(layout, [[24, 3], [24, 25]]); // two-way cross aisle: crosses the loop at (24,8) and (24,20)
@@ -159,7 +161,7 @@ function buildCongestionLab() {
   flow(layout, inboundA, packing);
   flow(layout, inboundB, packing);
   flow(layout, packing, dispatch);
-  addFleet(layout, 'agv', { name: 'AGV', count: 8, loadTime: 24, unloadTime: 24, idle: 'stay', home: parking.id });
+  addFleet(layout, 'agv', { name: 'AGV', count: 9, loadTime: 24, unloadTime: 24, home: parking.id });
 
   obstacles(layout, 'rack', [[9, 12, 12, 5], [28, 12, 11, 5]]);
   must(addLabel(layout, { x: 27.5, y: 3.6, text: 'Docks on the main aisle' }), 'label');
@@ -179,8 +181,8 @@ export const EXAMPLES = [
     description: 'The smallest complete plant: pallets arrive, one assembly station works on them and two AGVs carry them around a loop road to shipping.',
     tips: [
       'Press play and open the Results tab: throughput, assembly utilization and AGV utilization show whether two AGVs are enough.',
-      'Try: lower the AGV count to 1 in the Fleet tab and watch the assembly station starve while pallets wait at the gate.',
-      'Try: raise "Demand ×" in the Simulate tab to 1.5 and see which resource saturates first.',
+      'Try: lower the AGV count to 1 in the Fleet tab. The single AGV is busy all the time, pallets pile up at Goods receiving and the lead time roughly doubles.',
+      'Try: raise "Demand ×" in the Simulate tab to 1.5. The assembly runs flat out (about 97 % busy), the AGVs follow at about 90 % and the output tops out near 30 pallets/h.',
       'Try: drag Dispatch with the Select tool and redraw the road so it touches again; the Checks tab warns while a station has no dock.',
     ],
     build: buildStarter,
@@ -190,10 +192,10 @@ export const EXAMPLES = [
     name: 'Two production lines + warehouse',
     description: 'Forklifts and battery AGVs serve a press line and a machining line from a central warehouse; final assembly needs two pressed parts and one machined part per product.',
     tips: [
-      'Try: raise "Demand ×" to 1.3 in the Simulate tab and check the Results tab to see what saturates first: the AGVs, the press line or final assembly.',
-      'Try: change the AGV count in the Fleet tab and compare 5, 6 and 7 vehicles in the Experiments tab.',
-      'Try: switch off the AGV battery in the Fleet tab, or reduce the chargers in AGV charging to 1, and watch the minimum battery level.',
-      'Try: give the Press line a longer repair time (MTTR) in the Properties tab and see how far the breakdown ripples downstream.',
+      'Try: raise "Demand ×" to 1.3 in the Simulate tab. The output rises by about 30 %, and the Results tab shows the Press line (about 90 % busy) and the AGVs (about 88 %) reaching their limit first.',
+      'Try: change the AGV count in the Fleet tab, or sweep it in the Experiments tab: with 5 AGVs the loads wait about 50 % longer for a vehicle and the lead time grows; with 8 or more only the idle time grows.',
+      'Try: raise the AGV charge time to 60 min in the Fleet tab. The AGVs spend about a fifth of their time on the chargers and the output falls by about 8 %; with only 1 charger in AGV charging it falls by almost a quarter.',
+      'Try: give the Press line a repair time (MTTR) of 30 min in the Properties tab. The warehouse absorbs part of the stops, but the lead time and the work in process still climb by 15 to 20 %.',
     ],
     build: buildTwoLines,
   },
@@ -203,9 +205,10 @@ export const EXAMPLES = [
     description: 'A plant with deliberate traffic problems: a narrow one-way loop, a packing dock right on the main aisle, a crossing, trucks that unload in bunches and too many vehicles. Watch the queues form, then fix them.',
     tips: [
       'Switch the heat map to "waiting" while the simulation runs: the queues build up in front of the Packing docks on the main aisle.',
-      'Try: change the AGV count (9 now) in the Fleet tab and compare throughput and the traffic wait share in the Results tab. Do more vehicles really mean more output?',
+      'Try: change the AGV count (9 now) in the Fleet tab and compare throughput and the traffic wait share in the Results tab. Do more vehicles really mean more output? With 6 AGVs the output is the same and the wait share falls by about a third; every AGV beyond 9 only adds waiting.',
       'Try: let each AGV carry two pallets (Capacity 2 in the Fleet tab). Fewer stops at the docks mean shorter queues.',
       'Try: cut the load and unload time in the Fleet tab from 24 s to 12 s. The docks free up sooner; compare the traffic wait share.',
+      'Try: draw a one-way road from the cross aisle just below Inbound B east along the north side of Packing and down to the main aisle (cells 24,4 → 32,4 → 32,8). Packing gets a second dock and the traffic wait share drops by about a third.',
     ],
     build: buildCongestionLab,
   },

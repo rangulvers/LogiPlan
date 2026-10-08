@@ -50,7 +50,7 @@ export function checkMove(layout, selection, dx, dy) {
 }
 
 function labelBlock(layout, p) {
-  return p.x >= 0 && p.y >= 0 && p.x <= layout.grid.cols && p.y <= layout.grid.rows ? null : 'it would leave the baseplate';
+  return p.x >= 0 && p.y >= 0 && p.x <= layout.grid.cols && p.y <= layout.grid.rows ? null : 'it would leave the plant area';
 }
 
 /**

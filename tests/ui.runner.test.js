@@ -345,8 +345,24 @@ test('the backlog is capped, so a slow phase is not paid back by racing through 
   h.knobs.capacity = Infinity;
   h.frame(250);
   const asked = h.runner.sim.advances.at(-1).seconds;
-  assert.ok(asked <= 300 + 60 + 1e-6, `asked for ${asked} s; an uncapped backlog would be more than 1000 s`);
-  assert.ok(asked > 300, 'but the capped backlog itself is still worked off');
+  assert.ok(asked <= 300 + 1e-6, `asked for ${asked} s; an uncapped backlog would be more than 1000 s`);
+  assert.ok(asked > 299, 'but the capped backlog itself (0.5 s of wall time at 600x) is still worked off');
+});
+
+test('no request to the engine ever exceeds the backlog cap of the CURRENT speed, also right after the speed was lowered', async () => {
+  const h = makeHarness({ knobs: { capacity: 0.3 }, runner: { speed: 1200 } });
+  await startPlaying(h);
+  h.frames(60, 100);
+  assert.equal(h.runner.limited, true);
+  const worstAt1200 = Math.max(...h.runner.sim.advances.map((a) => a.seconds));
+  assert.ok(worstAt1200 <= 600 + 1e-6, `at 1200x: asked for ${worstAt1200} s (cap 600 s)`);
+  h.knobs.capacity = Infinity;
+  h.runner.setSpeed(1);
+  const before = h.runner.sim.advances.length;
+  h.frames(5, 16);
+  const asked = h.runner.sim.advances.slice(before).map((a) => a.seconds);
+  assert.ok(Math.max(...asked) <= 0.5 + 1e-6, `at 1x the old 600 s backlog was requested: ${asked.map((a) => a.toFixed(2))}`);
+  assert.equal(h.runner.limited, false);
 });
 
 test('play() starts from where the simulation is, not from a backlog left over from a slow phase', async () => {
@@ -901,6 +917,47 @@ test('a frame callback that fires after destroy() does nothing', async () => {
   cb(h.clock.t + 16);
   assert.equal(h.renderer.alphas.length, drawn);
   assert.equal(h.pending(), null);
+});
+
+test('destroy() from a listener that runs inside a frame ends that frame: no further engine call, no drawing, no frame or kpis event', async () => {
+  const arrangements = {
+    "'state' listener when the speed limit is raised inside the advance": (h, destroy) => {
+      h.knobs.capacity = 0.3;
+      h.runner.setSpeed(1200);
+      h.runner.on('state', (s) => { if (s.limited) destroy(); });
+    },
+    "'state' listener when the frame finds the tab hidden": (h, destroy) => {
+      h.runner.on('state', (s) => { if (!s.playing) destroy(); });
+      h.document.hidden = true;
+    },
+    "'rebuild' listener when the pending rebuild is carried out": (h, destroy) => {
+      h.runner.on('rebuild', (e) => { if (e.reason === 'structural') destroy(); });
+      h.addStation();
+    },
+    "'error' listener when the engine fails": (h, destroy) => {
+      h.runner.on('error', destroy);
+      h.knobs.failAdvance = 'boom';
+    },
+  };
+  for (const [where, arrange] of Object.entries(arrangements)) {
+    const h = makeHarness({ knobs: {} });
+    await startPlaying(h);
+    h.frames(3);
+    const sim = h.runner.sim;
+    let destroyedAt = null;
+    arrange(h, () => {
+      destroyedAt = { renders: h.renderer.alphas.length, frames: h.of('frame').length, kpis: h.of('kpis').length, advances: sim.advances.length };
+      h.runner.destroy();
+    });
+    for (let i = 0; i < 40 && destroyedAt === null && h.pending(); i++) h.frame(40);
+    assert.notEqual(destroyedAt, null, `${where}: the arrangement must reach destroy()`);
+    if (h.pending()) h.frame(40);
+    assert.equal(h.renderer.alphas.length, destroyedAt.renders, `${where}: nothing is drawn after destroy()`);
+    assert.equal(h.events.filter(([n]) => n === 'frame').length, destroyedAt.frames, where);
+    assert.equal(sim.advances.length, destroyedAt.advances, `${where}: the engine is left alone`);
+    assert.deepEqual(h.listenerErrors, [], `${where}: no TypeError from a vanished simulation`);
+    assert.equal(h.pending(), null, where);
+  }
 });
 
 // ---------------------------------------------------------------------------------------------------------

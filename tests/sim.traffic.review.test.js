@@ -1,7 +1,8 @@
 // Adversarial review of the traffic engine (js/sim/traffic.js, docs/ARCHITECTURE.md 5.2).
 //
-// DEFECT tests assert what the architecture promises and FAIL on the engine as reviewed; each says what is wrong.
-// GUARD tests pin behaviour that was attacked and held (they pass today and must keep passing).
+// DEFECT tests assert what the architecture promises; they failed on the engine as reviewed (each says what was wrong)
+// and pass since the fix pass (tests/sim.traffic.protocol.test.js adds the regression tests of the fixes).
+// GUARD tests pin behaviour that was attacked and held (they passed before and must keep passing).
 // The helper tests/helpers/traffic-review-gen.js judges poses and flags only, never the engine's underscore fields.
 //
 // Run the big randomised sweep (about 330 layouts, three time steps; ~13 s) with   TRAFFIC_REVIEW_FUZZ=full npm test
@@ -23,7 +24,6 @@
 //   7. GUARD  determinism, performance (200 vehicles in one queue), independent fuzz (invariants checked on every tick)
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { performance } from 'node:perf_hooks';
 import { FLEET_PRESETS } from '../js/model/defaults.js';
 import { createRng } from '../js/util/rng.js';
 import { layoutFromAscii } from './helpers/ascii.js';
@@ -32,6 +32,11 @@ import { TrafficSystem } from '../js/sim/traffic.js';
 import { reviewWorld, runReviewScenario, bodyGap, mainComponent, streetLines, blobLines } from './helpers/traffic-review-gen.js';
 
 const FULL = process.env.TRAFFIC_REVIEW_FUZZ === 'full';
+// CPU seconds of this process: the test files run in parallel, wall-clock time says little on a busy machine
+const cpuSeconds = () => {
+  const u = process.cpuUsage();
+  return (u.user + u.system) / 1e6;
+};
 const body = (name) => ({ length: FLEET_PRESETS[name].length, speed: FLEET_PRESETS[name].speed, accel: FLEET_PRESETS[name].accel, decel: FLEET_PRESETS[name].decel });
 
 // ---- 1. the lock protocol must neither deadlock nor starve ----------------------------------------------------------
@@ -55,24 +60,36 @@ test('DEFECT lock chain: two vehicles driving in opposite directions along four 
 
 test('DEFECT lock protocol: a vehicle docking on a bend next to a junction deadlocks with one passing the bend the other way', () => {
   // B ends its trip on the bend (1,1) and takes the junction (1,2) on the way; A passes the bend towards (1,2). A bend
-  // is only locked once somebody parks on it, so A stands in the bend while B holds the junction and waits for the bend.
-  // Correct behaviour: B docks on the bend, A waits behind it (a dock blocks its cell, that is the point) and drives on
-  // as soon as B is gone.
-  for (const delay of [0, 0.5]) {
+  // is only locked once somebody parks on it, so A stood in the bend while B held the junction and waited for the bend.
+  // Correct behaviour, whoever is first: no deadlock. If A is first it passes the bend and the junction and arrives; if B is
+  // first it docks on the bend (a dock blocks its cell, that is the point), A waits behind it and drives on as soon as B is
+  // gone. (The first version of this test assumed that B wins the race in every order; who is first depends on the start
+  // offsets, which are swept here so that both outcomes occur.)
+  const outcomes = new Set();
+  for (const [aAt, bAt] of [[0, 0], [0, 0.5], [0, 2], [1, 0], [2, 0], [4, 0], [6, 0]]) {
     const w = reviewWorld(['+....', '++...', '+++++'], { cell: 2, check: false, traffic: { resolveDeadlocks: false } });
     const a = w.add({ id: 'A', x: 0, y: 0 });
     const b = w.add({ id: 'B', x: 4, y: 2 });
-    w.go(a, 2, 2);
-    w.run(delay);
-    w.go(b, 1, 1);
-    w.run(60);
-    assert.equal(w.traffic.stats.deadlocks, 0, `B starts ${delay} s after A: A (${a.waitReason}) and B (${b.waitReason}) wait for each other`);
-    assert.ok(!b.driving && b.node === w.node(1, 1), 'B docks on the bend');
-    assert.ok(a.driving && a.waiting && a.blockedBy === b, 'A waits behind the docked B');
-    w.traffic.detach(b);
-    w.run(30);
-    assert.ok(!a.driving && a.node === w.node(2, 2), 'A arrives once the dock is free');
+    const start = { a: aAt, b: bAt };
+    for (let i = 0; i < 100; i++) { // 10 s of starts
+      const t = w.traffic.time;
+      if (start.a !== null && t >= start.a - 1e-9) { w.go(a, 2, 2); start.a = null; }
+      if (start.b !== null && t >= start.b - 1e-9) { w.go(b, 1, 1); start.b = null; }
+      w.run(0.1);
+    }
+    w.run(50);
+    const label = `A starts at ${aAt} s, B at ${bAt} s`;
+    assert.equal(w.traffic.stats.deadlocks, 0, `${label}: A (${a.waitReason}) and B (${b.waitReason}) wait for each other`);
+    assert.ok(!b.driving && b.node === w.node(1, 1), `${label}: B docks on the bend`);
+    if (a.driving) {
+      assert.ok(a.waiting && a.blockedBy === b, `${label}: A waits behind the docked B`);
+      w.traffic.detach(b);
+      w.run(30);
+      outcomes.add('A waited for the dock');
+    } else outcomes.add('A passed first');
+    assert.ok(!a.driving && a.node === w.node(2, 2), `${label}: A arrives`);
   }
+  assert.deepEqual([...outcomes].sort(), ['A passed first', 'A waited for the dock']);
 });
 
 test('DEFECT free-flowing traffic deadlocks: 12 random street layouts, 16 vehicles each, trips end on plain cells only', () => {
@@ -598,12 +615,12 @@ test('GUARD performance: a queue of 200 vehicles behind a breakdown (and its rel
   for (const v of vs) traffic.drive(v, graph.search(v.node, { arrivalEdge: -1 }).routeTo(goal(v)));
   for (let i = 0; i < 300; i++) traffic.step(0.1); // warm-up
   vs[7].disabled = true;
-  const started = performance.now();
+  const started = cpuSeconds();
   for (let i = 0; i < 3000; i++) traffic.step(0.1);
   const queued = vs.filter((v) => v.waiting).length;
   vs[7].disabled = false;
   for (let i = 0; i < 1000; i++) traffic.step(0.1);
-  const factor = 400 / ((performance.now() - started) / 1000);
+  const factor = 400 / (cpuSeconds() - started);
   assert.ok(queued >= 150, `${queued} vehicles queue up`);
   assert.equal(traffic.stats.deadlocks, 0);
   assert.ok(factor >= 300, `only ${factor.toFixed(0)}x real time with ${vs.length} vehicles in one queue`);

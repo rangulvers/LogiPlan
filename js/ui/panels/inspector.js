@@ -19,7 +19,7 @@ import {
   eraseRoadCell, eraseLink, paintRoadPath, setRoadLimit, setName, setNotes, updateSettings, resizeGrid, setCellSize,
 } from '../../model/layout.js';
 import { DX, DY, opposite, parseKey } from '../../util/grid.js';
-import { formatNumber, formatDistance, round } from '../../util/format.js';
+import { formatNumber, formatPercent, formatDistance, round } from '../../util/format.js';
 import { numberField, selectField, textField, rangeField, segmentedField, stepperField, distField, section, humanSeconds } from './fields.js';
 
 const plural = (n, one, many = `${one}s`) => `${formatNumber(n)} ${n === 1 ? one : many}`;
@@ -174,10 +174,12 @@ export function removeSelection(layout, kind, ids) {
 // Small building blocks
 // ---------------------------------------------------------------------------------------------------------
 
+/** A padded column for loose content, and an edge-to-edge column that holds the collapsible sections. */
 const pad = (...children) => h('div', { class: 'stack', style: PAD }, ...children);
+const flush = (...children) => h('div', { class: 'stack', style: { '--gap': '0' } }, ...children);
 
-function actionButton(text, iconName, onclick, cls = 'btn btn--sm') {
-  return h('button', { class: cls, type: 'button', onclick }, icon(iconName, { size: 14 }), text);
+function actionButton(text, iconName, onclick, cls = 'btn btn--sm', title = null) {
+  return h('button', { class: cls, type: 'button', onclick, title }, icon(iconName, { size: 14 }), text);
 }
 
 function typeChip(type) {
@@ -309,7 +311,7 @@ function sourceSections(env) {
     bind(arrivals, (st) => st.params.interArrival),
     paramNumber(env, 'batch', { label: 'Loads per arrival', unit: 'loads', min: 1, max: 100, what: 'loads per arrival', hint: 'Pallets or parts that arrive together.' }),
     paramNumber(env, 'startDelay', { label: 'Start delay', unit: 's', int: false, step: 'any', min: 0, max: 86400, what: 'start delay', hint: 'Quiet period at the start before the first delivery.' }),
-    paramNumber(env, 'outCap', { label: 'Output buffer slots', unit: 'loads', min: 1, max: 1000, what: 'output buffer', hint: 'Loads that can wait for pickup, for each destination. When it is full, new arrivals queue up in the yard.' }))];
+    paramNumber(env, 'outCap', { label: 'Output buffer slots per destination', unit: 'loads', min: 1, max: 1000, what: 'output buffer', hint: 'Loads that can wait for pickup for each destination. When it is full, new arrivals queue up in the yard.' }))];
 }
 
 function processSections(env) {
@@ -436,7 +438,7 @@ function flowsSection(env, ctx) {
   return sec;
 }
 
-function docksLine(env, ctx) {
+function docksLine(env) {
   const host = h('div', { class: 'row row--wrap' });
   const render = keyedRender(host);
   env.syncs.push((st, state) => {
@@ -468,11 +470,12 @@ function stationView(ctx, initial, memory) {
 
   const header = pad(
     h('div', { class: 'row row--wrap' }, typeChip(initial.type), h('span', { class: 'spacer' }),
-      actionButton('Duplicate', 'copy', () => duplicateStations(ctx, [id])),
-      actionButton('Delete', 'trash', () => deleteSelected(ctx, 'station', [id]), 'btn btn--sm btn--danger-ghost')),
-    name.el, strip.el, docksLine(env, ctx));
+      actionButton('Duplicate', 'copy', () => duplicateStations(ctx, [id]), 'btn btn--sm', 'Duplicate (Ctrl+D)'),
+      actionButton('Delete', 'trash', () => deleteSelected(ctx, 'station', [id]), 'btn btn--sm btn--danger-ghost', 'Delete (Del)')),
+    name.el, strip.el, docksLine(env));
   const sections = SECTION_BUILDERS[initial.type](env).map((s) => s.el);
-  const el = h('div', { class: 'stack', style: { '--gap': '0' } }, header, ...sections, sizeSection(env, ctx).el, flowsSection(env, ctx).el);
+  const flows = initial.type === 'depot' ? null : flowsSection(env, ctx).el; // depots take part in no flows
+  const el = flush(header, ...sections, sizeSection(env, ctx).el, flows);
   return { el, update(state) { const st = getStation(state.layout, id); if (st) for (const sync of syncs) sync(st, state); } };
 }
 
@@ -497,7 +500,7 @@ function obstacleView(ctx, initial) {
   const kind = segmentedField({ label: 'Kind', value: initial.kind, options: OBSTACLE_KINDS.map((k) => ({ value: k, label: OBSTACLE_LABELS[k] })), onChange: (k) => patch('kind', { kind: k }) });
   const width = stepperField({ label: 'Width (cells)', min: 1, max: 99, value: initial.w, controlW: INLINE_W, onChange: (n) => patch('size', { w: n }) });
   const height = stepperField({ label: 'Height (cells)', min: 1, max: 99, value: initial.h, controlW: INLINE_W, onChange: (n) => patch('size', { h: n }) });
-  const el = h('div', { class: 'stack', style: { '--gap': '0' } },
+  const el = flush(
     pad(h('div', { class: 'row' }, h('span', { class: 'chip chip--outline' }, icon('obstacle', { size: 14 }), 'Obstacle'), h('span', { class: 'spacer' }),
       actionButton('Delete', 'trash', () => deleteSelected(ctx, 'obstacle', [id]), 'btn btn--sm btn--danger-ghost')),
     kind.el, width.el, height.el, where.el,
@@ -520,7 +523,7 @@ function labelView(ctx, initial) {
   const edit = (what, p) => store.commit(`Change label ${what}`, (d) => updateLabel(d, id, p), { coalesce: `label:${id}:${what}` });
   const text = textField({ label: 'Text', value: initial.text, maxLength: 200, onChange: (v) => edit('text', { text: v }) });
   const size = numberField({ label: 'Text size', unit: 'cells', inline: true, controlW: INLINE_W, min: 0.25, max: 8, value: initial.size ?? 1, hint: 'Height of the letters, in grid cells.', onChange: (v) => edit('size', { size: v }) });
-  const el = h('div', { class: 'stack', style: { '--gap': '0' } },
+  const el = flush(
     pad(h('div', { class: 'row' }, h('span', { class: 'chip chip--outline' }, icon('label', { size: 14 }), 'Label'), h('span', { class: 'spacer' }),
       actionButton('Delete', 'trash', () => deleteSelected(ctx, 'label', [id]), 'btn btn--sm btn--danger-ghost')),
     text.el, size.el, where.el));
@@ -555,7 +558,7 @@ function cellView(ctx, key) {
     onChange: (v) => store.commit('Change speed limit', (d) => setRoadLimit(d, cx, cy, v / 100), { coalesce: `limit:${key}` }),
   });
   const info = readout(['Position', 'Dock of']);
-  const el = h('div', { class: 'stack', style: { '--gap': '0' } },
+  const el = flush(
     pad(h('div', { class: 'row' }, h('span', { class: 'chip chip--outline' }, icon('road', { size: 14 }), 'Road cell'), h('span', { class: 'spacer' }),
       actionButton('Remove road cell', 'trash', () => deleteSelected(ctx, 'cell', [key]), 'btn btn--sm btn--danger-ghost')),
     info.el),
@@ -605,13 +608,15 @@ function describeFlow(id) {
     const a = getStation(layout, flow.from);
     const b = getStation(layout, flow.to);
     const fleet = flow.fleetId ? getFleet(layout, flow.fleetId) : null;
+    const siblings = flowsFrom(layout, flow.from);
+    const share = flow.weight / siblings.reduce((sum, f) => sum + f.weight, 0);
     const batch = flow.batchMax > 0 ? `${flow.batchMin} to ${flow.batchMax} loads` : `${flow.batchMin}+ loads (up to a full vehicle)`;
     const rows = [
-      ['From', a.name], ['To', b.name], ['Weight', formatNumber(flow.weight, 2)],
+      [`Share of ${a.name}\u2019s output`, `${formatPercent(share)} (weight ${formatNumber(flow.weight, 2)})`],
       ['Loads per cycle', formatNumber(flow.perCycle)], ['Loads per trip', batch], ['Priority', PRIORITY_TEXT[flow.priority] || 'Normal'],
       ['Vehicles', fleet ? fleet.name : 'Any fleet'],
     ];
-    if (flow.maxWait > 0) rows.splice(5, 0, ['Longest wait for a batch', humanSeconds(flow.maxWait)]);
+    if (flow.maxWait > 0) rows.splice(3, 0, ['Longest wait for a batch', humanSeconds(flow.maxWait)]);
     return { kind: 'Flow', icon: 'flow', title: `${a.name} \u2192 ${b.name}`, rows };
   };
 }
@@ -675,9 +680,12 @@ function summaryBlock() {
   const chips = h('div', { class: 'row row--wrap' });
   const draw = keyedRender(chips);
   const facts = readout(['Road network', 'Floor area', 'Vehicles', 'Flows']);
+  let lastLayout = null;
   return {
     el: h('div', { class: 'stack', style: { '--gap': '8px' } }, chips, facts.el),
     update(layout) {
+      if (layout === lastLayout) return; // layouts are immutable snapshots: the summary only changes with a new one
+      lastLayout = layout;
       const s = plantSummary(layout);
       draw(JSON.stringify(s.byType), () => (s.stations
         ? STATION_TYPE_ORDER.filter((t) => s.byType[t]).map((t) => h('span', { class: `chip chip--${t}` }, h('span', { class: `swatch tone-${t}` }), `${s.byType[t]} ${typeName(t, s.byType[t])}`))
@@ -704,7 +712,12 @@ function plantView(ctx, memory) {
     control.input.addEventListener('change', () => {
       const cols = key === 'cols' ? Number(control.input.value) : store.getState().layout.grid.cols;
       const rows = key === 'rows' ? Number(control.input.value) : store.getState().layout.grid.rows;
-      applyGrid(ctx, cols, rows, () => control.set(store.getState().layout.grid[key]));
+      applyGrid(ctx, cols, rows, () => {
+        // a declined change is an explicit answer, so the text goes back even if the field still has focus
+        const value = store.getState().layout.grid[key];
+        control.set(value);
+        control.input.value = String(value);
+      });
     });
     return control;
   };
@@ -719,7 +732,7 @@ function plantView(ctx, memory) {
   handedness.el.append(hintLine('Which side of a two-way road vehicles drive on.'));
   const summary = summaryBlock();
 
-  const el = h('div', { class: 'stack', style: { '--gap': '0' } },
+  const el = flush(
     pad(h('div', { class: 'row' }, h('span', { class: 'eyebrow' }, 'Plant settings'), h('span', { class: 'spacer' }),
       actionButton('Fit view', 'fit', () => ctx.actions.fitView())), summary.el),
     rememberedSection(memory, 'Plant', '', name.el, notes.el).el,

@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>panels 2 harness</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="../../css/tokens.css"><link rel="stylesheet" href="../../css/components.css">
+<style>
+  /* Stand-in for the app shell: a stage with buttons that open the dialogs, and the tabbed right panel (default 360 px). */
+  html, body { height: 100%; margin: 0; }
+  body { display: flex; }
+  #stage { flex: 1 1 auto; min-width: 0; padding: 16px; color: var(--text-dim); background: var(--bg); font-size: var(--fs-sm); display: flex; flex-direction: column; gap: 12px; align-items: flex-start; }
+  #stage .row { flex-wrap: wrap; }
+  #pane { flex: none; width: var(--pane-w, 360px); max-width: 100%; display: flex; flex-direction: column; background: var(--surface); border-left: 1px solid var(--border); }
+  #pane .tabs { flex: none; }
+  #body { flex: 1 1 auto; overflow: auto; }
+  #body > [data-tab] { display: none; }
+  #body > [data-tab].is-shown { display: block; }
+  body.narrow #stage { display: none; }
+  body.narrow #pane { width: 100%; border-left: 0; }
+  html:has(body.tall), body.tall { height: auto; }
+  body.tall #pane, body.tall #body { height: auto; overflow: visible; }
+  #debug { white-space: pre-wrap; font-family: var(--font-mono); font-size: var(--fs-xs); }
+  .toast-region { position: fixed; left: 16px; bottom: 16px; transform: none; }
+</style></head>
+<body>
+<div id="stage">
+  <strong>Harness for the Fleet and Flows panels and the dialogs</strong>
+  <div class="row" id="launchers"></div>
+  <div id="debug"></div>
+</div>
+<div id="pane">
+  <div class="tabs" role="tablist" aria-label="Panels" id="tabs"></div>
+  <div id="body"></div>
+</div>
+<div class="toast-region" id="toasts" aria-live="polite"></div>
+<script type="module">
+import { createStore } from '../../js/store/store.js';
+import { EXAMPLES } from '../../js/model/examples.js';
+import { createFleetPanel } from '../../js/ui/panels/fleet.js';
+import { createFlowsPanel } from '../../js/ui/panels/flows.js';
+import { createDialogs } from '../../js/ui/dialogs.js';
+
+const params = new URLSearchParams(location.search);
+if (params.get('theme')) document.documentElement.dataset.theme = params.get('theme');
+if (params.get('w')) document.documentElement.style.setProperty('--pane-w', `${params.get('w')}px`);
+if (params.get('narrow')) document.body.classList.add('narrow');
+
+// ---- store and context ---------------------------------------------------------------------------
+const store = createStore({ storage: params.get('storage') === 'real' ? localStorage : undefined });
+if (params.get('empty') !== '1') store.newProject(EXAMPLES.find((e) => e.id === (params.get('example') || 'two-lines')).build());
+
+const harness = {
+  store,
+  calls: [],           // [name, arg] of every ctx.actions call
+  toasts: [],          // { msg, kind, action } of every ctx.toast call
+  runner: { sim: null },
+  examples: [],        // ids passed to actions.loadExample
+};
+
+const ctx = {
+  store,
+  runner: harness.runner,
+  toast(msg, opts = {}) {
+    harness.toasts.push({ msg, kind: opts.kind || 'info', action: opts.action ? opts.action.label : null });
+    const el = document.createElement('div');
+    el.className = `toast toast--${opts.kind === 'warn' ? 'warn' : opts.kind || 'info'}`;
+    el.setAttribute('role', 'status');
+    const text = document.createElement('span');
+    text.className = 'toast__msg';
+    text.textContent = msg;
+    el.append(text);
+    if (opts.action) {
+      const b = document.createElement('button');
+      b.className = 'toast__action';
+      b.type = 'button';
+      b.textContent = opts.action.label;
+      b.addEventListener('click', () => { opts.action.onClick(); el.remove(); });
+      el.append(b);
+    }
+    document.getElementById('toasts').replaceChildren(el);
+    setTimeout(() => el.remove(), opts.ms ?? 3500);
+  },
+  actions: {
+    fitView() { harness.calls.push(['fitView']); },
+    setTool(name) { harness.calls.push(['setTool', name]); },
+    setRightTab(name) { harness.calls.push(['setRightTab', name]); },
+    focus(refs) {
+      harness.calls.push(['focus', refs]);
+      if (refs.stationIds) store.select('station', refs.stationIds);
+    },
+    /** Like the shell: ask first when there is unsaved work; false when the planner declined. */
+    async loadExample(id) {
+      harness.calls.push(['loadExample', id]);
+      if (store.getState().dirty) {
+        const ok = await ctx.dialogs.confirm({ title: 'Replace the current plant?', text: 'Unsaved changes are lost.', confirmLabel: 'Load example', danger: true });
+        if (!ok) return false;
+      }
+      store.newProject(EXAMPLES.find((e) => e.id === id).build());
+      return true;
+    },
+  },
+};
+ctx.dialogs = createDialogs(ctx);
+harness.ctx = ctx;
+
+// ---- panels in a tabbed pane (like the shell: every panel is updated on every store change) ---------
+const panels = { fleet: createFleetPanel(ctx), flows: createFlowsPanel(ctx) };
+harness.panels = panels;
+const TAB_NAMES = { fleet: 'Fleet', flows: 'Flows' };
+const tabs = document.getElementById('tabs');
+const body = document.getElementById('body');
+for (const [key, panel] of Object.entries(panels)) {
+  const tab = document.createElement('button');
+  tab.className = 'tab';
+  tab.type = 'button';
+  tab.setAttribute('role', 'tab');
+  tab.dataset.tab = key;
+  tab.textContent = TAB_NAMES[key];
+  tab.addEventListener('click', () => harness.showTab(key));
+  tabs.append(tab);
+  const host = document.createElement('div');
+  host.dataset.tab = key;
+  host.setAttribute('role', 'tabpanel');
+  host.append(panel.el);
+  body.append(host);
+}
+harness.showTab = (key) => {
+  for (const t of tabs.children) t.setAttribute('aria-selected', String(t.dataset.tab === key));
+  for (const host of body.children) host.classList.toggle('is-shown', host.dataset.tab === key);
+  harness.tab = key;
+};
+
+function updateAll(state) {
+  for (const panel of Object.values(panels)) panel.update(state);
+  document.getElementById('debug').textContent = `selection: ${JSON.stringify(state.ui.selection)}\nundo: ${state.undoLabel}\nfleets: ${state.layout.fleets.length}  flows: ${state.layout.flows.length}`;
+}
+store.subscribe(updateAll);
+harness.updateAll = () => updateAll(store.getState());
+
+// ---- launchers: real buttons, so "focus returns to the opener" can be tested ------------------------
+const LAUNCHERS = { welcome: 'Welcome', help: 'Help', share: 'Share', importExport: 'Import / export' };
+const OPEN = { welcome: () => ctx.dialogs.openWelcome(), help: () => ctx.dialogs.openHelp(), share: () => ctx.dialogs.openShare(), importExport: () => ctx.dialogs.openImportExport() };
+for (const [key, label] of Object.entries(LAUNCHERS)) {
+  const b = document.createElement('button');
+  b.className = 'btn';
+  b.type = 'button';
+  b.id = `open-${key}`;
+  b.textContent = label;
+  b.addEventListener('click', OPEN[key]);
+  document.getElementById('launchers').append(b);
+}
+
+// ---- helpers for the test script -------------------------------------------------------------------
+/** 'stub': a scriptable stand-in with only what the Fleet panel reads (sim.vehicles); 'real': the engine, advanced `seconds`. */
+harness.setSim = async (mode, seconds = 900) => {
+  if (mode === 'none') { harness.runner.sim = null; harness.updateAll(); return; }
+  if (mode === 'real') {
+    const { Simulation } = await import('../../js/sim/engine.js');
+    const sim = new Simulation(store.getState().layout);
+    sim.advance(seconds);
+    harness.runner.sim = sim;
+    harness.updateAll();
+    return;
+  }
+  const states = ['toPickup', 'loading', 'toDrop', 'idle', 'parked', 'unloading', 'charging', 'toPickup', 'broken'];
+  const vehicles = [];
+  for (const fleet of store.getState().layout.fleets) {
+    for (let i = 0; i < fleet.count; i++) vehicles.push({ id: `${fleet.id}#${i + 1}`, fleetId: fleet.id, state: states[i % states.length], tv: { waiting: i % 4 === 3 } });
+  }
+  harness.runner.sim = { vehicles };
+  harness.updateAll();
+};
+harness.layout = () => store.getState().layout;
+harness.reset = (id = 'two-lines') => {
+  store.newProject(EXAMPLES.find((e) => e.id === id).build());
+  harness.calls.length = 0;
+  harness.toasts.length = 0;
+  harness.examples.length = 0;
+};
+
+window.harness = harness;
+harness.showTab(params.get('tab') || 'fleet');
+updateAll(store.getState());
+window.ready = true;
+</script></body></html>

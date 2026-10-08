@@ -7,6 +7,12 @@ import { getStation, addFlow } from '../../model/layout.js';
 import { dragThreshold } from './snapping.js';
 import { flowProblem, FLOW_FROM } from './tools.js';
 
+/** Status line while the rubber band is out: what the pointer is over and whether it can receive the loads. */
+function followText(start, over) {
+  if (!over || over.id === start.id) return `From ${start.name}: move over the receiving station`;
+  return flowProblem(start, over) || `Connect ${start.name} to ${over.name}`;
+}
+
 /** @param {object} ed the editor host (see editor.js) */
 export function createFlowTool(ed) {
   let from = null; // id of the sending station while a flow is being drawn
@@ -47,7 +53,7 @@ export function createFlowTool(ed) {
     const cs = layout.grid.cellSize;
     ed.view.hover = target ? { kind: 'station', id: target.id } : null;
     ed.view.flowPreview = { fromId: from, toPoint: target ? [(target.x + target.w / 2) * cs, (target.y + target.h / 2) * cs] : [p.wx, p.wy] };
-    ed.status(over && over.id !== from ? (flowProblem(start, over) || `Connect ${start.name} to ${over.name}`) : `From ${start.name}: move over the receiving station`);
+    ed.status(followText(start, over));
     ed.redraw();
   }
 

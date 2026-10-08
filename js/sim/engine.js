@@ -14,8 +14,8 @@
 //    A listener that throws cannot leave the simulation half-stepped: the tick is completed first, the remaining
 //    listeners still run, and the first error is rethrown by step() after the tick.
 //  * Warm-up: stats.reset() runs exactly once, in the tick that makes time reach settings.warmup (that tick belongs
-//    to the discarded warm-up). With warmup 0 the measurement window simply starts at time 0 (the statistics start
-//    fresh), so no reset is needed at all.
+//    to the discarded warm-up; the comparison tolerates the rounding of the accumulated clock, WARMUP_EPS). With
+//    warmup 0 the measurement window simply starts at time 0 (the statistics start fresh), so no reset is needed.
 //  * advance() always steps whole ticks of `dt` and never a shorter last one, so the sequence of time steps - and with
 //    it every result - is the same however a run is cut into advance() calls or time budgets. A request that is not
 //    a multiple of dt is rounded up to the next whole tick, and any positive request advances at least one tick.
@@ -29,7 +29,7 @@ import { normalizeLayout } from '../model/layout.js';
 import { createRng } from '../util/rng.js';
 import { buildGraph } from './graph.js';
 import { Logistics } from './logistics.js';
-import { Stats } from './stats.js';
+import { Stats, WARMUP_EPS } from './stats.js';
 import { TrafficSystem } from './traffic.js';
 import { generateInsights } from './insights.js';
 
@@ -123,7 +123,7 @@ export class Simulation {
     this.traffic.step(dt);
     this.time = this._tickEnd;
     this.stats.sample(dt);
-    if (!this._measuring && this.time >= this.settings.warmup) {
+    if (!this._measuring && this.time + WARMUP_EPS >= this.settings.warmup) {
       this._measuring = true;
       this.stats.reset();
     }
