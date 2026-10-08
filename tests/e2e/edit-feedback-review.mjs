@@ -366,7 +366,7 @@ await withBrowser(async ({ browser, url, errors }) => {
     const order = [];
     for (let i = 0; i < 4; i++) { await page.keyboard.press('Tab'); order.push(await page.evaluate(() => document.activeElement?.getAttribute('aria-label') || document.activeElement?.textContent.trim().slice(0, 30) || document.activeElement?.tagName)); }
     ok(order.includes('Dismiss') && order.includes('Keep as baseline'), `Tab reaches the buttons: ${order.join(' > ')}`);
-    await page.getByRole('button', { name: 'Keep as baseline' }).focus();
+    await card(page).getByRole('button', { name: 'Keep as baseline' }).focus();
     const playingBefore = await page.evaluate(() => window.__logiplan.runner.playing);
     await page.keyboard.press('Space'); // Space on a focused button presses it; it must not also play/pause the simulation
     await page.waitForFunction(() => document.querySelector('[data-panel=impact]').hidden, null, { timeout: 3000 });
@@ -375,7 +375,7 @@ await withBrowser(async ({ browser, url, errors }) => {
     // second edit: a baseline from the kept numbers; Enter on Dismiss
     await edit(page, 'More forklifts', "l.fleets[l.fleets.length - 1].count += 1;");
     await warmReady(page);
-    await page.getByRole('button', { name: 'Dismiss' }).focus();
+    await card(page).getByRole('button', { name: 'Dismiss' }).focus();
     await page.keyboard.press('Enter');
     await page.waitForFunction(() => document.querySelector('[data-panel=impact]').hidden, null, { timeout: 3000 });
     eq(await page.evaluate(() => document.activeElement && document.activeElement.id), 'tab-results', 'after Dismiss the focus is on the Results tab');
