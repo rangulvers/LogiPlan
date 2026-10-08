@@ -21,6 +21,7 @@ import {
 import { DX, DY, opposite, parseKey } from '../../util/grid.js';
 import { formatNumber, formatPercent, formatDistance, round } from '../../util/format.js';
 import { numberField, selectField, textField, rangeField, segmentedField, stepperField, distField, section, humanSeconds } from './fields.js';
+import { createGuidanceHeader } from './nextsteps.js';
 
 const plural = (n, one, many = `${one}s`) => `${formatNumber(n)} ${n === 1 ? one : many}`;
 const quoted = (name) => `“${name}”`;
@@ -791,17 +792,20 @@ function planFor(ctx, state, memory) {
  */
 export function createInspectorPanel(ctx) {
   const memory = new Map();
-  const el = h('div', { 'data-panel': 'inspector' });
+  const guide = createGuidanceHeader(ctx, { checklist: true, follow: true }); // Next steps (and, with nothing selected, Getting started)
+  const form = h('div');
+  const el = h('div', { 'data-panel': 'inspector' }, guide.el, form);
   let view = null;
   let signature = null;
   let resync = null;
 
   function update(state) {
+    guide.update(state);
     const plan = planFor(ctx, state, memory);
     if (plan.signature !== signature) {
       view = plan.create();
       signature = plan.signature;
-      el.replaceChildren(view.el);
+      form.replaceChildren(view.el);
     }
     view.update(state);
   }
@@ -813,5 +817,5 @@ export function createInspectorPanel(ctx) {
   });
 
   update(ctx.store.getState());
-  return { el, update, destroy() { clearTimeout(resync); el.remove(); } };
+  return { el, update, destroy() { clearTimeout(resync); guide.destroy(); el.remove(); } };
 }

@@ -21,6 +21,9 @@ const GROUPS = Object.freeze([
 
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 
+/** A kind of problem that comes up more often than this folds its repeats behind one button (seven flows without vehicles are one cause). */
+const FOLD_AFTER = 3;
+
 /**
  * Split issues into the three severities. Dismissed notes are left out and counted in `hidden`.
  * @param {Array<{id: string, severity: string}>} issues
@@ -52,8 +55,9 @@ export function focusTarget(refs) {
  */
 export function createChecksPanel(ctx) {
   const dismissed = new Set();
-  let dismissals = 0;
-  let shown = null; // [issues, dismissals] of the last redraw
+  const expanded = new Set(); // `${severity}:${code}` of the folded kinds the planner opened
+  let revision = 0; // bumped by every change of what the planner chose to see (dismissed notes, opened folds)
+  let shown = null; // [issues, revision] of the last redraw
   let signature = null;
   let count = 0;
   let notified = null;
@@ -75,7 +79,7 @@ export function createChecksPanel(ctx) {
   function dismissButton(issue) {
     return h('button', {
       class: 'btn btn--sm btn--ghost', type: 'button', 'aria-label': `Dismiss note: ${issue.message}`, dataset: { issue: issue.id, role: 'dismiss' },
-      onclick: () => { dismissed.add(issue.id); dismissals += 1; draw(); },
+      onclick: () => { dismissed.add(issue.id); revision += 1; draw(); },
     }, 'Dismiss');
   }
 
@@ -87,12 +91,38 @@ export function createChecksPanel(ctx) {
     });
   }
 
+  function foldButton(key, open, hiddenCount, group) {
+    const noun = group.severity === 'info' ? 'notes' : group.severity === 'warning' ? 'warnings' : 'errors';
+    return h('button', {
+      class: 'btn btn--ghost btn--sm', type: 'button', 'aria-expanded': String(open), dataset: { issue: key, role: 'fold' },
+      onclick: () => { if (open) expanded.delete(key); else expanded.add(key); revision += 1; draw(); },
+    }, open ? 'Show fewer' : `Show ${hiddenCount} more similar ${noun}`);
+  }
+
+  /** The callouts of one severity; the repeats of a kind that came up many times sit behind a "Show more" button. */
+  function issueNodes(group, issues) {
+    const totals = new Map();
+    for (const issue of issues) totals.set(issue.code, (totals.get(issue.code) || 0) + 1);
+    const seen = new Map();
+    const nodes = [];
+    for (const issue of issues) {
+      const total = totals.get(issue.code);
+      const folds = total >= FOLD_AFTER + 2;
+      const key = `${group.severity}:${issue.code}`;
+      const n = (seen.get(issue.code) || 0) + 1;
+      seen.set(issue.code, n);
+      if (!folds || expanded.has(key) || n <= FOLD_AFTER) nodes.push(issueCallout(issue));
+      if (folds && n === total) nodes.push(foldButton(key, expanded.has(key), total - FOLD_AFTER, group));
+    }
+    return nodes;
+  }
+
   function groupBlock(group, issues) {
     return h('section', { class: 'stack', style: { '--gap': '8px' }, 'aria-label': group.title },
       h('div', null,
         h('div', { class: 'row' }, h('h3', { style: { margin: 0, fontSize: 'var(--fs-md)', fontWeight: 'var(--fw-semibold)' } }, group.title), h('span', { class: 'badge' }, String(issues.length))),
         h('p', { class: 'field__hint' }, group.explain)),
-      ...issues.map(issueCallout));
+      ...issueNodes(group, issues));
   }
 
   function summaryChips(groups) {
@@ -108,7 +138,7 @@ export function createChecksPanel(ctx) {
   function restoreButton(hidden) {
     return h('div', null, h('button', {
       class: 'btn btn--ghost btn--sm', type: 'button', dataset: { role: 'restore' },
-      onclick: () => { dismissed.clear(); dismissals += 1; draw(); },
+      onclick: () => { dismissed.clear(); revision += 1; draw(); },
     }, `Show ${plural(hidden, 'dismissed note', 'dismissed notes')} again`));
   }
 
@@ -131,7 +161,7 @@ export function createChecksPanel(ctx) {
     const issues = ctx.issues();
     const groups = groupIssues(issues, dismissed);
     count = groups.error.length + groups.warning.length;
-    const next = JSON.stringify([GROUPS.map((g) => groups[g.severity].map((i) => [i.id, i.message, i.hint])), groups.hidden]);
+    const next = JSON.stringify([GROUPS.map((g) => groups[g.severity].map((i) => [i.id, i.message, i.hint])), groups.hidden, [...expanded]]);
     if (next !== signature) {
       signature = next;
       const active = list.contains(document.activeElement) ? { ...document.activeElement.dataset } : null;
@@ -143,7 +173,7 @@ export function createChecksPanel(ctx) {
         ...(groups.hidden ? [restoreButton(groups.hidden)] : []));
       restoreFocus(active);
     }
-    shown = [issues, dismissals];
+    shown = [issues, revision];
     if (count !== notified) {
       notified = count;
       onCount?.(count);
@@ -159,7 +189,7 @@ export function createChecksPanel(ctx) {
       onCount?.(count); // the shell may assign this after the first draw: deliver the current count right away
     },
     update() {
-      if (shown && shown[0] === ctx.issues() && shown[1] === dismissals) return;
+      if (shown && shown[0] === ctx.issues() && shown[1] === revision) return;
       draw();
     },
     destroy() { el.remove(); },

@@ -3,7 +3,12 @@
 //   new Renderer(canvas, { camera, theme })   theme = 'auto' | 'light' | 'dark' | a getTheme() palette
 //   renderer.layout = Layout | null           set / replace; the static layer is rebuilt when the object changes
 //   renderer.sim = Simulation | null          live station states, vehicles, heatmap, deadlocks
-//   renderer.view = { selection, hover, tool, overlays, ghost, paintPreview, flowPreview, marquee, resizeHandles }
+//   renderer.view = { selection, hover, tool, overlays, ghost, paintPreview, flowPreview, marquee, resizeHandles,
+//                     connectHandle, connect }
+//        connectHandle { id, hover?, pressed? } | null: draw the flow handle of that station (render/connecting.js)
+//        connect { role, anchorId, valid: Set, over, overStatus, snap, verb } | null: highlight where a flow may end
+//        flowPreview { fromId, toPoint } or, when the anchor receives, { toId, fromPoint }
+//        overlays.jobs (default on): vehicle -> target lines and "n waiting" badges while a simulation runs (render/jobs.js)
 //   renderer.resize()                         call when the canvas box changes (handles devicePixelRatio)
 //   renderer.render(alpha)                    draw a frame; alpha 0..1 interpolates vehicle poses between ticks
 //   renderer.hitTest(px, py)                  what is under a screen point
@@ -38,6 +43,8 @@ import {
   createHeatState, refreshHeat, drawHeat, drawHeatLegend, drawDocks, drawDeadlocks, drawScaleBar,
 } from './render/overlays.js';
 import { drawHover, drawSelection, drawGhost, drawPaintPreview, drawMarquee, itemRectPx, handleRect } from './render/interaction.js';
+import { drawConnectHandle, drawConnectTargets, hitConnectHandle } from './render/connecting.js';
+import { drawJobLines, drawWaitingBadges } from './render/jobs.js';
 import { distToCurve, hitHandle, pointInRect } from './render/geometry.js';
 import { plantBounds, MIN_ZOOM, MAX_ZOOM, DEFAULT_ZOOM } from './camera.js';
 
@@ -60,12 +67,14 @@ export function createView() {
     selection: { kind: null, ids: [] },
     hover: null,
     tool: 'select',
-    overlays: { grid: true, studs: true, flows: true, docks: false, heat: 'off', ids: false, labels: true },
+    overlays: { grid: true, studs: true, flows: true, docks: false, jobs: true, heat: 'off', ids: false, labels: true },
     ghost: null,
     paintPreview: null,
     flowPreview: null,
     marquee: null,
     resizeHandles: false,
+    connectHandle: null,
+    connect: null,
   };
 }
 
@@ -101,7 +110,7 @@ function createFrame() {
     zoom: DEFAULT_ZOOM, dpr: 1, cs: 2, tx: 0, ty: 0, ox: 0, oy: 0, w: 0, h: 0,
     vis: { x0: 0, y0: 0, x1: 0, y1: 0 }, alpha: 1, now: 0,
     selKind: null, selIds: EMPTY, hoverKind: null, hoverId: null, hoverVehicle: null, selFleet: null,
-    showIds: false, idFont: '', reducedMotion: false, hand: 1,
+    showIds: false, idFont: '', reducedMotion: false, coarse: false, hand: 1,
     pose: new Float64Array(3), size: { length: 1.2, width: 0.66 }, poseBuf: new Float64Array(0), brick: {},
     curvePx: { ax: 0, ay: 0, qx: 0, qy: 0, bx: 0, by: 0 }, tmpA: [0, 0], tmpB: [0, 0],
     stationCache: { src: null, len: -1, map: null }, flowCache: { src: null, len: -1, map: null },
@@ -170,6 +179,7 @@ function setupFrame(fr, r, alpha, now) {
   fr.alpha = alpha;
   fr.now = now;
   fr.reducedMotion = r._motion.matches === true;
+  fr.coarse = r._coarse.matches === true;
   fr.hand = handSide(fr);
   applyInteraction(fr, view, true);
   fr.showIds = fr.overlays.ids === true;
@@ -217,6 +227,7 @@ export class Renderer {
     this.stats = { frames: 0, staticBuilds: 0 };
     this._fixedDpr = dpr;
     this._motion = reducedMotion === undefined ? mediaQuery('(prefers-reduced-motion: reduce)') : { matches: reducedMotion === true };
+    this._coarse = mediaQuery('(pointer: coarse)'); // touch: the flow handle is drawn and hit larger
     this._createCanvas = createCanvas;
     this._now = now;
     this._layer = new StaticLayer(createCanvas);
@@ -304,8 +315,9 @@ export class Renderer {
   }
 
   /**
-   * What is under screen point (px, py) in CSS pixels. Priority: vehicles, resize handles, labels,
-   * stations, flows (within 6 px), obstacles, then the plain cell. `cell` is always present.
+   * What is under screen point (px, py) in CSS pixels. Priority: the flow handle ('connect-handle', only while
+   * `view.connectHandle` is set), vehicles, resize handles, labels, stations, flows (within 6 px), obstacles,
+   * then the plain cell. `cell` is always present.
    * @returns {{ kind: string, id?: string, cell: number[], handle?: string }}
    */
   hitTest(px, py) {
@@ -318,6 +330,8 @@ export class Renderer {
     const result = (kind, id, extra) => ({ kind, id, cell, ...extra });
     const scene = fr.scene;
     if (!scene) return { kind: 'cell', cell };
+    const connectId = hitConnectHandle(fr, px, py); // the flow handle floats above everything else
+    if (connectId) return result('connect-handle', connectId);
     const vehicle = hitVehicle(fr, px, py);
     if (vehicle) return result('vehicle', vehicle.id);
     const ctx = this.ctx;
@@ -430,8 +444,10 @@ function drawLayers(ctx, fr, heat, forceHeat) {
   drawFlowMarkers(ctx, fr);
   drawLabels(ctx, fr);
   if (!fr.sim) return;
+  drawJobLines(ctx, fr); // under the vehicles, so a vehicle sits on top of the line that starts at it
   drawVehicles(ctx, fr);
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  drawWaitingBadges(ctx, fr);
   drawDeadlocks(ctx, fr);
 }
 
@@ -441,13 +457,27 @@ function drawInteraction(ctx, fr, view) {
   drawSelection(ctx, fr);
   drawGhost(ctx, fr, view.ghost);
   drawPaintPreview(ctx, fr, view.paintPreview);
-  const fp = view.flowPreview;
-  const from = fp && fr.scene.stationById.get(fp.fromId);
-  if (from && Array.isArray(fp.toPoint)) {
-    const [tx, ty] = fp.space === 'screen' ? [(fp.toPoint[0] - fr.ox) / fr.zoom, (fp.toPoint[1] - fr.oy) / fr.zoom] : fp.toPoint;
-    drawFlowPreview(ctx, fr, from, tx, ty);
-  }
+  drawConnectTargets(ctx, fr);
+  drawFlowBand(ctx, fr, view);
+  drawConnectHandle(ctx, fr);
   drawMarquee(ctx, fr, view.marquee);
+}
+
+/**
+ * The rubber band of a flow being drawn. `flowPreview = { fromId, toPoint }` runs from the station to the pointer;
+ * `{ toId, fromPoint }` (the anchor receives) runs from the pointer to the station. `view.connect.snap` names the
+ * station the pointer is snapped to, so the band stops at its edge.
+ */
+function drawFlowBand(ctx, fr, view) {
+  const fp = view.flowPreview;
+  if (!fp) return;
+  const reverse = typeof fp.toId === 'string';
+  const anchor = fr.scene.stationById.get(reverse ? fp.toId : fp.fromId);
+  const point = reverse ? fp.fromPoint : fp.toPoint;
+  if (!anchor || !Array.isArray(point)) return;
+  const [tx, ty] = fp.space === 'screen' ? [(point[0] - fr.ox) / fr.zoom, (point[1] - fr.oy) / fr.zoom] : point;
+  const snap = view.connect && view.connect.snap ? fr.scene.stationById.get(view.connect.snap) : null;
+  drawFlowPreview(ctx, fr, anchor, tx, ty, { reverse, other: snap && snap !== anchor ? snap : null });
 }
 
 /** `{ handle: 'move' }` when the item is part of the current selection, so the editor can start a drag. */

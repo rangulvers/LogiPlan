@@ -15,6 +15,7 @@ import { icon } from '../icons.js';
 import { getStation, getFleet, getFlow, flowsFrom, addFlow, updateFlow, removeFlow } from '../../model/layout.js';
 import { formatNumber } from '../../util/format.js';
 import { numberField, selectField, segmentedField, section, emptyState, humanSeconds } from './fields.js';
+import { createGuidanceHeader, forFlows } from './nextsteps.js';
 
 const INLINE_W = '120px';
 const quoted = (name) => `“${name}”`;
@@ -489,7 +490,8 @@ export function createFlowsPanel(ctx) {
     text: 'Flows say where loads go next. Pick two stations above or use the Flow tool (F).',
     actions: [h('button', { class: 'btn btn--primary btn--sm', type: 'button', onclick: () => ctx.actions.setTool('flow') }, icon('flow', { size: 14 }), 'Use the Flow tool')],
   });
-  const el = h('div', { 'data-panel': 'flows' }, top, form, splits.el, list, empty);
+  const guide = createGuidanceHeader(ctx, { filter: forFlows }); // what is still unconnected, and how vehicles find these flows
+  const el = h('div', { 'data-panel': 'flows' }, guide.el, top, form, splits.el, list, empty);
 
   /** Create cards for new flows, drop cards of removed ones and put the rest in layout order. */
   function syncCards(layout) {
@@ -505,6 +507,7 @@ export function createFlowsPanel(ctx) {
 
   function update(state) {
     const { layout } = state;
+    guide.update(state);
     addForm.update(state);
     chain.update(state);
     splits.update(layout);
@@ -536,5 +539,5 @@ export function createFlowsPanel(ctx) {
   });
 
   update(store.getState());
-  return { el, update, destroy() { clearTimeout(resync); el.remove(); } };
+  return { el, update, destroy() { clearTimeout(resync); guide.destroy(); el.remove(); } };
 }

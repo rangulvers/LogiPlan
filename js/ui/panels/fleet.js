@@ -18,6 +18,7 @@ import { FLEET_PRESETS, FLEET_PRESET_ORDER } from '../../model/defaults.js';
 import { getFleet, addFleet, updateFleet, removeFleet, duplicateFleet } from '../../model/layout.js';
 import { formatNumber, round } from '../../util/format.js';
 import { numberField, selectField, textField, segmentedField, stepperField, switchField, section, emptyState, callout, humanSeconds, uid } from './fields.js';
+import { createGuidanceHeader, forFleet } from './nextsteps.js';
 
 const INLINE_W = '120px';
 const quoted = (name) => `“${name}”`;
@@ -619,7 +620,8 @@ export function createFleetPanel(ctx) {
   });
   empty.querySelector('.empty__actions').style.flexWrap = 'wrap';
   empty.querySelector('.empty__actions').style.justifyContent = 'center';
-  const el = h('div', { 'data-panel': 'fleet' }, top, list, empty);
+  const guide = createGuidanceHeader(ctx, { filter: forFleet }); // adding vehicles, parking, and how vehicles find work
+  const el = h('div', { 'data-panel': 'fleet' }, guide.el, top, list, empty);
 
   function addFromPreset(preset) {
     let created = null;
@@ -642,6 +644,7 @@ export function createFleetPanel(ctx) {
   }
 
   function update(state) {
+    guide.update(state);
     const fleets = state.layout.fleets;
     syncCards(fleets);
     const sim = ctx.runner?.sim;
@@ -672,5 +675,5 @@ export function createFleetPanel(ctx) {
   });
 
   update(store.getState());
-  return { el, update, destroy() { clearTimeout(resync); split.destroy(); el.remove(); } };
+  return { el, update, destroy() { clearTimeout(resync); split.destroy(); guide.destroy(); el.remove(); } };
 }

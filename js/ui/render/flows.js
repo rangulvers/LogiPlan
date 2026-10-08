@@ -192,16 +192,51 @@ function drawChip(ctx, fr, entry) {
   ctx.fillText(text, x, y + 0.5);
 }
 
-/** Dashed rubber-band arrow from a station to the pointer while a flow is being drawn. */
-export function drawFlowPreview(ctx, fr, fromEntry, toX, toY) {
+/** Gap (px) kept between a rubber band and the brick it starts or ends at. */
+const PREVIEW_GAP = 4;
+
+/** Fraction of the straight line from a brick's centre towards (dx, dy) (CSS px offsets) after which the line leaves the brick. */
+function exitFraction(entry, z, dx, dy) {
+  const hw = (entry.w * z) / 2;
+  const hh = (entry.h * z) / 2;
+  const t = Math.min(Math.abs(dx) > 1e-9 ? hw / Math.abs(dx) : Infinity, Math.abs(dy) > 1e-9 ? hh / Math.abs(dy) : Infinity);
+  return Number.isFinite(t) ? t : 0;
+}
+
+/**
+ * Dashed rubber-band arrow between a station and the pointer while a flow is being drawn. The band starts and ends at the
+ * brick edges (not at their centres), so it never runs over the name tiles.
+ * @param {object} anchorEntry scene entry of the station the gesture started at
+ * @param {number} toX pointer (or snapped target centre) in world metres
+ * @param {{ reverse?: boolean, other?: object|null }} [opts] `reverse`: the anchor receives, the band runs from the pointer
+ *   to it (arrow head at the anchor); `other`: scene entry of the station the pointer is snapped to (the band stops at its edge)
+ */
+export function drawFlowPreview(ctx, fr, anchorEntry, toX, toY, opts = null) {
   const theme = fr.theme;
   const z = fr.zoom;
-  const sx = fr.ox + (fromEntry.x + fromEntry.w / 2) * z;
-  const sy = fr.oy + (fromEntry.y + fromEntry.h / 2) * z;
-  const ex = fr.ox + toX * z;
-  const ey = fr.oy + toY * z;
+  const reverse = !!(opts && opts.reverse);
+  const other = (opts && opts.other) || null;
+  const acx = fr.ox + (anchorEntry.x + anchorEntry.w / 2) * z;
+  const acy = fr.oy + (anchorEntry.y + anchorEntry.h / 2) * z;
+  const pxx = fr.ox + toX * z;
+  const pxy = fr.oy + toY * z;
+  const x0 = reverse ? pxx : acx;
+  const y0 = reverse ? pxy : acy;
+  const dx = (reverse ? acx : pxx) - x0;
+  const dy = (reverse ? acy : pxy) - y0;
+  const full = Math.hypot(dx, dy);
+  if (!(full > 1)) return;
+  const startEntry = reverse ? other : anchorEntry;
+  const endEntry = reverse ? anchorEntry : other;
+  // the part of the centre-to-centre line between the two brick edges
+  const t0 = startEntry ? exitFraction(startEntry, z, dx, dy) + PREVIEW_GAP / full : 0;
+  const t1 = endEntry ? 1 - exitFraction(endEntry, z, dx, dy) - PREVIEW_GAP / full : 1;
+  if (!(t1 - t0 > 6 / full)) return; // the pointer is inside the brick it started at
+  const sx = x0 + dx * t0;
+  const sy = y0 + dy * t0;
+  const ex = x0 + dx * t1;
+  const ey = y0 + dy * t1;
   const len = Math.hypot(ex - sx, ey - sy);
-  if (!(len > 1)) return;
   const bow = clamp(len * 0.12, 4, 40);
   const qx = (sx + ex) / 2 - ((ey - sy) / len) * bow;
   const qy = (sy + ey) / 2 + ((ex - sx) / len) * bow;

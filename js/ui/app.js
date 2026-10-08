@@ -50,6 +50,7 @@ import { createFleetPanel } from './panels/fleet.js';
 import { createFlowsPanel } from './panels/flows.js';
 import { createSimulatePanel } from './panels/simulate.js';
 import { createChecksPanel } from './panels/checks.js';
+import { createGuideChip } from './panels/nextsteps.js';
 import { createDashboard } from './dashboard.js';
 import { createCompare } from './compare.js';
 
@@ -1348,6 +1349,8 @@ function createChrome(region, core, signal) {
   const simBar = createSimBar({ runner, store });
   const overlayBar = createOverlayBar(store);
   const emptyHint = createEmptyHint(region.empty, ctx);
+  const guideChip = createGuideChip(ctx); // "2 steps to finish" over the plan, bottom-left
+  region.stage.append(guideChip.el);
   const topBar = createTopBar(region.topbar, { ctx, store, drawer, themeControl });
   const host = createPanelHost({ ctx, tabbar: region.tabbar, body: region.panels, onSelect: (id) => { store.setUi({ rightTab: id }); } });
   parts.host = host;
@@ -1367,7 +1370,7 @@ function createChrome(region, core, signal) {
     update(state) {
       analysis.whileUpdating(() => {
         try {
-          for (const part of [palette, toolOptions, overlayBar, emptyHint, topBar, status]) part.update(state);
+          for (const part of [palette, toolOptions, overlayBar, emptyHint, topBar, status, guideChip]) part.update(state);
           simBar.sync();
           updateBadge();
         } catch (err) {
@@ -1405,11 +1408,18 @@ function startUpdateLoop(core, chrome) {
     if (info.type === 'load') parts.cameraControl.fit();
     refresh();
   });
+  // A change of the plant itself (a station moved, a road drawn) restarts the simulation at 0:00. The planner who edits while it
+  // runs must be told why the clock jumped back; edits that follow each other merge into one message (same text).
+  let clockBeforeRebuild = 0;
   const offRunner = [
     runner.on('state', () => { chrome.simBar.sync(); refresh(); }),
-    runner.on('frame', () => chrome.simBar.sync()),
+    runner.on('frame', ({ time }) => { clockBeforeRebuild = time; chrome.simBar.sync(); }),
     runner.on('kpis', refresh),
-    runner.on('rebuild', refresh),
+    runner.on('rebuild', ({ reason }) => {
+      if (reason === 'structural' && clockBeforeRebuild > 0) ctx.toast('The plant changed, so the simulation started again from 0:00.');
+      clockBeforeRebuild = 0;
+      refresh();
+    }),
     runner.on('error', ({ error, phase }) => {
       reportOnce(`simulation (${phase})`, error);
       ctx.toast(`The simulation stopped because of an error (${error.message}). Your plant is not changed.`, { kind: 'error' });

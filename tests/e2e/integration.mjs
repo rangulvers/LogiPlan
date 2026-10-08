@@ -70,6 +70,11 @@ await withBrowser(async ({ browser, url, errors }) => {
     return { dirty: s.dirty, canUndo: s.canUndo, canRedo: s.canRedo, undoLabel: s.undoLabel, redoLabel: s.redoLabel, ui: structuredClone(s.ui), name: s.project.name, scenarios: s.project.scenarios.map((x) => ({ id: x.id, name: x.name })), activeId: s.project.activeId };
   });
   const runnerOf = (page) => page.evaluate(() => { const r = window.__logiplan.runner; return { playing: r.playing, time: r.time, speed: r.speed, limited: r.limited, hasSim: Boolean(r.sim) }; });
+  /** The Checks badge follows an edit within about 200 ms: wait until it shows (`n` = 1) or hides (`n` = 0). */
+  const badgeIs = async (page, n, msg) => {
+    await page.waitForFunction((want) => [...document.querySelectorAll('[data-tab=checks] .badge')].filter((b) => !b.hidden).length === want, n, { timeout: 5000 });
+    ok(true, msg);
+  };
   const overflow = (page) => page.evaluate(() => ({ doc: document.documentElement.scrollWidth - innerWidth, body: document.body.scrollWidth - innerWidth }));
 
   /** Page coordinates of the centre of grid cell (cx, cy). */
@@ -267,6 +272,13 @@ await withBrowser(async ({ browser, url, errors }) => {
     ok(kpis.throughput.total > 0, `loads were delivered: ${kpis.throughput.total}`);
     ok(Number.isFinite(kpis.leadTime.mean), 'lead time measured');
     await snap(page, '05-run-results-light');
+    // changing the plant while it runs restarts the simulation, and the planner is told why the clock jumped back
+    const clockBefore = (await runnerOf(page)).time;
+    await page.evaluate(() => window.__logiplan.store.commit('One more vehicle', (l) => { l.fleets[0].count += 1; }));
+    await page.waitForFunction((t) => window.__logiplan.runner.time < t, clockBefore);
+    ok((await runnerOf(page)).playing, 'the simulation keeps running after the restart');
+    await page.locator('.toast').filter({ hasText: 'simulation started again from 0:00' }).waitFor();
+    eq(await page.locator('.toast').filter({ hasText: 'started again' }).count(), 1, 'one message, however many edits follow');
     // pause with Space, then step and reset with the buttons
     await page.keyboard.press('Space');
     await page.waitForFunction(() => !window.__logiplan.runner.playing);
@@ -351,17 +363,17 @@ await withBrowser(async ({ browser, url, errors }) => {
 
     // Checks: breaking the plant raises the badge, Show selects the culprit
     await tab(page, 'checks');
-    eq(await page.locator('[data-tab=checks] .badge:visible').count(), 0, 'a healthy plant has no badge');
+    await badgeIs(page, 0, 'a healthy plant has no badge');
     await page.evaluate(() => window.__logiplan.store.commit('Remove the road', (l) => { l.roads = {}; }));
     await frames(page, 3);
-    ok(await page.locator('[data-tab=checks] .badge:visible').count() === 1, 'the badge shows the problems');
+    await badgeIs(page, 1, 'the badge shows the problems');
     await page.locator('#panel-checks').getByRole('button', { name: /Show/ }).first().click();
     await frames(page, 3);
     ok((await stateOf(page)).ui.selection.kind !== null, 'Show selects what the problem is about');
     await snap(page, '07-tab-checks-light');
     await page.keyboard.press('Control+z'); // undo "Remove the road"
     await frames(page, 3);
-    eq(await page.locator('[data-tab=checks] .badge:visible').count(), 0, 'undo clears the problems again');
+    await badgeIs(page, 0, 'undo clears the problems again');
 
     // Everything above is undoable back to the example
     for (let i = 0; i < 12; i++) await page.keyboard.press('Control+z');
@@ -399,7 +411,7 @@ await withBrowser(async ({ browser, url, errors }) => {
     await frames(page, 3);
     ok(await page.evaluate(() => document.activeElement === document.getElementById('plant')), 'the plan has the keyboard after the dialog closed');
     ok(await page.locator('.stage__empty').isVisible(), 'the empty-plant hint is shown');
-    eq(await page.locator('[data-tab=checks] .badge:visible').count(), 1, 'an empty plant shows its one problem');
+    await badgeIs(page, 1, 'an empty plant shows its one problem');
     await buildPlant(page);
     const l = await layoutOf(page);
     eq(l.stations.map((s) => s.type), ['source', 'process', 'sink'], 'three stations placed with the keys 1, 2 and 4');
@@ -408,7 +420,7 @@ await withBrowser(async ({ browser, url, errors }) => {
     ok(Object.keys(l.roads).length >= 26, `the road was drawn: ${Object.keys(l.roads).length} cells`);
     ok(await page.locator('.stage__empty').isHidden(), 'the empty-plant hint is gone');
     eq(await page.evaluate(() => window.__logiplan.ctx.issues().filter((i) => i.severity === 'error').length), 0, 'the plant has no errors');
-    eq(await page.locator('[data-tab=checks] .badge:visible').count(), 0, 'no problem badge');
+    await badgeIs(page, 0, 'no problem badge');
     const st = await stateOf(page);
     ok(st.dirty && (await page.locator('.savechip').innerText()).includes('Unsaved'), 'the plant is marked as unsaved');
     await snap(page, '08-built-light');
@@ -1083,7 +1095,7 @@ await withBrowser(async ({ browser, url, errors }) => {
         if (what === 'variant') await page.getByRole('button', { name: /^Add a variant/ }).click({ timeout: 2000 }).catch(() => {});
         else if (what === 'switch') await page.evaluate(() => { const s = window.__logiplan.store; const ids = s.getState().project.scenarios.map((x) => x.id); s.switchScenario(ids[Math.floor(Math.random() * ids.length)]); });
         else if (what === 'resize') await page.setViewportSize(pick([vp, { width: 900, height: 700 }, { width: 1100, height: 760 }, { width: 600, height: 800 }, { width: 390, height: 800 }]));
-        else if (what === 'example') await page.evaluate(async (id) => { window.__logiplan.store.newProject; await window.__logiplan.ctx.actions.loadExample(id); }, pick(EXAMPLES).id).catch(() => {});
+        else if (what === 'example') await page.evaluate((id) => { void window.__logiplan.ctx.actions.loadExample(id); }, pick(EXAMPLES).id); // asks first when the plant has changes: the loop closes that dialog
         else if (what === 'help') { await page.keyboard.press('?'); await page.waitForTimeout(80); await page.keyboard.press('Escape'); }
         else await page.evaluate((t) => window.__logiplan.store.setUi({ theme: t }), pick(['light', 'dark', 'auto']));
         return `misc ${what}`;
