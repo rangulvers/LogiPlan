@@ -18,9 +18,9 @@
 // A round also reports when it should run again (the next load becoming ready, a maxWait running out) and which
 // depots had a vehicle with work that could not leave.
 // Searches are the expensive part (routing.js): a vehicle whose first search the tick's budget does not allow yet is left out
-// of the round, which then runs again in the next tick. In a plant that is big enough for this to happen (dozens of vehicles
-// on a 100 x 80 grid) the first seconds of a run are spent getting to know the vehicles, a few per tick, instead of one
-// tick of a quarter of a second.
+// of the round, which then runs again in the next tick. In a plant big enough for that to happen (dozens of vehicles on a
+// 100 x 80 grid) the vehicles are put to work a few per tick during the first second or two of a run, instead of all in one
+// tick that takes a fifth of a second.
 
 import { EPS, PRIORITY_AGING } from './common.js';
 import { flowCapacity, flowSpace, readyLoads, reserveInbound } from './stations.js';

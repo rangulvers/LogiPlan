@@ -517,7 +517,7 @@ function unplacedVehicles(ctx) {
     const planned = f.count + f.unplaced;
     out.push(candidate('unplaced', f.id, 'warning', f.unplaced / planned,
       `${f.name} fleet: ${plural(f.unplaced, 'vehicle', 'vehicles')} of ${planned} did not fit on the road and ${isOne(f.unplaced) ? 'is' : 'are'} not simulated.`,
-      `At the start the road network had no free cell for ${plural(f.unplaced, 'vehicle', 'vehicles')}, so the simulation runs with ${f.count} instead of ${planned} ${f.name} vehicles. The results describe the smaller fleet.`,
+      `At the start the road network had no free cell for ${plural(f.unplaced, 'vehicle', 'vehicles')} where they could work (a one-way branch that vehicles cannot drive back out of is not used), so the simulation runs with ${f.count} instead of ${planned} ${f.name} vehicles. The results describe the smaller fleet.`,
       `Add road length or a depot where vehicles can park, or lower the vehicle count of the ${f.name} fleet to ${f.count}.`,
       { fleetIds: [f.id] }));
   }

@@ -75,6 +75,8 @@ function seedValue(seed) {
 
 const odometerOf = (v) => (v && Number.isFinite(v.odometer) ? v.odometer : 0);
 const idOf = (v) => (typeof v === 'string' ? v : v && v.id !== undefined ? String(v.id) : '');
+/** The same jam whatever the order of its vehicles in a report. */
+const jamKey = (ids) => ids.slice().sort().join(',');
 
 export class Simulation {
   /**
@@ -258,7 +260,7 @@ export class Simulation {
       victim: info.victim ? idOf(info.victim) : null,
       resolved: info.resolved !== false,
     };
-    const key = vehicles.slice().sort().join(',');
+    const key = jamKey(vehicles);
     const known = this._jams.get(key);
     const standing = known !== undefined && !known.event.resolved && !this.hasLeft(known, info.vehicles);
     if (standing && !event.resolved) { // the same jam, reported once more
@@ -278,8 +280,8 @@ export class Simulation {
     this.deadlocks.push(event);
     if (this.deadlocks.length > DEADLOCK_HISTORY) {
       const dropped = this.deadlocks.shift();
-      const droppedKey = dropped.vehicles.slice().sort().join(',');
-      if (this._jams.get(droppedKey) !== undefined && this._jams.get(droppedKey).event === dropped) this._jams.delete(droppedKey);
+      const droppedKey = jamKey(dropped.vehicles);
+      if (this._jams.get(droppedKey)?.event === dropped) this._jams.delete(droppedKey);
     }
   }
 
