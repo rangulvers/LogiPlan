@@ -126,7 +126,7 @@ function buildContext(report, layout) {
     flowsTo,
     traffic: report.traffic || {},
     flows: report.flows || {},
-    saturation: new Map(),
+    saturationCache: new Map(),
     name: (id) => (byId.get(id) ? byId.get(id).name : id),
     /** Workstations reached from `id` along flows, passing through storages only. */
     workstationsBeyond: (id, direction) => walkFlows(ctx, id, direction),
@@ -219,24 +219,26 @@ function pickupWait(ctx, f) {
 
 /** Is the fleet the limit of the plant? Busy all the time, or busy enough while loads wait long for it. */
 function saturationOf(ctx, f) {
-  if (!ctx.saturation.has(f.id)) {
+  if (!ctx.saturationCache.has(f.id)) {
     const wait = f.count >= 1 ? pickupWait(ctx, f) : null;
     const longWait = wait != null && wait >= FLEET_PICKUP_WAIT;
     const saturated = f.count >= 1 && (f.utilization >= FLEET_SATURATED_UTILIZATION
       || (longWait && f.utilization >= FLEET_PICKUP_WAIT_MIN_UTILIZATION));
-    ctx.saturation.set(f.id, { saturated, longWait, wait });
+    ctx.saturationCache.set(f.id, { saturated, longWait, wait });
   }
-  return ctx.saturation.get(f.id);
+  return ctx.saturationCache.get(f.id);
 }
 
 /**
  * What limits the transport of a flow:
- *  'none' no vehicle may serve it, 'traffic' congestion holds the vehicles up, 'vehicles' every fleet that may serve
- *  it is saturated, 'free' the vehicles have time to spare (so something else holds the loads back).
+ *  'none' no vehicle may serve it, 'destination' the loads wait for room at the destination, 'traffic' congestion
+ *  holds the vehicles up, 'vehicles' every fleet that may serve it is saturated, 'free' the vehicles have time to
+ *  spare (so something else holds the loads back).
  */
 function transportState(ctx, flow) {
   const serving = ctx.fleets.filter((f) => f.count >= 1 && (!flow.fleetId || flow.fleetId === f.id));
   if (serving.length === 0) return 'none';
+  if (destinationConstrained(ctx, flow.to)) return 'destination';
   if (serving.some((f) => congested(ctx, f))) return 'traffic';
   return serving.every((f) => saturationOf(ctx, f).saturated) ? 'vehicles' : 'free';
 }
@@ -257,6 +259,14 @@ function waitingFlow(ctx, flows) {
   return best && best.backlog >= TRANSPORT_BACKLOG ? best : null;
 }
 
+/** What to do about a destination without room (see destinationConstrained). */
+function roomAdvice(ctx, id) {
+  const s = ctx.byId.get(id);
+  return s.type === 'storage'
+    ? `${s.name} is nearly full (${pct(s.avgFill)} on average): raise its capacity or take loads out of it faster`
+    : `${s.name} cannot take more work (${loadText(s)}): add capacity there or enlarge its input buffer`;
+}
+
 /** The advice for loads that wait at the start of a flow, from the transport verdict of that flow. */
 function transportAdvice(ctx, { flow, backlog }) {
   const from = ctx.name(flow.from);
@@ -270,6 +280,8 @@ function transportAdvice(ctx, { flow, backlog }) {
       return `${waiting}, but congestion holds the vehicles up${aroundHotspots(ctx)}: relieve the traffic before adding vehicles.`;
     case 'none':
       return `No vehicle may serve the flow ${route}: add a fleet or remove the fleet restriction of the flow.`;
+    case 'destination':
+      return `${waiting}, but they wait for room at ${to}: ${roomAdvice(ctx, flow.to)}.`;
     default:
       return `${waiting}, although the vehicles have time to spare: check the room at ${to}, the minimum batch of the flow ${route} and that its vehicles can reach both docks.`;
   }

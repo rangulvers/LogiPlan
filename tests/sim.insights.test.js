@@ -327,6 +327,21 @@ test('transport advice: a flow that no vehicle may serve says so', () => {
   assert.match(waitingAtPress(wrongFleet), /^No vehicle may serve the flow/);
 });
 
+test('transport advice: loads that wait for room at the destination are not answered with more vehicles', () => {
+  const layout = standardPlant();
+  const busy = (r) => { r.fleets.v1.utilization = 0.9; r.fleets.v2.utilization = 0.9; };
+  const process = waitingAtPress(layout, (r) => { busy(r); Object.assign(r.stations.C, { utilization: 0.96, avgIn: 0.5 }); });
+  assert.equal(process, 'On average 4 loads wait at Press for a vehicle, but they wait for room at Final assembly: Final assembly cannot take more work (busy 96 %): add capacity there or enlarge its input buffer.');
+  const full = insightsAfter(layout, (r) => {
+    busy(r);
+    Object.assign(r.stations.A, { blocked: 0.5, yardNow: 12, yardMax: 12 });
+    Object.assign(r.stations.S, { avgFill: 0.9, blocked: 0.05 });
+    r.flows.f1.avgBacklog = 3;
+  });
+  assert.match(find(full, 'supply:A').suggestion, /but they wait for room at Supermarket: Supermarket is nearly full \(90 % on average\): raise its capacity/);
+  assert.doesNotMatch(find(full, 'supply:A').suggestion, /add a vehicle/);
+});
+
 test('waiting loads are judged on the window average, not on the instantaneous backlog', () => {
   const layout = standardPlant();
   const instant = insightsAfter(layout, (r) => { r.stations.B.blocked = 0.3; r.flows.f3.backlog = 9; r.stations.C.starved = 0.6; });
@@ -335,6 +350,13 @@ test('waiting loads are judged on the window average, not on the instantaneous b
   assert.equal(find(instant, 'starved:C').severity, 'info');
   const below = insightsAfter(layout, (r) => { r.stations.B.blocked = 0.3; r.flows.f3.avgBacklog = 0.9; });
   assert.match(find(below, 'blocked:B').suggestion, /^Final assembly cannot take/, 'less than one waiting load on average is no transport problem');
+  const starving = insightsAfter(layout, (r) => { r.stations.C.starved = 0.6; r.flows.f3.avgBacklog = 0.9; });
+  assert.match(find(starving, 'starved:C').suggestion, /^Check the supply into Final assembly/);
+  assert.equal(find(starving, 'starved:C').severity, 'info');
+  const line = lineLayout();
+  const piling = (avgBacklog) => find(insightsAfter(line, (r) => { Object.assign(r.stations.A, { blocked: 0.5, yardNow: 12, yardMax: 12 }); r.flows.f1.avgBacklog = avgBacklog; }), 'supply:A').suggestion;
+  assert.match(piling(0.9), /^Slow the supply down/);
+  assert.match(piling(1), /^On average 1 load waits at Goods in for a vehicle/);
   const hostile = insightsAfter(layout, (r) => { r.stations.B.blocked = 0.3; r.flows.f3.avgBacklog = NaN; });
   assert.match(find(hostile, 'blocked:B').suggestion, /^Final assembly cannot take/);
 });

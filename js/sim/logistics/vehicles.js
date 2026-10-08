@@ -501,6 +501,7 @@ export function vehiclePhaseB(lg, vr, dt, t) {
 function die(lg, vr, t) {
   cancelDepotTrip(lg, vr);
   if (vr.state !== 'broken') vr.resumeState = vr.state;
+  vr.spot = -1; // a dead vehicle no longer needs its waiting cell
   releaseOrder(lg, vr, t, 'vehicle-dead');
   setState(vr, 'dead', t);
   vr.tv.disabled = true;
