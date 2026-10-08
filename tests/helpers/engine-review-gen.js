@@ -2,25 +2,34 @@
 //
 // Written independently of tests/helpers/sim-invariants.js, traffic-invariants.js and logistics-invariants.js: it reads only the
 // PUBLIC surface of a Simulation (sim.time, sim.vehicles, sim.stations, sim.flows, sim.traffic.vehicles, sim.graph and the
-// event bus), never an underscore field, and re-derives every figure it checks by walking the data itself.
+// event bus; queues and machines of the stations as the renderer sees them), never a traffic internal, and re-derives every figure
+// it checks by walking the data itself. A reviewer that reuses the checker of the builder inherits its blind spots.
 //
 //   hostilePlant(seed)        a complete layout made through the layout.js mutators, deliberately nasty: one-way dead ends,
 //                             stations without a dock, flows between road islands, 1x1 stations, empty fleets, batteries
 //                             without charger, crawling vehicles, huge batches, dense street grids ...
 //   createAuditor(sim)        audit.tick() after every step: time, poses on the road, no overlapping bodies, speed limit, load
 //                             conservation (created = live + completed + consumed, found by walking every container), queue and
-//                             depot capacities, order bookkeeping; audit.report() for the KPI report; audit.stuck() for a
-//                             watchdog on vehicles and on the plant as a whole. Each returns a list of violation strings.
+//                             depot capacities, order bookkeeping; audit.report() for the KPI report; audit.stuck() a watchdog
+//                             for vehicles that do not move, with the cause found by following the chain of blockers. Each
+//                             returns a list of violation strings.
 //   fingerprint(sim)          a digest of the complete state, to compare runs bit for bit
-//   cellOf, bodiesOverlap     geometry helpers
+//   jamPlant, bridgePlant, tuggerTwoLines, blockPlant, emptyRoad   engineered plants (deadlock, a trap region, long vehicles, size)
+//   handCheck(id, seed, h)    the napkin checks of a long example run (supply, capacity, lead-time floor, distance, trips ...)
+//   runParallel(job, args)    runs the heavy loops on worker threads (this file is also the worker script)
 //
-// Why own helpers: a reviewer that reuses the checker of the builder inherits its blind spots.
-
+import assert from 'node:assert/strict';
+import { availableParallelism } from 'node:os';
+import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads';
 import { createRng } from '../../js/util/rng.js';
 import { lPath } from '../../js/util/grid.js';
+import { FLEET_PRESETS } from '../../js/model/defaults.js';
 import {
-  addFleet, addFlow, addObstacle, addStation, createLayout, paintRoadPath, updateSettings,
+  addFleet, addFlow, addObstacle, addStation, createLayout, paintRoadPath, updateFleet, updateSettings, updateStation,
 } from '../../js/model/layout.js';
+import { EXAMPLES } from '../../js/model/examples.js';
+import { Simulation } from '../../js/sim/engine.js';
+import { layoutFromAscii } from './ascii.js';
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Geometry
@@ -120,10 +129,12 @@ function loadsOf(sim) {
 /**
  * Independent auditor for one Simulation. Call tick() after every sim.step(); report() now and then; stuck() at checkpoints.
  * @param {object} sim
- * @param {{ shrink?: number, penetration?: number, speedSlack?: number }} [opts]
- *   `shrink`/`penetration`: bodies shrunk to this share of their size may not penetrate deeper than `penetration` metres
+ * @param {{ shrink?: number, penetration?: number, bendShrink?: number, bendPenetration?: number }} [opts]
+ *   On straight road two bodies shrunk to `shrink` of their size (nearly the full rectangles) may not penetrate each other by more
+ *   than `penetration` metres; within reach of a bend or junction, where a rigid rectangle on a curved path swings wide, the same
+ *   with `bendShrink` and `bendPenetration`.
  */
-export function createAuditor(sim, { shrink = 0.8, penetration = 0.02 } = {}) {
+export function createAuditor(sim, { shrink = 0.95, penetration = 0.005, bendShrink = 0.7, bendPenetration = 0.1 } = {}) {
   const ev = { created: 0, completed: 0, assigned: 0, delivered: 0, cancelled: 0, deadlock: 0, loadIds: new Set(), dupCreate: 0 };
   sim.on('loadCreated', (p) => { ev.created++; if (ev.loadIds.has(p.load.id)) ev.dupCreate++; ev.loadIds.add(p.load.id); });
   sim.on('loadCompleted', () => { ev.completed++; });
@@ -132,6 +143,13 @@ export function createAuditor(sim, { shrink = 0.8, penetration = 0.02 } = {}) {
   sim.on('orderCancelled', () => { ev.cancelled++; });
   sim.on('deadlock', () => { ev.deadlock++; });
   const g = sim.graph;
+  // cells where the road turns or branches: rigid rectangles on a curved path overlap a little there, which is not a collision
+  const bends = [];
+  for (const node of g.nodes) {
+    const axes = new Set([...g.in[node], ...g.out[node]].map((e) => g.edges[e].dir & 1));
+    if (axes.size > 1) bends.push([g.x(node), g.y(node)]);
+  }
+  const nearBend = (tv) => bends.some(([bx, by]) => Math.hypot(tv.x - bx, tv.y - by) <= g.cellSize + tv.length / 2);
   let lastTime = sim.time;
   let ticks = 0;
   let maxFactor = sim.settings.speedFactor;
@@ -183,8 +201,9 @@ export function createAuditor(sim, { shrink = 0.8, penetration = 0.02 } = {}) {
           for (const other of hash.get(`${bx + dx},${by + dy}`) || []) {
             if (other.id <= tv.id) continue;
             if (Math.hypot(other.x - tv.x, other.y - tv.y) > (tv.length + other.length + tv.width + other.width)) continue;
-            const depth = bodyPenetration(tv, other, shrink);
-            if (depth > penetration) out.push(`${tv.id} and ${other.id} overlap by ${depth.toFixed(3)} m at (${tv.x.toFixed(2)}, ${tv.y.toFixed(2)})`);
+            const bend = nearBend(tv) || nearBend(other);
+            const depth = bodyPenetration(tv, other, bend ? bendShrink : shrink);
+            if (depth > (bend ? bendPenetration : penetration)) out.push(`${tv.id} and ${other.id} overlap by ${depth.toFixed(3)} m at (${tv.x.toFixed(2)}, ${tv.y.toFixed(2)})`);
           }
         }
       }
@@ -235,9 +254,11 @@ export function createAuditor(sim, { shrink = 0.8, penetration = 0.02 } = {}) {
       if (v.order && !lg.activeOrders.has(v.order.id)) out.push(`${v.id} holds order ${v.order.id} which is not active`);
       if (v.load.length > 0 && !v.order && v.state !== 'dead') out.push(`${v.id} carries ${v.load.length} loads without an order in state ${v.state}`);
     }
+    // the books are updated at the start of a tick, so they may lag the odometer by the distance of one tick
     const roadDist = sim.vehicles.reduce((a, v) => a + v.loadedDistance + v.emptyDistance + v.parkDistance, 0);
     const odometer = sim.vehicles.reduce((a, v) => a + v.tv.odometer, 0);
-    if (Math.abs(roadDist - odometer) > 1 + sim.vehicles.length * sim.settings.speedFactor * 20 * sim.dt * 2) {
+    const oneTick = sim.vehicles.reduce((a, v) => a + v.tv.vmax * maxFactor * sim.dt, 0);
+    if (Math.abs(roadDist - odometer) > 1 + oneTick) {
       out.push(`distance: loaded + empty + park ${roadDist.toFixed(2)} vs odometer ${odometer.toFixed(2)}`);
     }
   }
@@ -562,4 +583,456 @@ export function hostilePlant(seed, opts = {}) {
   }
   layout.name = `Hostile ${seed} (${style}${Object.keys(f).filter((k) => f[k]).map((k) => `, ${k}`).join('')})`;
   return layout;
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Engineered plants
+// ---------------------------------------------------------------------------------------------------------------------
+
+/**
+ * A small plant that deadlocks by itself: a comb of two-way roads with side stubs, a source A feeding a storage B that feeds a
+ * workstation C, one AGV and three 1.6 m trucks that stay where their last job ended. Two vehicles meet on the junction cells
+ * in front of the storage and the source and wait for each other (all of them well within the cell size: 1.2 and 1.6 m on 2 m
+ * cells). With deadlock 'ignore' the jam stands for good (11 of 12 seeds within two hours); with 'resolve' it is relocated away
+ * after 20 s and the plant keeps delivering about 110 loads/h.
+ * @param {'resolve'|'ignore'} mode
+ * @param {object} [settings] more settings
+ */
+export function jamPlant(mode, settings = {}) {
+  return layoutFromAscii([
+    '...................',
+    '...................',
+    '.....+...+...+.....',
+    '....B+...+AAA+.....',
+    '....B+...+AAA+.....',
+    '..+++++++++++++++..',
+    '....+...+...+......',
+    '.CCC+...+...+......',
+    '.CCC+...+...+......',
+    '........+...+......',
+    '........+..........',
+    '........+..........',
+  ], {
+    settings: { deadlock: mode, warmup: 0, dt: 0.05, ...settings },
+    stations: {
+      A: { type: 'source', params: { interArrival: { kind: 'const', mean: 40, spread: 0 }, batch: 2, outCap: 20, startDelay: 50 } },
+      B: { type: 'storage', params: { capacity: 10, dwell: 0 } },
+      C: { type: 'process', params: { cycle: { kind: 'uniform', mean: 30, spread: 0.3 }, inCap: 4, outCap: 8 } },
+    },
+    flows: [['A', 'B', { batchMin: 2, batchMax: 2, maxWait: 40 }], ['B', 'C']],
+    fleets: [
+      { count: 1, speed: 1.5, length: 1.2, capacity: 1, idle: 'stay' },
+      { count: 3, speed: 2, length: 1.6, capacity: 2, loadTime: 30, idle: 'stay' },
+    ],
+  });
+}
+
+/**
+ * Two rings joined by a one-way bridge: the left ring (source A, storage B, optional depot D) is the working area, the right
+ * ring can be entered over the bridge but never left again. Nothing is wrong with it for the validator.
+ * @param {{ vehicles?: number, depot?: boolean, arrival?: number, settings?: object }} [opts] `depot`: the fleet starts in a depot on the left
+ */
+export function bridgePlant({ vehicles = 3, depot = false, arrival = 30, settings = {} } = {}) {
+  return layoutFromAscii([
+    depot ? '...AAA.DD.........' : '...AAA............',
+    '.++++++++>++++++++',
+    '.+......+.+......+',
+    '.+.....B+.+......+',
+    '.+.....B+.+......+',
+    '.+......+.+......+',
+    '.++++++++.++++++++',
+  ], {
+    settings: { warmup: 0, ...settings },
+    stations: {
+      A: { type: 'source', params: { interArrival: { kind: 'normal', mean: arrival, spread: 0.1 }, batch: 1, outCap: 6 } },
+      B: { type: 'storage', params: { capacity: 5000, dwell: 0 } },
+      D: { type: 'depot', params: { slots: 12, chargers: 0 } },
+    },
+    flows: [['A', 'B']],
+    fleets: [{ count: vehicles, speed: 1.5, length: 1.2, capacity: 1, idle: 'stay', loadTime: 10, unloadTime: 10, home: depot ? 'D' : null }],
+  });
+}
+
+/** The 'Two production lines' example with every vehicle as long as a tugger train (3.5 m on 2 m cells, the limit of the traffic engine). */
+export function tuggerTwoLines(deadlock) {
+  const layout = EXAMPLES.find((e) => e.id === 'two-lines').build();
+  for (const fleet of layout.fleets) updateFleet(layout, fleet.id, { length: FLEET_PRESETS.tugger.length });
+  updateSettings(layout, { deadlock, warmup: 0 });
+  return layout;
+}
+
+/**
+ * A big plant made of street blocks: streets every `step` cells, a 2x2 station in every block (source, two workstations, sink,
+ * ...), a source -> workstation -> workstation -> sink chain per source, and `fleets` fleets (AGVs and forklifts alternating)
+ * of `perFleet` vehicles without depot. At 160 x 160 cells this is the largest plant the editor allows.
+ */
+export function blockPlant(cols, rows, step, perFleet, fleets) {
+  const layout = createLayout({ name: `Block plant ${cols}x${rows}`, cols, rows, cellSize: 2 });
+  for (let x = 2; x < cols - 2; x += step) paint(layout, [[x, 2], [x, rows - 3]]);
+  for (let y = 2; y < rows - 2; y += step) paint(layout, [[2, y], [cols - 3, y]]);
+  const sources = [];
+  const processes = [];
+  const sinks = [];
+  let i = 0;
+  for (let by = 3; by + 2 < rows - 3 && i < 300; by += step) {
+    for (let bx = 3; bx + 2 < cols - 3; bx += step) {
+      const type = ['source', 'process', 'process', 'sink'][i % 4];
+      const params = type === 'source' ? { interArrival: dist(15, 0.1) } : type === 'process' ? { cycle: dist(40, 0.1), machines: 2 } : {};
+      const station = addStation(layout, { type, x: bx, y: by, w: 2, h: 2, params });
+      if (station) (type === 'source' ? sources : type === 'sink' ? sinks : processes).push(station);
+      i++;
+    }
+  }
+  sources.forEach((source, j) => {
+    const first = processes[(j * 2) % processes.length];
+    const second = processes[(j * 2 + 1) % processes.length];
+    const sink = sinks[j % sinks.length];
+    if (first) addFlow(layout, source.id, first.id, {});
+    if (first && second && first !== second) addFlow(layout, first.id, second.id, {});
+    if (second && sink) addFlow(layout, second.id, sink.id, {});
+  });
+  for (let f = 0; f < fleets; f++) addFleet(layout, ['agv', 'forklift'][f % 2], { count: perFleet, home: null });
+  return layout;
+}
+
+/**
+ * A straight two-way road of `cells` cells without stations or vehicles, for tests that drive traffic vehicles by hand.
+ * @param {number} cells
+ */
+export function emptyRoad(cells = 16) {
+  return layoutFromAscii(['+'.repeat(cells), '.'.repeat(cells)], { settings: { warmup: 0 }, fleets: [{ count: 0 }] });
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Edits by name (so that a recipe can cross a thread boundary) and example variants
+// ---------------------------------------------------------------------------------------------------------------------
+
+/**
+ * Apply a list of edits through the model API: { fleet: name, patch }, { station: name, patch }, { settings: patch },
+ * { road: { cells, oneWay } }. Returns the layout.
+ */
+export function applyEdits(layout, edits = []) {
+  for (const edit of edits) {
+    if (edit.fleet) {
+      const fleet = layout.fleets.find((f) => f.name === edit.fleet);
+      assert.ok(updateFleet(layout, fleet.id, edit.patch), `edit fleet ${edit.fleet}`);
+    } else if (edit.station) {
+      const station = layout.stations.find((s) => s.name === edit.station);
+      assert.ok(updateStation(layout, station.id, edit.patch), `edit station ${edit.station}`);
+    } else if (edit.settings) {
+      updateSettings(layout, edit.settings);
+    } else if (edit.road) {
+      paintRoadPath(layout, edit.road.cells, { oneWay: edit.road.oneWay === true });
+    }
+  }
+  return layout;
+}
+
+/** A fresh example plant with edits applied. */
+export const exampleVariant = (id, edits = []) => applyEdits(EXAMPLES.find((e) => e.id === id).build(), edits);
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Hand checks of a long run of an example (the numbers a planner would check on a napkin)
+// ---------------------------------------------------------------------------------------------------------------------
+
+const unitsNear = (a, b, tol) => Math.abs(a - b) <= tol * Math.max(1e-9, Math.abs(b));
+
+/** Shortest cycle a workstation can ever sample (s), `mean` for the average. */
+function cycleBounds(station, processFactor) {
+  const { kind, mean, spread } = station.params.cycle;
+  const floor = { const: mean, uniform: mean * (1 - spread), normal: 0.1 * mean, exp: 0 }[kind] ?? 0;
+  return { floor: floor * processFactor, mean: mean * processFactor };
+}
+
+/**
+ * Fastest conceivable end-to-end time of a load (s): the cheapest chain of flows from a source to a sink, each hand-over taking
+ * at least the shortest load + unload time of a fleet that may serve the flow, each workstation at its shortest possible cycle
+ * (`floor`) or at its mean cycle (`mean`), each storage at its dwell time.
+ * @returns {{ floor: number, mean: number }}
+ */
+export function leadTimeBounds(layout) {
+  const fleetsFor = (flow) => layout.fleets.filter((f) => f.count > 0 && (flow.fleetId === null || flow.fleetId === f.id));
+  const handling = (flow) => Math.min(Infinity, ...fleetsFor(flow).map((f) => f.loadTime + f.unloadTime));
+  const stage = (station, which) => {
+    if (station.type === 'process') return cycleBounds(station, layout.settings.processFactor)[which];
+    return station.type === 'storage' ? station.params.dwell : 0;
+  };
+  const result = {};
+  for (const which of ['floor', 'mean']) {
+    const best = new Map(layout.stations.filter((s) => s.type === 'source').map((s) => [s.id, 0]));
+    for (let round = 0; round < layout.stations.length; round++) {
+      for (const flow of layout.flows) {
+        if (!best.has(flow.from)) continue;
+        const to = layout.stations.find((s) => s.id === flow.to);
+        const cost = best.get(flow.from) + handling(flow) + stage(to, which);
+        if (!(best.get(flow.to) <= cost)) best.set(flow.to, cost);
+      }
+    }
+    result[which] = Math.min(Infinity, ...layout.stations.filter((s) => s.type === 'sink' && best.has(s.id)).map((s) => best.get(s.id)));
+  }
+  return result;
+}
+
+/**
+ * Simulate an example for `hours` (warm-up 600 s) and check everything a planner could verify by hand against the layout.
+ * @returns {{ problems: string[], facts: object }} `problems` is empty when the run is plausible
+ */
+export function handCheck(id, seed, hours) {
+  const layout = EXAMPLES.find((e) => e.id === id).build();
+  layout.settings.warmup = 600;
+  const sim = new Simulation(layout, { seed });
+  const problems = [];
+  const check = (condition, message) => { if (!condition) problems.push(`${id}/${seed}: ${message}`); };
+  sim.advance(layout.settings.warmup);
+  const sources = sim.stations.filter((s) => s.type === 'source');
+  const producedAtStart = new Map(sources.map((s) => [s.id, s.produced]));
+  const wipAtStart = sim.logistics.liveLoads;
+  const odometerAtStart = sim.vehicles.map((v) => v.tv.odometer);
+  sim.advance(hours * 3600 - sim.time);
+  const report = sim.kpis();
+  const dur = report.window.duration;
+  check(Math.abs(dur - (sim.time - layout.settings.warmup)) < 1, `window ${dur} s but the measured time is ${sim.time - layout.settings.warmup} s`);
+
+  // throughput can never exceed the supply of the window plus what was in the plant when it started
+  const supply = sources.reduce((sum, s) => sum + s.produced - producedAtStart.get(s.id), 0);
+  check(report.throughput.total <= supply + wipAtStart, `throughput ${report.throughput.total} loads exceeds supply ${supply} + initial WIP ${wipAtStart}`);
+  check(Math.abs(report.throughput.perHour - (report.throughput.total * 3600) / dur) < 1e-9, 'perHour is not total / window');
+  check(report.leadTime.count === report.throughput.total, `${report.leadTime.count} lead times for ${report.throughput.total} loads`);
+  const bySink = Object.values(report.throughput.bySink);
+  check(bySink.reduce((sum, b) => sum + b.count, 0) === report.throughput.total, 'the sinks do not add up to the throughput');
+  check(bySink.every((b) => unitsNear(b.perHour, (b.count * 3600) / dur, 1e-9)), 'a sink\'s loads/h is not count / window');
+
+  // no workstation can produce more than its machines allow, and its busy time explains its output
+  for (const st of sim.stations.filter((s) => s.type === 'process')) {
+    const s = report.stations[st.id];
+    const { floor, mean } = cycleBounds(st.def, layout.settings.processFactor);
+    const p = st.params;
+    check(s.produced <= p.machines * (dur / Math.max(floor, 0.01) + 1) * p.outPerCycle, `${st.id} produced ${s.produced}, more than its machines can`);
+    check(s.produced <= (p.machines * p.outPerCycle * dur * 1.05) / mean + p.machines * p.outPerCycle, `${st.id} produced ${s.produced} at an average cycle of ${mean} s`);
+    const cycles = s.produced / p.outPerCycle;
+    const explained = (s.utilization * p.machines * dur) / mean;
+    check(Math.abs(cycles - explained) <= Math.max(5, 0.2 * explained), `${st.id}: ${cycles} cycles but busy time explains ${explained.toFixed(1)}`);
+  }
+
+  // lead time is at least the time the work takes
+  const bounds = leadTimeBounds(layout);
+  check(report.leadTime.min >= bounds.floor - 1e-6, `shortest lead time ${report.leadTime.min} s is below the physical floor ${bounds.floor} s`);
+  check(report.leadTime.mean >= 0.97 * bounds.mean, `mean lead time ${report.leadTime.mean} s is below the mean path time ${bounds.mean} s`);
+
+  // fleets: distance, speed, handling time, trips and loads hang together
+  let flowTrips = 0;
+  let fleetTrips = 0;
+  for (const fleet of layout.fleets) {
+    const f = report.fleets[fleet.id];
+    fleetTrips += f.trips;
+    check(f.count === fleet.count, `fleet ${fleet.id} reports ${f.count} of ${fleet.count} vehicles`);
+    check(f.distance <= f.count * fleet.speed * dur + 1, `fleet ${fleet.id} drove ${f.distance.toFixed(0)} m, more than ${f.count} vehicles at ${fleet.speed} m/s can in ${dur} s`);
+    const moving = (f.shares.driving + f.shares.waiting) * f.count * dur;
+    check(f.distance <= fleet.speed * moving + 1, `fleet ${fleet.id}: ${f.distance.toFixed(0)} m in ${moving.toFixed(0)} vehicle-seconds of driving exceeds ${fleet.speed} m/s`);
+    check(f.trips * (fleet.loadTime + fleet.unloadTime) <= f.count * dur + 1, `fleet ${fleet.id}: ${f.trips} trips need more hand-over time than exists`);
+    check(f.trips * fleet.loadTime <= f.shares.loading * f.count * dur + f.count * fleet.loadTime + 1, `fleet ${fleet.id}: loading share too small for ${f.trips} trips`);
+    check(f.utilization >= 0 && f.utilization <= 1, `fleet ${fleet.id} utilization ${f.utilization}`);
+  }
+  const mostCarried = Math.max(...layout.fleets.map((f) => f.capacity));
+  let delivered = 0;
+  for (const flow of Object.values(report.flows)) {
+    flowTrips += flow.trips;
+    delivered += flow.delivered;
+    check(flow.delivered >= flow.trips && flow.delivered <= flow.trips * mostCarried, `flow ${flow.from}->${flow.to}: ${flow.delivered} loads in ${flow.trips} trips`);
+  }
+  check(flowTrips === fleetTrips && flowTrips === report.orders.completed, `trips: flows ${flowTrips}, fleets ${fleetTrips}, orders ${report.orders.completed}`);
+  check(delivered >= report.throughput.total || flowTrips === 0, `${delivered} loads delivered but ${report.throughput.total} left the plant`);
+
+  // the odometer, which nobody can argue with
+  const driven = sim.vehicles.reduce((sum, v, i) => sum + v.tv.odometer - odometerAtStart[i], 0);
+  check(driven <= layout.fleets.reduce((sum, f) => sum + f.count * f.speed, 0) * dur + 1, `odometer ${driven.toFixed(0)} m is more than the fleets can drive`);
+
+  const auditor = createAuditor(sim);
+  for (const message of auditor.report(report)) problems.push(`${id}/${seed}: ${message}`);
+  return {
+    problems,
+    facts: {
+      id, seed, perHour: report.throughput.perHour, supplyPerHour: (supply * 3600) / dur, leadMin: report.leadTime.min, leadMean: report.leadTime.mean,
+      leadFloor: bounds.floor, fleetUtilization: Object.values(report.fleets).map((f) => f.utilization), driven,
+      reported: Object.values(report.fleets).reduce((sum, f) => sum + f.distance, 0),
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Jobs for the worker pool (plain data in, plain data out)
+// ---------------------------------------------------------------------------------------------------------------------
+
+/** Run a plant tick by tick with the auditor and return what went wrong (first few messages) plus a few facts. */
+function audited(layout, seconds, { seed, perTick, mutate } = {}) {
+  const sim = new Simulation(layout, seed === undefined ? {} : { seed });
+  const auditor = createAuditor(sim);
+  const violations = new Set();
+  const steps = Math.round(seconds / sim.dt);
+  const reportEvery = Math.max(1, Math.round(30 / sim.dt));
+  for (let i = 1; i <= steps; i++) {
+    if (mutate) mutate(sim, i);
+    sim.step();
+    for (const message of auditor.tick()) violations.add(message);
+    if (perTick) perTick(sim, i, auditor);
+    if (i % reportEvery === 0) for (const message of auditor.report()) violations.add(`report: ${message}`);
+    if (violations.size >= 5) break;
+  }
+  return { sim, auditor, violations: [...violations].slice(0, 5) };
+}
+
+/** Job 'fuzz': one hostile plant, `seconds` of simulated time, every invariant after every tick. */
+function fuzzJob({ seed, seconds }) {
+  const layout = hostilePlant(seed);
+  const { sim, violations } = audited(layout, seconds);
+  return { seed, name: layout.name, violations, completed: sim.logistics.completed, vehicles: sim.vehicles.length, time: sim.time };
+}
+
+/** Job 'scaled': an example with its fleets and its demand scaled, audited, with the stuck-vehicle watchdog. */
+function scaledJob({ id, fleetFactor, demand, seconds, seed }) {
+  const layout = EXAMPLES.find((e) => e.id === id).build();
+  for (const fleet of layout.fleets) updateFleet(layout, fleet.id, { count: Math.max(1, Math.round(fleet.count * fleetFactor)) });
+  updateSettings(layout, { demandFactor: demand, warmup: 0 });
+  const stuck = [];
+  const { sim, auditor, violations } = audited(layout, seconds, {
+    seed,
+    perTick: (s, i, auditor) => { if (i % 300 === 0) for (const m of auditor.stuck({ vehicleSeconds: 600 })) stuck.push(m); },
+  });
+  return { id, fleetFactor, demand, violations, stuck: stuck.slice(0, 3), completed: sim.logistics.completed, vehicles: sim.vehicles.length, deadlocks: sim.traffic.stats.deadlocks };
+}
+
+/** Length of the calm period at the end of an example's runtime fuzz (s). */
+const RECOVERY_SECONDS = 1200;
+/** Speed factors the runtime fuzz draws from. */
+const SPEED_STEPS = [0.05, 0.05, 0.1, 0.5, 1, 5, 20, 20];
+
+/**
+ * Job 'runtime': change the what-if settings every 5 to 30 s of simulated time while the auditor watches. `mode` 'speed': only the
+ * vehicle speed (0.05 .. 20); 'all': every runtime key. An example gets a calm start (600 s), a stormy middle and a calm end (1200 s
+ * with everything back at 1); the result tells how much it delivered in the calm end compared with the same minutes of an
+ * undisturbed run of the same seed.
+ */
+function runtimeJob({ example, seed, seconds, mode, rngSeed }) {
+  const layout = example ? EXAMPLES.find((e) => e.id === example).build() : hostilePlant(seed);
+  const rng = createRng(rngSeed);
+  const calmStart = example ? 600 : 0;
+  const stormEnd = example ? seconds - RECOVERY_SECONDS : seconds;
+  let nextChange = calmStart + 10;
+  let completedAtStormEnd = null;
+  const mutate = (sim) => {
+    if (sim.time >= stormEnd) {
+      if (completedAtStormEnd === null) {
+        sim.setRuntime({ speedFactor: 1, demandFactor: 1, processFactor: 1 });
+        completedAtStormEnd = sim.logistics.completed;
+      }
+      return;
+    }
+    if (sim.time < nextChange) return;
+    nextChange = sim.time + 5 + rng.next() * 25;
+    if (mode === 'speed') sim.setRuntime({ speedFactor: rng.pick(SPEED_STEPS) });
+    else {
+      sim.setRuntime({
+        speedFactor: rng.pick(SPEED_STEPS), demandFactor: rng.pick([0.05, 0.5, 1, 4, 20]), processFactor: rng.pick([0.05, 0.5, 1, 4, 20]),
+        dispatch: rng.pick(['nearest', 'oldest', 'balanced']), routing: rng.pick(['shortest', 'congestion']),
+      });
+    }
+  };
+  const stuck = [];
+  const watch = (s, i, auditor) => {
+    if (!example || i % Math.max(1, Math.round(30 / s.dt)) !== 0) return;
+    const found = auditor.stuck({ vehicleSeconds: 300 });
+    if (s.time >= stormEnd + 400) stuck.push(...found); // five minutes after everything is back to normal nobody may stand still
+  };
+  const { sim, violations } = audited(layout, seconds, { seed: example ? seed : undefined, mutate, perTick: watch });
+  const result = { example, seed, mode, violations, time: sim.time, speedFactor: sim.settings.speedFactor, stuck: stuck.slice(0, 3), deliveredAfterStorm: null, controlDelivered: null };
+  if (example) {
+    result.deliveredAfterStorm = sim.logistics.completed - completedAtStormEnd;
+    const control = new Simulation(EXAMPLES.find((e) => e.id === example).build(), { seed });
+    control.advance(stormEnd);
+    const before = control.logistics.completed;
+    control.advance(RECOVERY_SECONDS);
+    result.controlDelivered = control.logistics.completed - before;
+  }
+  return result;
+}
+
+/** Job 'tips': mean figures of a variant of an example over `seeds` runs of `hours` hours (default warm-up). */
+function tipJob({ id, edits, seeds, hours, fleet, station }) {
+  const layout = exampleVariant(id, edits);
+  const fleetId = fleet ? layout.fleets.find((f) => f.name === fleet).id : null;
+  const stationId = station ? layout.stations.find((s) => s.name === station).id : null;
+  const sums = { throughput: 0, lead: 0, wip: 0, fleetUtilization: 0, charging: 0, pickupWait: 0, stationUtilization: 0, yardMax: 0, waitShare: 0 };
+  for (let seed = 1; seed <= seeds; seed++) {
+    const sim = new Simulation(layout, { seed });
+    sim.advance(hours * 3600);
+    const k = sim.kpis();
+    sums.throughput += k.throughput.perHour;
+    sums.lead += k.leadTime.mean ?? 0;
+    sums.wip += k.wip.mean;
+    sums.pickupWait += k.orders.avgPickupWait ?? 0;
+    sums.waitShare += k.traffic.waitShare;
+    if (fleetId) { sums.fleetUtilization += k.fleets[fleetId].utilization; sums.charging += k.fleets[fleetId].shares.charging; }
+    if (stationId) sums.stationUtilization += k.stations[stationId].utilization;
+    sums.yardMax += Math.max(0, ...Object.values(k.stations).filter((s) => s.type === 'source').map((s) => s.yardMax));
+  }
+  return Object.fromEntries(Object.entries(sums).map(([key, sum]) => [key, sum / seeds]));
+}
+
+/** Job 'dt': KPIs of an example at a given time step. */
+function dtJob({ id, dt, seed, hours }) {
+  const layout = EXAMPLES.find((e) => e.id === id).build();
+  layout.settings.dt = dt;
+  layout.settings.warmup = 600;
+  const sim = new Simulation(layout, { seed });
+  sim.advance(hours * 3600);
+  const k = sim.kpis();
+  const fleets = Object.values(k.fleets);
+  return {
+    throughput: k.throughput.perHour, lead: k.leadTime.mean, waitShare: k.traffic.waitShare,
+    utilization: fleets.reduce((sum, f) => sum + f.utilization * f.count, 0) / fleets.reduce((sum, f) => sum + f.count, 0),
+  };
+}
+
+const JOBS = { handCheck: ({ id, seed, hours }) => handCheck(id, seed, hours), fuzz: fuzzJob, scaled: scaledJob, runtime: runtimeJob, tips: tipJob, dt: dtJob };
+
+if (!isMainThread && workerData && workerData.engineReviewWorker === true) {
+  parentPort.on('message', (msg) => {
+    try {
+      parentPort.postMessage({ id: msg.id, result: JOBS[msg.job](msg.args) });
+    } catch (error) {
+      parentPort.postMessage({ id: msg.id, error: String((error && error.stack) || error) });
+    }
+  });
+}
+
+/**
+ * Run `job` once per entry of `argsList` on a small pool of worker threads (this file is the worker script). Results come back
+ * in the order of `argsList`; a throwing job rejects the promise with its stack.
+ * @param {'handCheck'|'fuzz'|'scaled'|'runtime'|'tips'|'dt'} job
+ * @param {object[]} argsList
+ * @returns {Promise<object[]>}
+ */
+export async function runParallel(job, argsList) {
+  const results = new Array(argsList.length);
+  let next = 0;
+  const size = Math.max(1, Math.min(4, availableParallelism(), argsList.length));
+  const pool = Array.from({ length: size }, () => new Worker(new URL(import.meta.url), { workerData: { engineReviewWorker: true } }));
+  try {
+    await Promise.all(pool.map((worker) => new Promise((resolve, reject) => {
+      worker.on('error', reject);
+      const feed = () => {
+        if (next >= argsList.length) { resolve(); return; }
+        const id = next++;
+        worker.once('message', (msg) => {
+          if (msg.error) reject(new Error(msg.error));
+          else { results[msg.id] = msg.result; feed(); }
+        });
+        worker.postMessage({ id, job, args: argsList[id] });
+      };
+      feed();
+    })));
+  } finally {
+    await Promise.all(pool.map((worker) => worker.terminate()));
+  }
+  return results;
 }

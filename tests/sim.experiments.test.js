@@ -7,7 +7,6 @@ import {
 } from '../js/sim/experiments.js';
 import { Simulation } from '../js/sim/engine.js';
 import { EXAMPLES } from '../js/model/examples.js';
-import { generateInsights } from '../js/sim/insights.js';
 import { validateLayout } from '../js/model/validate.js';
 import {
   checkInvariants, cloneLayout, createLayout, docksOf, getFleet, getStation, moveStation, normalizeLayout, paintRoadPath, updateFleet, updateSettings,
@@ -152,7 +151,7 @@ test('runSimulation: invalid options and layouts reject', async () => {
 
 test('runSimulation: progress is reported from 0 to 1 in non-decreasing steps with the clock and the label', async () => {
   const calls = [];
-  await runSimulation(transportLimited(2), { duration: 600, warmup: 0, yieldEveryMs: 0, label: 'Base case', onProgress: (p) => calls.push(p) });
+  await runSimulation(transportLimited(2), { duration: 600, warmup: 0, yieldEveryMs: 1, label: 'Base case', onProgress: (p) => calls.push(p) });
   assert.ok(calls.length > 5, `${calls.length} progress reports`);
   assert.equal(calls[0].fraction, 0);
   assert.equal(calls[0].simTime, 0);
@@ -271,7 +270,7 @@ test('runReplications: one replication has zero spread; the options must make se
 
 test('runReplications: progress covers all replications, labelled; an abort between runs rejects', async () => {
   const calls = [];
-  await runReplications(lineLayout(), { replications: 3, duration: 300, warmup: 0, yieldEveryMs: 0, label: 'Case A', onProgress: (p) => calls.push(p) });
+  await runReplications(lineLayout(), { replications: 3, duration: 300, warmup: 0, yieldEveryMs: 1, label: 'Case A', onProgress: (p) => calls.push(p) });
   assert.equal(calls[0].fraction, 0);
   assert.equal(calls.at(-1).fraction, 1);
   for (let i = 1; i < calls.length; i++) assert.ok(calls[i].fraction >= calls[i - 1].fraction);
@@ -448,7 +447,7 @@ test('sweep: accepts a parameter key, rejects unknown ones, leaves the layout al
   const layout = transportLimited(2);
   const frozen = structuredClone(layout);
   const calls = [];
-  const results = await sweep(layout, 'fleet.v1.count', [1, 2], { replications: 2, duration: 300, warmup: 0, yieldEveryMs: 0, onProgress: (p) => calls.push(p) });
+  const results = await sweep(layout, 'fleet.v1.count', [1, 2], { replications: 2, duration: 300, warmup: 0, yieldEveryMs: 1, onProgress: (p) => calls.push(p) });
   assert.equal(results.length, 2);
   assert.deepEqual(layout, frozen);
   assert.equal(calls.at(-1).fraction, 1);
@@ -502,7 +501,7 @@ test('compareScenarios: identical scenarios give identical results; progress cov
   const calls = [];
   const results = await compareScenarios(
     [{ id: 'x', name: 'Plan A', layout }, { id: 'y', name: 'Plan B', layout: cloneLayout(layout) }],
-    { replications: 2, duration: 300, warmup: 0, yieldEveryMs: 0, onProgress: (p) => calls.push(p) },
+    { replications: 2, duration: 300, warmup: 0, yieldEveryMs: 1, onProgress: (p) => calls.push(p) },
   );
   assert.deepEqual(results[0].summary, results[1].summary);
   assert.deepEqual(results[0].runs, results[1].runs);
@@ -525,32 +524,29 @@ test('compareScenarios: scenarios with their own seeds are simulated with those 
 });
 
 // ---------------------------------------------------------------------------------------------------------------------
-// The tips of the examples are true: every variant a tip describes is run and has to behave as promised
+// The tips of the examples refer to real things: the numbers, stations and variants they name exist and can be run.
+// That the figures they promise are true over the default run length of 8 simulated hours is tested in
+// tests/sim.engine.review.test.js ('tips': worker threads, several seeds, every figure).
 // ---------------------------------------------------------------------------------------------------------------------
 
 const stationNamed = (layout, name) => layout.stations.find((s) => s.name === name);
-const reportStation = (report, layout, name) => report.stations[stationNamed(layout, name).id];
 
-test('Starter tips: one AGV is not enough; +50 % demand runs the assembly flat out; a station without a road is reported', async () => {
+/** The variant a tip describes must be a valid layout that simulates without a fault. */
+function assertRuns(layout, what) {
+  assert.deepEqual(checkInvariants(layout), [], what);
+  assert.deepEqual(validateLayout(layout).filter((i) => i.severity === 'error'), [], `${what}: no errors in the Checks tab`);
+  const sim = new Simulation(layout, { seed: 1 });
+  sim.advance(900);
+  assertAllFinite(sim.kpis());
+  assert.ok(sim.logistics.completed > 0 || sim.logistics.liveLoads > 0, `${what}: something happens`);
+}
+
+test('Starter tips: the plant has the two AGVs and the Assembly they talk about; the variants run; a station without a road is reported', () => {
   const layout = example('starter');
-  const base = await measureRuns(layout);
-  const one = await measureRuns(variantOf('starter', (l) => updateFleet(l, 'v1', { count: 1 })));
-  const avg = (runs, fn) => mean(runs.map(fn));
-  assert.ok(avg(one, (r) => r.fleets.v1.utilization) >= 0.97, 'the single AGV is busy all the time');
-  const gate = (r) => reportStation(r, layout, 'Goods receiving').avgFill;
-  assert.ok(avg(one, gate) > 4 * avg(base, gate), `pallets pile up at Goods receiving: fill ${avg(one, gate).toFixed(2)} against ${avg(base, gate).toFixed(2)}`);
-  assert.ok(avg(one, (r) => r.leadTime.mean) > 1.7 * avg(base, (r) => r.leadTime.mean), 'the lead time roughly doubles');
-  assert.ok(avg(one, (r) => r.throughput.perHour) < avg(base, (r) => r.throughput.perHour));
-  const starved = (r) => reportStation(r, layout, 'Assembly').starved;
-  assert.ok(avg(one, starved) > avg(base, starved), 'and the assembly waits for parts more often');
-
-  const busy = await measureRuns(variantOf('starter', (l) => updateSettings(l, { demandFactor: 1.5 })));
-  const assembly = avg(busy, (r) => reportStation(r, layout, 'Assembly').utilization);
-  const agv = avg(busy, (r) => r.fleets.v1.utilization);
-  assert.ok(assembly >= 0.92, `the assembly runs flat out: ${assembly.toFixed(2)}`);
-  assert.ok(agv >= 0.85 && agv <= assembly, `the AGVs follow: ${agv.toFixed(2)}`);
-  const output = avg(busy, (r) => r.throughput.perHour);
-  assert.ok(output > 27 && output < 31, `the output tops out near 30 pallets/h (${output.toFixed(1)})`);
+  assert.equal(getFleet(layout, 'v1').count, 2, 'the tip lowers the count of two AGVs to 1');
+  assert.ok(stationNamed(layout, 'Assembly') && stationNamed(layout, 'Goods receiving'));
+  assertRuns(variantOf('starter', (l) => updateFleet(l, 'v1', { count: 1 })), 'one AGV');
+  assertRuns(variantOf('starter', (l) => updateSettings(l, { demandFactor: 1.5 })), 'demand x 1.5');
 
   const moved = example('starter');
   const dispatch = stationNamed(moved, 'Dispatch');
@@ -561,74 +557,36 @@ test('Starter tips: one AGV is not enough; +50 % demand runs the assembly flat o
   assert.deepEqual(validateLayout(moved).filter((i) => i.severity === 'error'), [], 'redrawing the road so that it touches again clears the error');
 });
 
-test('Two lines tips: +30 % demand loads the AGVs and the press line; AGV count, charge time and repair time do what the tips say', async () => {
+test('Two lines tips: the AGVs, chargers and the Press line they talk about are there with the values they start from; the variants run', () => {
   const layout = example('two-lines');
-  const base = await measureRuns(layout);
-  const metric = {
-    thr: (r) => r.throughput.perHour,
-    lead: (r) => r.leadTime.mean,
-    wip: (r) => r.wip.mean,
-    agv: (r) => r.fleets.v2.utilization,
-    press: (r) => reportStation(r, layout, 'Press line').utilization,
-    pick: (r) => r.fleets.v2.avgPickupWait,
-    charge: (r) => r.fleets.v2.shares.charging,
-  };
-  const avg = (runs, name) => mean(runs.map(metric[name]));
-
-  const busy = await measureRuns(variantOf('two-lines', (l) => updateSettings(l, { demandFactor: 1.3 })));
-  assert.ok(avg(busy, 'thr') > 1.25 * avg(base, 'thr') && avg(busy, 'thr') < 1.35 * avg(base, 'thr'), 'the output rises by about 30 %');
-  assert.ok(avg(busy, 'press') >= 0.85 && avg(busy, 'agv') >= 0.85, `Press line ${avg(busy, 'press').toFixed(2)}, AGVs ${avg(busy, 'agv').toFixed(2)}`);
-  const saturated = busy.filter((r) => generateInsights(r, layout).some((i) => i.id === 'fleet-saturated:v2')).length;
-  assert.ok(saturated >= 2, `the Results tab calls the AGVs saturated in ${saturated} of 3 runs`);
-
-  const five = await measureRuns(variantOf('two-lines', (l) => updateFleet(l, 'v2', { count: 5 })));
-  const eight = await measureRuns(variantOf('two-lines', (l) => updateFleet(l, 'v2', { count: 8 })));
   assert.equal(getFleet(layout, 'v2').count, 7, 'the tip names the real number of AGVs');
-  assert.ok(avg(five, 'lead') > avg(base, 'lead') * 1.05, 'with 5 AGVs the lead time grows');
-  assert.ok(avg(five, 'pick') > 1.3 * avg(base, 'pick') && avg(five, 'pick') < 1.8 * avg(base, 'pick'), 'and the loads wait about 50 % longer for a vehicle');
-  assert.ok(Math.abs(avg(eight, 'lead') - avg(base, 'lead')) < 0.03 * avg(base, 'lead'), 'beyond 7 the lead time hardly changes');
-  assert.ok(avg(eight, 'agv') < avg(base, 'agv') - 0.03, 'only the idle time grows');
-  for (const other of [five, eight]) assert.ok(Math.abs(avg(other, 'thr') - avg(base, 'thr')) < 0.06 * avg(base, 'thr'), 'the output stays the same');
-
-  const slow = await measureRuns(variantOf('two-lines', (l) => updateFleet(l, 'v2', { battery: { chargeTimeMin: 60 } })));
-  const oneCharger = await measureRuns(variantOf('two-lines', (l) => {
+  assert.equal(getFleet(layout, 'v2').battery.chargeTimeMin, 15);
+  assert.equal(stationNamed(layout, 'AGV charging').params.chargers, 4);
+  assert.equal(stationNamed(layout, 'Press line').params.mttr, 420);
+  assertRuns(variantOf('two-lines', (l) => updateSettings(l, { demandFactor: 1.3 })), 'demand x 1.3');
+  for (const count of [5, 8]) assertRuns(variantOf('two-lines', (l) => updateFleet(l, 'v2', { count })), `${count} AGVs`);
+  assertRuns(variantOf('two-lines', (l) => {
     updateFleet(l, 'v2', { battery: { chargeTimeMin: 60 } });
     updateStation(l, stationNamed(l, 'AGV charging').id, { params: { chargers: 1 } });
-  }));
-  assert.ok(avg(slow, 'charge') >= 0.15 && avg(slow, 'charge') <= 0.25, `a fifth of the time on the chargers: ${avg(slow, 'charge').toFixed(2)}`);
-  const drop = 1 - avg(slow, 'thr') / avg(base, 'thr');
-  assert.ok(drop >= 0.05 && drop <= 0.12, `the output falls by about 8 %: ${(drop * 100).toFixed(1)} %`);
-  const dropOne = 1 - avg(oneCharger, 'thr') / avg(base, 'thr');
-  assert.ok(dropOne >= 0.18 && dropOne <= 0.28, `with one charger by almost a quarter: ${(dropOne * 100).toFixed(1)} %`);
-
-  const repair = await measureRuns(variantOf('two-lines', (l) => updateStation(l, stationNamed(l, 'Press line').id, { params: { mttr: 1800 } })));
-  assert.ok(avg(repair, 'lead') > 1.1 * avg(base, 'lead') && avg(repair, 'wip') > 1.1 * avg(base, 'wip') && avg(repair, 'wip') < 1.3 * avg(base, 'wip'),
-    `lead time ${avg(repair, 'lead').toFixed(0)} s and WIP ${avg(repair, 'wip').toFixed(1)} against ${avg(base, 'lead').toFixed(0)} s and ${avg(base, 'wip').toFixed(1)}`);
-  assert.ok(Math.abs(avg(repair, 'thr') - avg(base, 'thr')) < 0.05 * avg(base, 'thr'), 'the warehouse absorbs the stops: the output holds');
+  }), 'slow charging and one charger');
+  assertRuns(variantOf('two-lines', (l) => updateStation(l, stationNamed(l, 'Press line').id, { params: { mttr: 1800 } })), 'repair time 30 min');
 });
 
-test('Congestion lab tips: fewer vehicles, bigger loads, quicker hand-over and a second dock for Packing shorten the queues', async () => {
+test('Congestion lab tips: the vehicles, hand-over time and docks they talk about are there; the variants run; a second dock for Packing shortens the queue', async () => {
   const layout = example('congestion-lab');
   const opts = { replications: 3, hours: 1.5 };
   const base = await measureRuns(layout, opts);
   const run = (edit) => measureRuns(variantOf('congestion-lab', edit), opts);
   const wait = (r) => r.traffic.waitShare;
-  const thr = (r) => r.throughput.perHour;
-  const fleet = (patch) => (l) => updateFleet(l, 'v1', patch);
 
   assert.equal(layout.fleets[0].count, 9, 'the tip names the real number of AGVs');
-  const more = await run(fleet({ count: 10 }));
-  const fewer = await run(fleet({ count: 6 }));
-  assert.ok(pairedDiffs(base, more, wait).every((d) => d > 0), 'for every seed one more AGV adds waiting');
-  assert.ok(mean(pairedDiffs(base, fewer, wait)) <= -0.05 && mean(fewer.map(wait)) < 0.75 * mean(base.map(wait)), `six AGVs: ${mean(fewer.map(wait)).toFixed(3)} against ${mean(base.map(wait)).toFixed(3)}`);
-  for (const other of [more, fewer]) assert.ok(Math.abs(mean(pairedDiffs(base, other, thr))) < 0.03 * mean(base.map(thr)), 'and the output does not change');
-  assert.ok(mean(more.map((r) => r.fleets.v1.utilization)) < mean(base.map((r) => r.fleets.v1.utilization)) - 0.03, 'the extra AGV only lowers the utilization');
-
-  const carrying = await run(fleet({ capacity: 2 }));
-  assert.ok(mean(carrying.map(wait)) < 0.7 * mean(base.map(wait)), `capacity 2: ${mean(carrying.map(wait)).toFixed(3)} against ${mean(base.map(wait)).toFixed(3)}`);
   assert.equal(layout.fleets[0].loadTime, 24, 'the tip names the real hand-over time');
-  const quick = await run(fleet({ loadTime: 12, unloadTime: 12 }));
-  assert.ok(mean(quick.map(wait)) < 0.7 * mean(base.map(wait)), `12 s hand-over: ${mean(quick.map(wait)).toFixed(3)} against ${mean(base.map(wait)).toFixed(3)}`);
+  assert.equal(layout.fleets[0].capacity, 1);
+  const packingDock = docksOf(layout, stationNamed(layout, 'Packing').id);
+  assert.ok(packingDock.every(([, cy]) => cy === 8), 'Packing\'s docks are on the main aisle');
+  for (const patch of [{ count: 6 }, { count: 10 }, { capacity: 2 }, { loadTime: 12, unloadTime: 12 }]) {
+    assertRuns(variantOf('congestion-lab', (l) => updateFleet(l, 'v1', patch)), JSON.stringify(patch));
+  }
 
   // moving the one dock off the aisle alone does not help: the queue just moves into the bay (a dock serves one vehicle at a time)
   const spur = await run((l) => {
@@ -637,11 +595,8 @@ test('Congestion lab tips: fewer vehicles, bigger loads, quicker hand-over and a
   });
   assert.ok(pairedDiffs(base, spur, wait).every((d) => d > 0), 'Packing on a short dead-end spur waits more for every seed');
 
-  const packingDock = docksOf(layout, stationNamed(layout, 'Packing').id);
-  assert.ok(packingDock.every(([, cy]) => cy === 8), 'Packing\'s docks are on the main aisle');
   const second = await run((l) => paintRoadPath(l, [[24, 4], [32, 4], [32, 8]], { oneWay: true }));
   assert.ok(pairedDiffs(base, second, wait).every((d) => d < 0), 'for every seed Packing\'s second dock removes waiting');
-  assert.ok(mean(second.map(wait)) < 0.75 * mean(base.map(wait)), `a second dock: ${mean(second.map(wait)).toFixed(3)} against ${mean(base.map(wait)).toFixed(3)}`);
   assert.ok(mean(pairedDiffs(base, second, (r) => r.leadTime.mean)) < 0, 'the lead time falls');
   assert.ok(second.every((r) => r.traffic.deadlocks === 0));
 });

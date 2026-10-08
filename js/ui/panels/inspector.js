@@ -16,7 +16,7 @@ import { STATION_TYPES, STATION_TYPE_ORDER, OBSTACLE_KINDS, FLEET_PRESETS, GRID_
 import {
   getStation, getFlow, getFleet, flowsFrom, flowsTo, docksOf, roadAt, hasLink, cloneLayout, roadLengthMeters,
   updateStation, resizeStation, duplicateStation, removeStation, updateObstacle, removeObstacle, updateLabel, removeLabel,
-  eraseRoadCell, eraseLink, paintRoadPath, setRoadLimit, setName, setNotes, updateSettings, resizeGrid, setCellSize,
+  eraseRoadCell, eraseLink, paintRoadPath, setRoadLimit, setNotes, updateSettings, resizeGrid, setCellSize,
 } from '../../model/layout.js';
 import { DX, DY, opposite, parseKey } from '../../util/grid.js';
 import { formatNumber, formatPercent, formatDistance, round } from '../../util/format.js';
@@ -704,7 +704,8 @@ function plantView(ctx, memory) {
   const { store } = ctx;
   const start = store.getState().layout;
   const commit = (label, fn, key) => store.commit(label, fn, { coalesce: `plant:${key}` });
-  const name = textField({ label: 'Plant name', value: start.name, maxLength: 80, onChange: (v) => commit('Rename plant', (d) => setName(d, v), 'name') });
+  // One name for the planner: this is the project name of the top bar, which also names the file, the window and the report.
+  const name = textField({ label: 'Plant name', value: store.getState().project.name, maxLength: 80, onChange: (v) => { store.renameProject(v); } });
   const notes = textField({ label: 'Notes', value: start.notes, multiline: true, rows: 4, maxLength: 20000, hint: 'Assumptions, sources, open questions. Saved with the plant and included in the report.', onChange: (v) => commit('Edit plant notes', (d) => setNotes(d, v), 'notes') });
 
   const gridField = (label, key, limits) => {
@@ -742,7 +743,7 @@ function plantView(ctx, memory) {
     el,
     update(state) {
       const { layout } = state;
-      name.set(layout.name);
+      name.set(state.project.name);
       notes.set(layout.notes);
       for (const [control, key] of [[cols, 'cols'], [rows, 'rows']]) if (document.activeElement !== control.input) control.set(layout.grid[key]);
       cell.set(layout.grid.cellSize);

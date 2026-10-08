@@ -1,7 +1,7 @@
 // Integration tests of the whole simulation: the three example plants and 40 seeded random plants are run through the real
 // Simulation with every invariant checked after EVERY tick (tests/helpers/sim-invariants.js), the examples are held to the
 // outcomes they promise, throughput scales sensibly with the number of vehicles, and the engine is fast enough to simulate
-// shifts in seconds. (That the tips printed with the examples are true is tested in tests/sim.experiments.test.js.)
+// shifts in seconds. (That the tips printed with the examples are true over 8 simulated hours is tested in tests/sim.engine.review.test.js.)
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Simulation } from '../js/sim/engine.js';
@@ -29,18 +29,23 @@ function runChecked(layout, seconds, seed) {
   const checker = createSimChecker(sim);
   const ticks = Math.round(seconds / sim.dt);
   const reportEvery = Math.round(60 / sim.dt);
+  const stuck = [];
   for (let i = 1; i <= ticks; i++) {
     sim.step();
     checker.check();
-    if (i % reportEvery === 0) checker.checkReport();
+    if (i % reportEvery === 0) {
+      checker.checkReport();
+      stuck.push(...checker.stuck({ seconds: 600 }));
+    }
   }
   checker.checkReport();
-  return { sim, checker };
+  return { sim, checker, stuck };
 }
 
 for (const e of EXAMPLES) {
   test(`invariants: ${e.name}: 30 simulated minutes, every invariant after every tick`, () => {
-    const { sim, checker } = runChecked(e.build(), 1800, 7);
+    const { sim, checker, stuck } = runChecked(e.build(), 1800, 7);
+    assert.deepEqual(stuck, [], 'nobody stands still');
     assert.ok(sim.logistics.completed > 0, 'the plant produced something');
     assert.ok(checker.ledger.created > 0 && checker.ledger.delivered > 0);
     assert.ok(Math.abs(sim.time - 1800) < 1e-6);
@@ -53,7 +58,8 @@ test('invariants: 40 seeded random plants, 30 simulated minutes each, every inva
   const dts = new Set();
   for (let seed = 1; seed <= 40; seed++) {
     try {
-      const { sim } = runChecked(randomPlant(seed), 1800);
+      const { sim, stuck } = runChecked(randomPlant(seed), 1800);
+      assert.deepEqual(stuck, [], 'nobody stands still');
       if (sim.logistics.completed > 0) live++;
       vehicles += sim.vehicles.length;
       dts.add(sim.dt);

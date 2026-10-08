@@ -17,8 +17,9 @@
 //
 // Results live in memory for the life of the page (module level, so a re-created tab shows them again). A result remembers the
 // layout objects it was computed from; once a layout differs from them in a way the simulation notices (layoutChangeKind
-// 'runtime' or 'structural'; renaming, notes, labels and obstacles do not count) a banner says so and offers "Run again".
-// After "Apply" the sweep is re-based on the new layout, because the swept setting is overwritten by every value anyway.
+// 'runtime' or 'structural'; renaming, notes, labels and obstacles do not count) a banner says so and offers "Run again". A sweep
+// ignores the swept setting itself: every value overwrote it, so applying a value, undoing it or editing it by hand keeps the sweep
+// valid, and the "in use" row and the dashed line follow the plant's current value.
 //
 // Everything above the "browser" banner is pure (no DOM) and unit-tested in tests/ui.report.test.js; report.js reuses it.
 //
@@ -288,29 +289,33 @@ export function recommendSweep(points, metric, unit) {
   const enough = (m) => (metric.better === 'higher' ? m >= ENOUGH * bestMean : bestMean <= 0 ? m <= 0 : m <= bestMean / ENOUGH);
   const best = valid.find((p) => p.mean === bestMean);
   const reach = valid.find((p) => enough(p.mean));
+  const last = valid[valid.length - 1];
   const at = (p) => formatParamValue(p.value, unit);
-  if (reach.value < best.value) {
-    return say(`${metric.label} stops improving beyond ${at(reach)}: from there it is within ${Math.round((1 - ENOUGH) * 100)} % of the best result.`, best.value, reach.value);
+  const result = (text) => say(text, best.value, reach.value);
+  if (valid.filter((p) => p.value > reach.value).every((p) => enough(p.mean)) && reach !== last) {
+    return result(`${metric.label} stops improving beyond ${at(reach)}: from there it is within ${Math.round((1 - ENOUGH) * 100)} % of the best result.`);
   }
-  if (best === valid[valid.length - 1]) return say(`${metric.label} is still improving at ${at(best)}, the highest value tested. Try a wider range.`, best.value, reach.value);
-  if (best === valid[0]) return say(`${metric.label} is best at ${at(best)}, the lowest value tested. Try a wider range.`, best.value, reach.value);
-  return say(`${metric.label} is best at ${at(best)}.`, best.value, reach.value);
+  if (reach === last) return result(`${metric.label} is still improving at ${at(last)}, the highest value tested. Try a wider range.`);
+  if (best === valid[0]) return result(`${metric.label} is best at ${at(best)}, the lowest value tested. Try a wider range.`);
+  return result(`${metric.label} is best at ${at(best)}; higher values make it worse.`);
 }
 
 /**
  * The sweep result for one measure as rows of ready-to-print cells.
  * @param {object} result a sweep result (see getLastResults)
  * @param {string} metricId id from METRICS
- * @returns {{ metric: object, scale: object, rows: Array<{ value: number, valueText: string, mean: number|null, text: string, range: string,
- *   current: boolean, best: boolean, delta: object|null }>, recommendation: ReturnType<typeof recommendSweep> }}
+ * @param {number|null} [current] the value the plant uses now (default: the one it had when the sweep ran); that row is marked
+ *   and is the reference of the changes
+ * @returns {{ metric: object, scale: object, current: number|null, rows: Array<{ value: number, valueText: string, mean: number|null, text: string,
+ *   range: string, current: boolean, best: boolean, delta: object|null }>, recommendation: ReturnType<typeof recommendSweep> }}
  */
-export function buildSweep(result, metricId) {
+export function buildSweep(result, metricId, current = result.current) {
   const metric = metricById(metricId) || METRICS[0];
   const stats = result.points.map((p) => p.summary?.[metric.id] ?? null);
   const means = stats.map((s) => orNull(s?.mean));
   const scale = scaleFor(metric, magnitudeOf(stats));
   const recommendation = recommendSweep(result.points.map((p, i) => ({ value: p.value, mean: means[i] })), metric, result.param.unit);
-  const isCurrent = (value) => finite(result.current) && Math.abs(value - result.current) < 1e-9;
+  const isCurrent = (value) => finite(current) && Math.abs(value - current) < 1e-9;
   const reference = result.points.findIndex((p) => isCurrent(p.value));
   const base = means[reference >= 0 ? reference : 0] ?? null;
   const marks = markBestWorst(means, metric.better);
@@ -325,7 +330,7 @@ export function buildSweep(result, metricId) {
     best: bestAt !== null && p.value === bestAt,
     delta: i === (reference >= 0 ? reference : 0) ? null : deltaVs(metric, base, means[i]),
   }));
-  return { metric, scale, rows, recommendation };
+  return { metric, scale, current: orNull(current), rows, recommendation };
 }
 
 /** Tab-separated text of a sweep table (value, measure mean, lowest, highest). */
@@ -360,6 +365,22 @@ export function getLastResults() {
 const matters = (before, after) => before !== after && ['runtime', 'structural'].includes(layoutChangeKind(before, after));
 
 /**
+ * Does the plant differ from the one a sweep ran on in anything but the swept setting itself? Every value of the sweep overwrote that
+ * setting, so applying a value (or undoing it, or editing it by hand) leaves the sweep valid: both layouts are compared with the setting
+ * set to the same value.
+ */
+function sweepOutdated(result, layout) {
+  if (!matters(result.layout, layout)) return false;
+  const { param, values } = result;
+  if (typeof param.apply !== 'function' || !values.length) return true;
+  try {
+    return matters(param.apply(result.layout, values[0]), param.apply(layout, values[0]));
+  } catch {
+    return true;
+  }
+}
+
+/**
  * Whether a result still describes the plant.
  * @param {object|null} result a compare or sweep result
  * @param {{ project: { scenarios: Array<{ id: string, name: string, layout: object }>, activeId: string }, layout: object }} state store state
@@ -377,7 +398,7 @@ export function resultStaleness(result, state) {
   if (result.scenarioId !== state.project.activeId) {
     return { reason: 'other', text: `This sweep was run on variant ${result.scenarioName}. The variant open now is a different one.` };
   }
-  return matters(result.layout, state.layout) ? { reason: 'changed', text: 'The plant was changed after this sweep ran, so the results may no longer apply.' } : null;
+  return sweepOutdated(result, state.layout) ? { reason: 'changed', text: 'The plant was changed after this sweep ran, so the results may no longer apply.' } : null;
 }
 
 // =================================================================================================
@@ -435,6 +456,7 @@ td.is-best .cmp-cell__range, td.is-worst .cmp-cell__range { color: inherit; }
 .cmp-note { margin: 0; color: var(--text-dim); font-size: var(--fs-xs); }
 .cmp-chart { display: flex; flex-direction: column; gap: var(--sp-2); min-width: 0; }
 .cmp-sweep-values { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); }
+.cmp-now { color: var(--accent-text); font-size: var(--fs-xs); font-weight: var(--fw-semibold); }
 .cmp-apply { display: inline-flex; flex-direction: column; align-items: flex-start; gap: 2px; }
 @media (prefers-reduced-motion: no-preference) { .cmp-progress .progress__bar { transition: flex-basis var(--t-base) var(--ease); } }
 `;
@@ -591,6 +613,8 @@ function createVariantPicker(onChange) {
   };
 }
 
+const GROUP_ORDER = ['Vehicles', 'Workstations', 'Storage', 'Goods in', 'Whole plant', 'Other'];
+
 /** Groups the flat sweep parameters for the select: vehicles, workstations, storage, goods in, whole plant. */
 function parameterGroups(params, layout) {
   const typeOf = (key) => layout.stations.find((s) => s.id === key.split('.')[1])?.type;
@@ -599,13 +623,7 @@ function parameterGroups(params, layout) {
     if (!p.key.startsWith('station.')) return 'Whole plant';
     return { process: 'Workstations', storage: 'Storage', source: 'Goods in' }[typeOf(p.key)] || 'Other';
   };
-  const groups = new Map();
-  for (const p of params) {
-    const name = groupOf(p);
-    if (!groups.has(name)) groups.set(name, []);
-    groups.get(name).push(p);
-  }
-  return [...groups].map(([label, items]) => ({ label, items }));
+  return GROUP_ORDER.map((label) => ({ label, items: params.filter((p) => groupOf(p) === label) })).filter((g) => g.items.length);
 }
 
 /** Put the options of a select into optgroups (fields.js builds a flat list). */
@@ -744,6 +762,7 @@ function createProgress(onCancel) {
       cancel.disabled = false;
       this.setFraction(0, '');
       hide(el, false);
+      cancel.focus(); // the run button just became disabled: focus must not be lost with it
     },
     setItem,
     setFraction(fraction, etaText) {
@@ -860,14 +879,14 @@ function createCompareResult(ctx) {
 }
 
 /** One row of the sweep table with its "Apply this value" button. */
-function sweepRow(row, param, onApply) {
+function sweepRow(row, param, onApply, running) {
   const apply = h('button', {
-    class: 'btn btn--sm', type: 'button', 'data-cmp': 'apply', 'data-value': row.value, disabled: row.current,
-    title: row.current ? 'The plant already uses this value' : 'Apply this value to the plant (Undo takes it back)',
+    class: 'btn btn--sm', type: 'button', 'data-cmp': 'apply', 'data-value': row.value, disabled: row.current || running,
+    title: row.current ? 'The plant already uses this value' : running ? 'Wait until the sweep has finished' : 'Apply this value to the plant (Undo takes it back)',
     'aria-label': `Apply this value: ${param.label} = ${row.valueText}`, onclick: () => onApply(row.value),
   }, row.current ? 'In use' : 'Apply this value');
   return h('tr', { 'data-value': row.value, class: row.current ? 'is-selected' : null },
-    h('td', null, h('span', { class: 'cmp-apply' }, row.valueText, row.current ? h('span', { class: 'chip chip--info' }, 'now') : null)),
+    h('td', null, h('span', { class: 'cmp-apply' }, row.valueText, row.current ? h('span', { class: 'cmp-now' }, 'in use') : null)),
     h('td', { class: `num${row.best ? ' is-best' : ''}`, title: row.best ? 'Best result' : null },
       h('span', { class: 'cmp-cell' }, h('span', { class: 'cmp-cell__main' }, row.text), deltaEl(row.delta), row.range ? h('span', { class: 'cmp-cell__range' }, row.range) : null)),
     h('td', { class: 'num' }, apply));
@@ -904,7 +923,7 @@ function sweepChartOptions(result, model) {
     x, series, markers: true, height: 240,
     xLabel: `${result.param.label}${unit}`, yLabel: scale.unit ? `${metric.label} (${scale.unit})` : metric.label,
     xFormat: (v) => formatParamValue(v, result.param.unit, { short: true }), yFormat: (v) => formatNumber(v, scale.digits), yUnit: scale.unit,
-    refLines: finite(result.current) ? [{ axis: 'x', value: result.current, label: 'now' }] : [], ariaLabel: `${metric.label} over ${result.param.label}`,
+    refLines: finite(model.current) ? [{ axis: 'x', value: model.current, label: 'now' }] : [], ariaLabel: `${metric.label} over ${result.param.label}`,
   };
 }
 
@@ -928,20 +947,20 @@ function createSweepResult(ctx, { onApply }) {
     }
   }
 
-  const table = (result, model) => h('div', { class: 'table-wrap', tabindex: '0', role: 'region', 'aria-label': 'Sweep table, scrolls sideways' },
+  const table = (result, model, running) => h('div', { class: 'table-wrap', tabindex: '0', role: 'region', 'aria-label': 'Sweep table, scrolls sideways' },
     h('table', { class: 'table cmp-table', 'data-cmp': 'sweep-table' },
       h('thead', null, h('tr', null, h('th', { scope: 'col' }, 'Value'),
         h('th', { scope: 'col', class: 'num' }, model.scale.unit ? `${model.metric.label} (${model.scale.unit})` : model.metric.label),
         h('th', { scope: 'col', class: 'num' }, h('span', { class: 'sr-only' }, 'Action')))),
-      h('tbody', null, model.rows.map((row) => sweepRow(row, result.param, onApply)))));
+      h('tbody', null, model.rows.map((row) => sweepRow(row, result.param, onApply, running)))));
 
   return {
     el,
     destroy() { chart?.destroy(); },
-    show(result, metricId, staleness, { onRerun, rerunBlocked }) {
+    show(result, metricId, staleness, { onRerun, rerunBlocked, current, running }) {
       hide(el, !result);
       if (!result) return;
-      const model = buildSweep(result, metricId);
+      const model = buildSweep(result, metricId, current);
       shown = { result, model };
       const s = result.settings;
       drawChart(result, model);
@@ -949,13 +968,14 @@ function createSweepResult(ctx, { onApply }) {
       chartWrap.append(chartNote);
       render(body,
         staleness ? staleBanner(staleness, onRerun, rerunBlocked) : null,
-        h('p', { class: 'cmp-headline', 'data-cmp': 'recommendation' }, icon('target', { size: 18 }), model.recommendation.text),
+        h('p', { class: 'cmp-headline', 'data-cmp': 'recommendation' }, icon('target', { size: 18 }),
+          running ? `Testing the values: ${result.points.length} of ${result.values.length} done.` : model.recommendation.text),
         h('p', { class: 'cmp-meta' }, `${result.param.label} · run at ${clock(result.at)} · ${plural(s.replications, 'run', 'runs')} of ${formatDuration(s.duration)} per value`),
-        result.partial && result.points.length < result.values.length
+        !running && result.partial && result.points.length < result.values.length
           ? callout({ severity: 'info', title: 'Stopped early', text: `Only ${plural(result.points.length, 'value', 'values')} of ${result.values.length} were tested.` })
           : null,
         chartWrap,
-        table(result, model),
+        table(result, model, running),
       );
       chart.update({});
     },
@@ -1061,8 +1081,10 @@ export function createCompare(ctx, options = {}) {
     const compareStale = staleOf(compare);
     const sweepStale = staleOf(sweep);
     const rerun = () => run();
+    const current = sweep ? orNull(sweep.param.get(state.layout)) : null;
     renderOnce('compare', [compare, compareStale?.text, blocked], () => compareResult.show(compare, compareStale, { onRerun: rerun, rerunBlocked: blocked }));
-    renderOnce('sweep', [sweep, sweep?.current, sweepStale?.text, blocked, sweepSetup.metricId()], () => sweepResult.show(sweep, sweepSetup.metricId(), sweepStale, { onRerun: rerun, rerunBlocked: blocked }));
+    const running = Boolean(job);
+    renderOnce('sweep', [sweep, current, sweepStale?.text, blocked, running, sweepSetup.metricId()], () => sweepResult.show(sweep, sweepSetup.metricId(), sweepStale, { onRerun: rerun, rerunBlocked: blocked, current, running }));
     hide(emptyNote, Boolean(compare || sweep || job));
     emptyNote.textContent = mode === 'compare' ? 'No comparison yet. Choose the variants and press Run comparison.' : 'No sweep yet. Choose a setting and press Run sweep.';
   }
@@ -1165,7 +1187,6 @@ export function createCompare(ctx, options = {}) {
     setBusy(true);
     refreshRun();
     refreshResults();
-    progress.cancel.focus();
     const label = mode === 'compare' ? 'Comparison' : 'Sweep';
     try {
       await (mode === 'compare' ? runComparison : runSweep)(job.controller.signal);
@@ -1194,8 +1215,11 @@ export function createCompare(ctx, options = {}) {
   function applyValue(value) {
     const result = lastResults.sweep;
     if (!result || job) return;
+    if (orNull(result.param.get(store.getState().layout)) === null) {
+      ctx.toast(`${result.param.label} does not exist in the open plant, so nothing was changed.`, { kind: 'warn' });
+      return;
+    }
     const label = `Apply ${result.param.label} = ${formatParamValue(value, result.param.unit, { short: true })}`;
-    const wasCurrent = !staleOf(result);
     const done = store.commit(label, (draft) => {
       // param.apply returns a changed copy; the store wants the draft edited in place
       const next = result.param.apply(draft, value);
@@ -1204,12 +1228,6 @@ export function createCompare(ctx, options = {}) {
     if (!done) {
       ctx.toast(`The plant already uses ${formatParamValue(value, result.param.unit)}.`, { kind: 'info' });
       return;
-    }
-    if (wasCurrent) {
-      // the swept setting is overwritten by every value, so the sweep is still valid for the new plant
-      result.layout = store.getState().layout;
-      result.current = value;
-      refreshResults();
     }
     ctx.toast(`${result.param.label} is now ${formatParamValue(value, result.param.unit)}.`, { kind: 'success', action: { label: 'Undo', onClick: () => store.undo() } });
   }

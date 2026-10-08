@@ -34,13 +34,18 @@
 //    every 0.5 s. A pickup dock must lead on to the drop, and docks a vehicle cannot return from come last.
 //  * Orders carry station ids in `from`/`to`; the FlowRT is the (non-enumerable) `order.flow`. Events carry both
 //    the object and its id (`station`/`stationId`, `vehicle`/`vehicleId`) and the tick time `t`.
+//  * Searches: a graph search costs time in proportion to the size of the plant, so each tick only starts as many new
+//    ones as routing.js allows (searchBudget); a vehicle that has to wait for its search is looked at again in the next tick.
+//    Whether a station can be reached at all is answered without searching. On the examples the budget is never reached.
+//  * Initial placement: vehicles start only in parts of the road network that contain a dock of a station their fleet works
+//    for (vehicles.js startRegion), so a one-way branch that leads away from all of them never holds a vehicle.
 
 import { createRng } from '../util/rng.js';
 import { DISPATCH_STRATEGIES, ROUTING_MODES, defaultSettings } from '../model/defaults.js';
 import { BLOCKED_RETRY, DISPATCH_INTERVAL, EPS, atLeast, num, whole } from './logistics/common.js';
 import { dispatch } from './logistics/dispatcher.js';
 import { applyIdlePolicy } from './logistics/idle.js';
-import { RouteCache } from './logistics/routing.js';
+import { RouteCache, searchBudget } from './logistics/routing.js';
 import { StationRT, finalizeStation, rescaleArrivals, rescaleCycles, stepStation } from './logistics/stations.js';
 import { createVehicles, vehiclePhaseA, vehiclePhaseB } from './logistics/vehicles.js';
 
@@ -89,6 +94,7 @@ export class Logistics {
     /** Live-adjustable settings (see setRuntime). */
     this.runtime = cleanRuntime(settings, { dispatch: 'nearest', routing: 'shortest', demandFactor: 1, speedFactor: 1, processFactor: 1 });
     this.routes = new RouteCache(graph, traffic, this.runtime.routing);
+    this.routes.budget = searchBudget(graph);
     /** How many routes have passed each node (idle vehicles prefer waiting cells that routes seldom use). */
     this.routeUse = new Uint32Array(graph.nodeCount);
 
@@ -168,6 +174,7 @@ export class Logistics {
   step(dt, t = this.now) {
     if (!(dt > 0) || !Number.isFinite(t)) return;
     this.time = t;
+    this.routes.beginTick();
     for (const vr of this.vehicles) vehiclePhaseA(this, vr, t);
     for (const st of this.stations) stepStation(st, dt, t, this);
     if (this.dirty || t + EPS >= this.nextDispatch) {

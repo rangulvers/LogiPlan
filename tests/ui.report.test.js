@@ -207,14 +207,16 @@ test('the recommendation names the smallest value that is within 5 % of the best
   });
   assert.equal(recommendSweep(pts([20, 30, 38, 43]), higher, 'vehicles').text, 'Throughput is still improving at 4 vehicles, the highest value tested. Try a wider range.');
   assert.equal(recommendSweep(pts([44, 30, 20]), higher, 'vehicles').text, 'Throughput is best at 1 vehicle, the lowest value tested. Try a wider range.');
-  assert.equal(recommendSweep(pts([20, 44, 20]), higher, 'vehicles').text, 'Throughput is best at 2 vehicles.');
+  assert.equal(recommendSweep(pts([20, 44, 20]), higher, 'vehicles').text, 'Throughput is best at 2 vehicles; higher values make it worse.');
+  assert.equal(recommendSweep(pts([20, 44, 43.5, 44]), higher, 'vehicles').text, 'Throughput stops improving beyond 2 vehicles: from there it is within 5 % of the best result.', 'a plateau after the first good value');
+  assert.equal(recommendSweep(pts([20, 42, 44, 30]), higher, 'vehicles').text, 'Throughput is best at 3 vehicles; higher values make it worse.', 'a later drop is not a plateau');
   assert.equal(recommendSweep(pts([30, 30.1, 30.2]), higher, 'vehicles').text, 'Throughput hardly changes across these values.');
   assert.match(recommendSweep(pts([30, null, null]), higher, 'vehicles').text, /Not enough results/);
   // lower is better: lead time falls with the number of vehicles until it flattens
   const lead = recommendSweep(pts([3300, 2000, 1900, 1860, 1890]), metric('leadMean'), 'vehicles');
   assert.equal(lead.text, 'Mean lead time stops improving beyond 3 vehicles: from there it is within 5 % of the best result.');
   assert.deepEqual([lead.best, lead.reach], [4, 3]);
-  assert.equal(recommendSweep(pts([3300, 2216, 1860, 1890, 1924]), metric('leadMean'), 'vehicles').text, 'Mean lead time is best at 3 vehicles.');
+  assert.equal(recommendSweep(pts([3300, 2216, 1860, 1890, 1924]), metric('leadMean'), 'vehicles').text, 'Mean lead time stops improving beyond 3 vehicles: from there it is within 5 % of the best result.');
   // a measure without a good direction gets no verdict
   const util = recommendSweep(pts([90, 70, 50]), metric('fleetUtilization'), 'vehicles');
   assert.match(util.text, /no better or worse direction/);
@@ -303,6 +305,40 @@ test('a sweep belongs to the variant it ran on', () => {
   assert.equal(resultStaleness(result, state), null);
   store.switchScenario(state.project.scenarios[1].id);
   assert.equal(resultStaleness(result, store.getState()).reason, 'other');
+});
+
+test('applying a sweep value, undoing it or editing the setting by hand does not date the sweep; changing anything else does', () => {
+  const store = createStore({ storage: undefined });
+  store.newProject(EXAMPLES[0].build());
+  const start = store.getState();
+  const param = listSweepParameters(start.layout).find((p) => p.key === 'fleet.v1.count');
+  const result = { ...sweepResult([10, 20, 30, 30], { values: [1, 2, 3, 4], current: 2, layout: start.layout }), param, scenarioId: start.project.activeId };
+  assert.equal(resultStaleness(result, start), null);
+  store.commit('Apply', (d) => { const next = param.apply(d, 4); for (const key of Object.keys(next)) d[key] = next[key]; });
+  assert.equal(store.getState().layout.fleets[0].count, 4);
+  assert.equal(resultStaleness(result, store.getState()), null, 'the sweep covers every value of that setting');
+  store.commit('By hand', (d) => updateFleet(d, d.fleets[0].id, { count: 9 }));
+  assert.equal(resultStaleness(result, store.getState()), null);
+  store.commit('Another setting', (d) => updateFleet(d, d.fleets[0].id, { speed: 3 }));
+  assert.equal(resultStaleness(result, store.getState()).reason, 'changed');
+  store.undo();
+  assert.equal(resultStaleness(result, store.getState()), null, 'undoing the other change brings it back');
+  store.commit('The fleet is gone', (d) => { d.fleets.length = 0; });
+  assert.equal(resultStaleness(result, store.getState()).reason, 'changed');
+});
+
+test('the value in use marks its row and is the reference of the changes', () => {
+  const result = sweepResult([21, 30, 38, 44], { values: [3, 4, 5, 6], current: 3 });
+  assert.deepEqual(buildSweep(result, 'throughput').rows.map((r) => r.current), [true, false, false, false], 'the value the sweep ran with by default');
+  const model = buildSweep(result, 'throughput', 5);
+  assert.deepEqual(model.rows.map((r) => r.current), [false, false, true, false]);
+  assert.equal(model.current, 5);
+  assert.deepEqual(model.rows[0].delta, { text: '−45 %', tone: 'bad' });
+  assert.equal(model.rows[2].delta, null);
+  const nowhere = buildSweep(result, 'throughput', 99);
+  assert.ok(nowhere.rows.every((r) => !r.current), 'a value outside the tested ones marks no row');
+  assert.equal(nowhere.rows[0].delta, null, 'the first value is the reference then');
+  assert.equal(buildSweep(result, 'throughput', null).current, null);
 });
 
 test('nothing has run yet: no results, and the accessor hands out a plain object', () => {
@@ -434,7 +470,8 @@ test('the plant at a glance counts what is there', () => {
 test('file names are safe and tell what is inside', () => {
   assert.equal(slug('Plant 1 / East <wing>'), 'plant-1-east-wing');
   assert.equal(slug('  '), 'plant');
-  assert.equal(slug('Ärger über Öl'), 'rger-ber-l');
+  assert.equal(slug('Ärger über Öl'), 'arger-uber-ol');
+  assert.equal(slug('Große Halle'), 'grosse-halle');
   assert.equal(slug('x'.repeat(100)).length, 40);
   assert.equal(slug('', 'logiplan-project'), 'logiplan-project');
   assert.equal(reportFileName('Starter plant', new Date(2026, 9, 8)), 'logiplan-report-starter-plant-2026-10-08.html');

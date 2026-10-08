@@ -17,6 +17,8 @@ const eq = (a, b, msg) => { assert.deepEqual(a, b, msg); checks++; };
 
 await withBrowser(async ({ page, context, url, errors, shot }) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  // Playwright's Locator has no isFocused(); this one is true when the element is document.activeElement
+  Object.getPrototypeOf(page.locator('body')).isFocused = function isFocused() { return this.evaluate((el) => el === document.activeElement); };
 
   // ---- helpers ---------------------------------------------------------------------------------------
   const P = page.locator('[data-panel="experiments"]');
@@ -54,7 +56,7 @@ await withBrowser(async ({ page, context, url, errors, shot }) => {
   };
 
   const run = async (name, fn, query = '') => {
-    if (only && only !== name) return;
+    if (only && !name.startsWith(only)) return;
     console.log(`-- ${name}`);
     await page.goto(url(`/tests/e2e/compare-harness.html${query}`));
     await page.waitForFunction(() => window.ready);
@@ -62,7 +64,11 @@ await withBrowser(async ({ page, context, url, errors, shot }) => {
   };
 
   /** Every visible text of `root` against its effective background: the lowest contrast ratio and where. */
-  const worstContrast = (root) => page.evaluate((selector) => {
+  const worstContrast = async (root) => {
+    await page.mouse.move(2, 2); // a hovered control has a hover background: measure the resting state
+    return contrastOf(root);
+  };
+  const contrastOf = (root) => page.evaluate((selector) => {
     const parse = (c) => { const m = /rgba?\(([^)]+)\)/.exec(c); if (!m) return null; const [r, g, b, a = 1] = m[1].split(/[ ,/]+/).filter(Boolean).map(Number); return { r, g, b, a }; };
     const over = (top, bottom) => ({ r: top.r * top.a + bottom.r * (1 - top.a), g: top.g * top.a + bottom.g * (1 - top.a), b: top.b * top.a + bottom.b * (1 - top.a), a: 1 });
     const backdrop = (el) => {
@@ -134,6 +140,17 @@ await withBrowser(async ({ page, context, url, errors, shot }) => {
     await shot('compare-single-variant');
   }, '?variants=1');
 
+  await run('initial-empty', async () => {
+    await page.evaluate(() => window.harness.store.newProject());
+    ok(await runBtn.isDisabled(), 'an empty plant has one variant: nothing to compare');
+    await mode('Parameter sweep');
+    ok(await runBtn.isDisabled());
+    ok((await text(cmp('sweep-values'))).includes('nothing to sweep yet'), await text(cmp('sweep-values')));
+    eq(await P.getByLabel('Setting to change', { exact: true }).inputValue(), '');
+    eq(await text(cmp('sweep-current')), '');
+    await shot('compare-empty-plant');
+  });
+
   // ============================================================================================== COMPARE
   await run('compare', async () => {
     await compareRun(2);
@@ -150,9 +167,9 @@ await withBrowser(async ({ page, context, url, errors, shot }) => {
     ok((await text(P.locator('.cmp-note'))).includes('Lowest battery level'), 'and is named under the table');
     const tp = await cellText('throughput');
     ok(tp[0].startsWith('37.') || tp[0].startsWith('38.'), tp[0]);
-    ok(/^4\d\.\d \+\d+ % \d+\.\d–\d+\.\d$/.test(tp[1]), `throughput of B with change and range: ${tp[1]}`);
+    ok(/^4\d\.\d \+\d+ %( \d+\.\d–\d+\.\d)?$/.test(tp[1]), `throughput of B with change and (when the runs differ) range: ${tp[1]}`);
     eq(await rowCells('throughput').evaluateAll((tds) => tds.map((td) => td.className)), ['num is-worst', 'num is-best', 'num'], 'A is the worst, B the best');
-    ok(tp[0].split(' ').length === 2, 'the reference has no change, only its range');
+    ok(!/%/.test(tp[0]) && !tp[0].includes('+'), `the reference has no change: ${tp[0]}`);
     const lead = await cellText('leadMean');
     ok(/^3\d\.\d −\d+ % /.test(lead[1]), `lead time in minutes with a negative change: ${lead[1]}`);
     ok((await text(P.locator('tr[data-metric="leadMean"] th'))).endsWith('min'), 'unit shown with the row');
@@ -183,7 +200,7 @@ await withBrowser(async ({ page, context, url, errors, shot }) => {
     ok(await runBtn.isEnabled());
     eq(await P.locator('[data-cmp="progress"]').isVisible(), false, 'the progress block is gone after a successful run');
     // getLastResults feeds the report
-    const last = await page.evaluate(() => { const r = window.harness.getLastResults(); return { kinds: [r.compare?.kind, r.sweep?.kind], variants: r.compare.variants.map((v) => v.label), reps: r.compare.settings.replications }; });
+    const last = await page.evaluate(() => { const r = window.harness.getLastResults(); return { kinds: [r.compare?.kind ?? null, r.sweep?.kind ?? null], variants: r.compare.variants.map((v) => v.label), reps: r.compare.settings.replications }; });
     eq(last, { kinds: ['compare', null], variants: ['A - Baseline', 'B - 7 AGVs', 'C - 9 AGVs'], reps: 2 });
     // a single repetition has no ranges
     await setReps(1);
@@ -280,6 +297,9 @@ await withBrowser(async ({ page, context, url, errors, shot }) => {
     await setReps(1);
     await runBtn.click();
     await page.waitForFunction(() => document.querySelectorAll('[data-cmp="status"] li[data-state="done"]').length >= 2, null, { timeout: 120000 });
+    ok(/^Testing the values: \d of 6 done\.$/.test(await text(cmp('recommendation'))), `while it runs: ${await text(cmp('recommendation'))}`);
+    ok(await P.locator('[data-cmp="apply"]:not([disabled])').count() === 0, 'nothing can be applied while the sweep runs');
+    eq(await P.locator('[data-cmp="sweep-result"] .callout').count(), 0, 'and it is not called "stopped early" yet');
     await cmp('cancel').click();
     await idle();
     const partial = await page.evaluate(() => window.harness.getLastResults().sweep);
@@ -298,7 +318,7 @@ await withBrowser(async ({ page, context, url, errors, shot }) => {
     await edit('L.updateFleet(d, d.fleets[0].id, { count: 6 })');
     await cmp('stale').waitFor();
     const banner = await text(cmp('stale'));
-    ok(banner.includes('These results are out of date') && banner.includes('A - A better name was changed after this comparison ran') || banner.includes('was changed after this comparison ran'), banner);
+    ok(banner.includes('These results are out of date') && banner.includes('was changed after this comparison ran'), banner);
     ok(await cmp('rerun').isEnabled());
     // undo brings it back to date
     await page.evaluate(() => { window.harness.store.undo(); });
@@ -317,7 +337,7 @@ await withBrowser(async ({ page, context, url, errors, shot }) => {
     ok((await text(cmp('stale'))).includes('B - 7 AGVs was changed'), 'the banner names the variant that changed');
     // a variant that was deleted
     await page.evaluate(() => { const s = window.harness.store; s.deleteScenario(s.getState().project.scenarios[2].id); });
-    ok((await text(cmp('stale'))).includes('no longer exists') || (await text(cmp('stale'))).includes('was changed'), await text(cmp('stale')));
+    ok((await text(cmp('stale'))).includes('B - 7 AGVs was changed') || (await text(cmp('stale'))).includes('no longer exists'), await text(cmp('stale')));
     // the hidden tab catches up when it comes back
     await page.evaluate(() => window.harness.showTab('other'));
     await edit('L.updateFleet(d, d.fleets[0].id, { count: 8 })');
@@ -366,7 +386,7 @@ await withBrowser(async ({ page, context, url, errors, shot }) => {
     await cmp('sweep-result').waitFor({ state: 'visible' });
     await idle();
     const rec = await text(cmp('recommendation'));
-    ok(/^Throughput stops improving beyond [567] vehicles: from there it is within 5 % of the best result\.$/.test(rec), rec);
+    ok(/^Throughput stops improving beyond [67] vehicles: from there it is within 5 % of the best result\.$/.test(rec), rec);
     eq(await P.locator('[data-cmp="sweep-table"] tbody tr').count(), 6);
     const values = await P.locator('[data-cmp="sweep-table"] tbody tr').evaluateAll((trs) => trs.map((tr) => tr.dataset.value));
     eq(values, ['3', '4', '5', '6', '7', '8']);
@@ -374,7 +394,7 @@ await withBrowser(async ({ page, context, url, errors, shot }) => {
     const bestRow = await P.locator('[data-cmp="sweep-table"] tr:has(td.is-best)').getAttribute('data-value');
     ok(['6', '7', '8'].includes(bestRow), `the best number of vehicles is 6 to 8: ${bestRow}`);
     const current = P.locator('[data-cmp="sweep-table"] tr[data-value="5"]');
-    ok((await text(current)).includes('now'), 'the value in use is marked');
+    ok((await text(current)).includes('in use'), 'the value in use is marked');
     ok(await current.locator('[data-cmp="apply"]').isDisabled(), 'applying the value in use does nothing');
     ok(await P.locator('[data-cmp="sweep-table"] tr[data-value="6"] [data-cmp="apply"]').isEnabled());
     eq(await text(P.locator('[data-cmp="sweep-table"] tr[data-value="6"] [data-cmp="apply"]')), 'Apply this value');
@@ -408,7 +428,7 @@ await withBrowser(async ({ page, context, url, errors, shot }) => {
     ok(t.message === 'AGV: number of vehicles is now 7 vehicles.' && t.action === 'Undo' && t.kind === 'success', JSON.stringify(t));
     eq(await cmp('stale').count(), 0, 'applying a value of the swept setting does not date the sweep');
     ok(await P.locator('[data-cmp="sweep-table"] tr[data-value="7"] [data-cmp="apply"]').isDisabled(), 'the value in use moved to the new row');
-    ok((await text(P.locator('[data-cmp="sweep-table"] tr[data-value="7"]'))).includes('now'));
+    ok((await text(P.locator('[data-cmp="sweep-table"] tr[data-value="7"]'))).includes('in use'));
     ok(await P.locator('[data-cmp="sweep-table"] tr[data-value="5"] [data-cmp="apply"]').isEnabled());
     // undo
     await page.evaluate(() => window.harness.store.undo());
@@ -446,7 +466,7 @@ await withBrowser(async ({ page, context, url, errors, shot }) => {
     await edit('L.removeFleet(d, d.fleets[0].id)');
     await P.locator('[data-cmp="sweep-table"] tr[data-value="6"] [data-cmp="apply"]').click();
     const last = (await toasts()).at(-1);
-    ok(last.kind === 'info' && last.message.includes('already uses'), `nothing to change is said, not thrown: ${last.message}`);
+    ok(last.kind === 'warn' && last.message.includes('does not exist in the open plant'), `nothing to change is said, not thrown: ${last.message}`);
     // the sweep belongs to its variant
     await page.evaluate(() => { const s = window.harness.store; s.switchScenario(s.getState().project.scenarios[1].id); });
     ok((await text(cmp('stale'))).includes('different one') || (await text(cmp('stale'))).includes('was run on variant'), await text(cmp('stale')));
@@ -456,18 +476,32 @@ await withBrowser(async ({ page, context, url, errors, shot }) => {
   await run('persist', async () => {
     await compareRun(2);
     await sweepRun(2);
+    await mode('Compare variants');
     const before = { compare: await text(cmp('table')) };
     // the tab is torn down and built again (e.g. the shell re-creates it): both results come back
     await page.evaluate(() => window.harness.mountCompare());
+    eq(await text(cmp('table')), before.compare, 'the comparison is still there');
+    await mode('Parameter sweep');
     await cmp('sweep-result').waitFor({ state: 'visible' });
-    ok(await cmp('recommendation').isVisible(), 'the sweep is still there');
+    ok(await cmp('recommendation').isVisible(), 'and the sweep');
     await mode('Compare variants');
-    eq(await text(cmp('table')), before.compare, 'and the comparison');
     // hidden: no work while hidden, but the state is right when shown again
     await page.evaluate(() => window.harness.showTab('other'));
     await edit('L.updateFleet(d, d.fleets[0].id, { speed: 2.5 })');
     await page.evaluate(() => window.harness.showTab('experiments'));
     await cmp('stale').waitFor();
+  });
+
+  await run('hidden-run', async () => {
+    await setReps(1);
+    await runBtn.click();
+    await cmp('progress').waitFor({ state: 'visible' });
+    await page.evaluate(() => window.harness.showTab('other'));
+    await page.waitForFunction(() => window.harness.toasts.some((t) => t.message === 'Comparison finished.'), null, { timeout: 120000 });
+    ok((await toasts()).some((t) => t.message === 'Comparison finished.' && t.kind === 'success'), 'a run that finishes while the tab is hidden says so');
+    await page.evaluate(() => window.harness.showTab('experiments'));
+    ok(await cmp('compare-result').isVisible(), 'and the result is there when the planner comes back');
+    eq(await P.evaluate((el) => el.dataset.state), 'idle');
   });
 
   // ============================================================================================== ERRORS
@@ -518,11 +552,10 @@ await withBrowser(async ({ page, context, url, errors, shot }) => {
     const select = P.getByLabel('Setting to change', { exact: true });
     await select.focus();
     await edit('L.addFleet(d, "forklift")');
-    eq(await select.locator('option').count(), 3 + 3 + 1 + 1 + 3 + 1 + 0 > 0 ? await select.locator('option').count() : 0);
     ok(await select.isFocused(), 'the select keeps focus while the plant changes');
     const optionsWhileFocused = await select.locator('option').count();
     await page.keyboard.press('Tab');
-    await edit('L.updateSettings(d, { notes: "x" })');
+    await edit('L.setNotes(d, "x")');
     ok(await select.locator('option').count() > optionsWhileFocused, 'the new fleet appears once the select lost focus');
   });
 
@@ -568,11 +601,11 @@ await withBrowser(async ({ page, context, url, errors, shot }) => {
     ok(body.includes('B - 7 AGVs delivers') && body.includes('Throughput stops improving beyond'), 'the experiment results are in');
     ok(body.includes('The figures cover'), 'a note on the measured window');
     eq(await second.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, 'no sideways scroll');
-    const light = await second.evaluate(() => getComputedStyle(document.body).backgroundColor);
-    eq(light, 'rgb(255, 255, 255)', 'a light page');
+    const pageColor = () => second.evaluate(() => getComputedStyle(document.documentElement).backgroundColor);
+    eq(await pageColor(), 'rgb(255, 255, 255)', 'a light page');
     await second.screenshot({ path: path.join(OUT, 'compare-report-desktop.png'), fullPage: true });
     await second.emulateMedia({ colorScheme: 'dark' });
-    eq(await second.evaluate(() => getComputedStyle(document.body).backgroundColor), 'rgb(255, 255, 255)', 'the report stays light in a dark browser');
+    eq(await pageColor(), 'rgb(255, 255, 255)', 'the report stays light in a dark browser');
     // narrow screen
     await second.setViewportSize({ width: 390, height: 800 });
     eq(await second.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), true, 'no sideways page scroll at 390 px');

@@ -7,7 +7,9 @@
 //    reverse at the end of a spur;
 //  * depots hold the parked fleet, so idle vehicles do not stand in the aisles.
 // Everything goes through the layout.js mutators. Outcomes and tips were checked against the real simulation: every claim a tip makes
-// is re-verified by running the variant it describes (tests/sim.experiments.test.js), the outcomes by tests/sim.integration.test.js.
+// is re-verified by running the variant it describes for the default run length of 8 simulated hours (tests/sim.engine.review.test.js,
+// 'tips'; the first two hours of a run are not typical: batteries start full and queues start empty), the outcomes by
+// tests/sim.integration.test.js.
 
 import { lPath } from '../util/grid.js';
 import {
@@ -181,8 +183,8 @@ export const EXAMPLES = [
     description: 'The smallest complete plant: pallets arrive, one assembly station works on them and two AGVs carry them around a loop road to shipping.',
     tips: [
       'Press play and open the Results tab: throughput, assembly utilization and AGV utilization show whether two AGVs are enough.',
-      'Try: lower the AGV count to 1 in the Fleet tab. The single AGV is busy all the time, pallets pile up at Goods receiving and the lead time roughly doubles.',
-      'Try: raise "Demand ×" in the Simulate tab to 1.5. The assembly runs flat out (about 97 % busy), the AGVs follow at about 90 % and the output tops out near 30 pallets/h.',
+      'Try: lower the AGV count to 1 in the Fleet tab. One AGV cannot keep up: it is busy all the time, pallets pile up at Goods receiving, the output falls by about 8 % and the lead time keeps growing, to about twice its old value after 2 simulated hours and about five times after 8.',
+      'Try: raise "Demand ×" in the Simulate tab to 1.5. The assembly runs flat out (about 99 % busy), the AGVs follow at about 90 % and the output tops out near 30 pallets/h.',
       'Try: drag Dispatch with the Select tool and redraw the road so it touches again; the Checks tab warns while a station has no dock.',
     ],
     build: buildStarter,
@@ -192,10 +194,10 @@ export const EXAMPLES = [
     name: 'Two production lines + warehouse',
     description: 'Forklifts and battery AGVs serve a press line and a machining line from a central warehouse; final assembly needs two pressed parts and one machined part per product.',
     tips: [
-      'Try: raise "Demand ×" to 1.3 in the Simulate tab. The output rises by about 30 %, and the Results tab shows the Press line (about 90 % busy) and the AGVs (about 88 %) reaching their limit first.',
-      'Try: change the AGV count in the Fleet tab, or sweep it in the Experiments tab: with 5 AGVs the loads wait about 50 % longer for a vehicle and the lead time grows; with 8 or more only the idle time grows.',
-      'Try: raise the AGV charge time to 60 min in the Fleet tab. The AGVs spend about a fifth of their time on the chargers and the output falls by about 8 %; with only 1 charger in AGV charging it falls by almost a quarter.',
-      'Try: give the Press line a repair time (MTTR) of 30 min in the Properties tab. The warehouse absorbs part of the stops, but the lead time and the work in process still climb by 15 to 20 %.',
+      'Try: raise "Demand ×" to 1.3 in the Simulate tab. The output rises by about 28 %, and the Results tab shows the Press line (about 90 % busy) and the AGVs (about 85 %) reaching their limit first.',
+      'Try: change the AGV count in the Fleet tab, or sweep it in the Experiments tab: with 5 AGVs the loads wait about 45 % longer for a vehicle and the lead time grows by about 13 %; with 8 or more only the idle time grows.',
+      'Try: raise the AGV charge time to 60 min in the Fleet tab. The AGVs now spend about 28 % of their time on the chargers instead of 8 %; the output holds, but loads wait about 40 % longer for a vehicle. Then cut the chargers in AGV charging to 1: the charger becomes the bottleneck, the work in process climbs without limit and the output falls by more than 40 %.',
+      'Try: give the Press line a repair time (MTTR) of 30 min in the Properties tab. Stops strike at random, so a single 8-hour run can show anything from hardly any change to a lead time several times longer; on average over ten runs the work in process doubles, the lead time grows by about 60 % and the output falls by about 5 %. Use several replications in the Experiments tab.',
     ],
     build: buildTwoLines,
   },
@@ -205,9 +207,9 @@ export const EXAMPLES = [
     description: 'A plant with deliberate traffic problems: a narrow one-way loop, a packing dock right on the main aisle, a crossing, trucks that unload in bunches and too many vehicles. Watch the queues form, then fix them.',
     tips: [
       'Switch the heat map to "waiting" while the simulation runs: the queues build up in front of the Packing docks on the main aisle.',
-      'Try: change the AGV count (9 now) in the Fleet tab and compare throughput and the traffic wait share in the Results tab. Do more vehicles really mean more output? With 6 AGVs the output is the same and the wait share falls by about a third; every AGV beyond 9 only adds waiting.',
-      'Try: let each AGV carry two pallets (Capacity 2 in the Fleet tab). Fewer stops at the docks mean shorter queues.',
-      'Try: cut the load and unload time in the Fleet tab from 24 s to 12 s. The docks free up sooner; compare the traffic wait share.',
+      'Try: change the AGV count (9 now) in the Fleet tab and compare throughput and the traffic wait share in the Results tab. Do more vehicles really mean more output? With 6 AGVs the output is the same and the wait share falls by about a third; every AGV beyond 9 only adds a little more waiting.',
+      'Try: let each AGV carry two pallets (Capacity 2 in the Fleet tab). Fewer stops at the docks mean shorter queues: the wait share falls by about half.',
+      'Try: cut the load and unload time in the Fleet tab from 24 s to 12 s. The docks free up sooner and the wait share falls by more than half.',
       'Try: draw a one-way road from the cross aisle just below Inbound B east along the north side of Packing and down to the main aisle (cells 24,4 → 32,4 → 32,8). Packing gets a second dock and the traffic wait share drops by about a third.',
     ],
     build: buildCongestionLab,

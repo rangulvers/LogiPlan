@@ -15,7 +15,10 @@
 //   Event ledger  the events seen through sim.on('*') agree with the counters of the logistics layer.
 //   Deadlocks     sim.deadlocks stays within its cap and holds well-formed entries.
 // checkReport() asserts: no NaN / Infinity anywhere in the KPI report, every state share of a fleet sums to 1, workstation
-// time shares sum to 1 (once the window has any length), fractions lie in 0..1, lead-time percentiles are ordered, the window length matches the clock.
+// time shares sum to 1 (once the window has any length), fractions lie in 0..1, lead-time percentiles are ordered, the window length matches the clock,
+// and the distance a fleet reports is what its vehicles' odometers say (never more; with a window that starts at 0 not a tick's driving less).
+// stuck() is a watchdog for checkpoints (say once a simulated minute): vehicles that have been driving to somewhere for `seconds` without
+// moving a centimetre. A queue behind a broken vehicle and a jam that policy 'ignore' leaves standing are legitimate and not reported.
 //
 // exampleLayout / variantOf / measureRuns / pairedDiffs support what-if experiments on the example plants (a fresh copy of an example
 // edited through the model API, simulated with consecutive seeds, compared seed by seed).
@@ -40,6 +43,8 @@ import { checkInvariants as logisticsViolations } from './logistics-invariants.j
 import { layoutFromAscii } from './ascii.js';
 
 const TOL = 1e-6;
+/** States in which a vehicle is on its way somewhere. */
+const DRIVING_STATES = new Set(['toPickup', 'toDrop', 'toCharger', 'toPark']);
 
 function fail(sim, message) {
   throw new Error(`simulation invariant violated at t=${sim.time.toFixed(2)}: ${message}`);
@@ -70,6 +75,18 @@ export function createSimChecker(sim, { traffic = true, logistics = true } = {})
   sim.on('loadCompleted', () => { ledger.completed++; });
   sim.on('orderDelivered', () => { ledger.delivered++; });
   let last = sim.time;
+  const watch = new Map(sim.vehicles.map((v) => [v.id, { odometer: v.tv.odometer, state: v.state, since: sim.time }]));
+
+  /** Why a driving vehicle does not move: 'broken' (a broken or dead vehicle ahead), 'cycle' (vehicles wait for each other), 'other'. */
+  function causeOf(v) {
+    const seen = new Set();
+    for (let tv = v.tv; tv && !seen.has(tv); tv = tv.blockedBy) {
+      seen.add(tv);
+      if (tv.disabled) return 'broken';
+      if (!tv.waiting || !tv.blockedBy) return 'other';
+    }
+    return 'cycle';
+  }
 
   function checkTime() {
     if (Math.abs(sim.time - last - sim.dt) > TOL) fail(sim, `time moved from ${last} to ${sim.time}, expected a step of ${sim.dt}`);
@@ -141,6 +158,30 @@ export function createSimChecker(sim, { traffic = true, logistics = true } = {})
         for (let i = 1; i < chain.length; i++) if (chain[i] < chain[i - 1] - TOL) fail(sim, `lead-time percentiles out of order: ${chain}`);
       }
       if (report.throughput.total < 0 || report.throughput.perHour < 0) fail(sim, 'negative throughput');
+      for (const [id, f] of Object.entries(report.fleets)) {
+        const members = sim.vehicles.filter((v) => v.fleetId === id);
+        const odometer = members.reduce((sum, v) => sum + v.tv.odometer, 0);
+        const oneTick = members.reduce((sum, v) => sum + v.tv.vmax, 0) * Math.max(1, sim.settings.speedFactor) * sim.dt;
+        if (f.distance > odometer + TOL) fail(sim, `fleet ${id}: the report says ${f.distance} m, the odometers ${odometer} m`);
+        if (w.start === 0 && f.distance < odometer - oneTick - TOL) fail(sim, `fleet ${id}: the report says ${f.distance} m but the vehicles drove ${odometer} m (driving to depots left out?)`);
+      }
+    },
+    /** Vehicles that have driven nowhere for `seconds` although they are on their way (see the header). Call at checkpoints. */
+    stuck({ seconds = 900 } = {}) {
+      const found = [];
+      for (const v of sim.vehicles) {
+        const rec = watch.get(v.id);
+        if (v.tv.odometer > rec.odometer + 1e-9 || v.state !== rec.state || !DRIVING_STATES.has(v.state) || v.tv.disabled || !v.tv.onRoad) {
+          Object.assign(rec, { odometer: v.tv.odometer, state: v.state, since: sim.time });
+        } else if (sim.time - rec.since > seconds) {
+          const cause = causeOf(v);
+          if (cause === 'other' || (cause === 'cycle' && sim.settings.deadlock !== 'ignore')) {
+            found.push(`${v.id} has been ${v.state} for ${(sim.time - rec.since).toFixed(0)} s without moving [${cause}]`);
+          }
+          rec.since = sim.time;
+        }
+      }
+      return found;
     },
   };
 }

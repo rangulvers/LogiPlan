@@ -85,7 +85,8 @@ function wayToDepot(lg, vr, depot, origin, t) {
 function sendToDepot(lg, vr, t, charge) {
   const chargerOnly = charge || needsCharge(vr);
   const parked = vr.state === 'parked';
-  const origin = parked ? null : lg.routes.get(vr.tv.node, arrivalEdgeOf(lg, vr), t);
+  const origin = parked ? null : lg.routes.get(vr.tv.node, arrivalEdgeOf(lg, vr), t, true);
+  if (!parked && origin === null) return false; // no search left in this tick: the next round tries again
   const home = lg.stationById.get(vr.cfg.home);
   let pick = null;
   for (const depot of chargerOnly ? lg.chargerDepots : lg.depots) {
@@ -152,7 +153,9 @@ function makeRoom(lg, t, blockedDepots) {
   const taken = new Set(lg.vehicles.filter((vr) => vr.spot >= 0).map((vr) => vr.spot));
   for (const vr of blockers) {
     if (t < vr.roomRetryAt - EPS || goIdle(lg, vr, t, true)) continue;
-    const spot = pickSpot(lg, vr, lg.routes.get(vr.tv.node, arrivalEdgeOf(lg, vr), t), busy, taken);
+    const entry = lg.routes.get(vr.tv.node, arrivalEdgeOf(lg, vr), t, true);
+    if (entry === null) continue; // no search left in this tick: the next round tries again
+    const spot = pickSpot(lg, vr, entry, busy, taken);
     if (spot < 0) { vr.roomRetryAt = t + YIELD_RETRY; continue; }
     taken.add(spot);
     if (!startLeg(lg, vr, 'toPark', null, t, spot)) {
@@ -163,14 +166,15 @@ function makeRoom(lg, t, blockedDepots) {
 }
 
 /**
- * The best road cell to wait on, or -1: reachable, free and not promised to another vehicle. The cheapest route wins, with
+ * The best road cell to wait on, or -1: reachable, one the vehicle can get back from (same strongly connected part of the
+ * network: a cell in a one-way branch would swallow it), free and not promised to another vehicle. The cheapest route wins, with
  * surcharges (see common.js) for docks, cells on routes being driven, cells that routes have used and junction/dead-end cells.
  */
 function pickSpot(lg, vr, entry, busy, taken) {
   const { graph } = lg;
   const candidates = [];
   for (const node of graph.nodes) {
-    if (node === vr.tv.node || taken.has(node)) continue;
+    if (node === vr.tv.node || taken.has(node) || !graph.sameScc(node, vr.tv.node)) continue;
     const dist = entry.search.dist(node);
     if (dist === Infinity) continue;
     const score = dist + (graph.stationsAt.has(node) ? SPOT_PENALTY_DOCK : 0) + (busy[node] ? SPOT_PENALTY_BUSY : 0)

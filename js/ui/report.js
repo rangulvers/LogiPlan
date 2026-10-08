@@ -197,11 +197,15 @@ export function plantRows(layout) {
   ];
 }
 
-/** File-name friendly version of a name: "Plant 1 / East" -> "plant-1-east". */
+/** File-name friendly version of a name: "Plant 1 / East" -> "plant-1-east", "Größe Öl" -> "grosse-ol". */
 export function slug(name, fallback = 'plant') {
-  const s = String(name ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40).replace(/-+$/g, '');
+  const s = String(name ?? '').toLowerCase().replace(/ß/g, 'ss').normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40).replace(/-+$/g, '');
   return s || fallback;
 }
+
+/** The name the planner gave the plant: the project name of the top bar (the layout's own name is only a fallback). */
+const plantName = (state) => state.project.name || state.layout.name;
 
 const isoDate = (date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 const longDate = (date) => date.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
@@ -371,7 +375,7 @@ figcaption { margin-top: 4px; color: var(--dim); font-size: 9pt; }
 .small { color: var(--dim); font-size: 9pt; }
 footer { margin-top: 28px; padding-top: 8px; border-top: 1px solid var(--line); color: var(--dim); font-size: 9pt; display: flex; justify-content: space-between; gap: 12px; }
 @media print { body { max-width: none; padding: 0; } .tw { overflow: visible; } h2 { margin-top: 18px; } }
-@media (max-width: 640px) { .tiles { grid-template-columns: repeat(2, 1fr); } body { padding: 8mm 4mm; } }
+@media (max-width: 640px) { .tiles { grid-template-columns: repeat(2, 1fr); } body { padding: 8mm 4mm; } table { min-width: 480px; } }
 `;
 
 /** A table. `head` = strings or { text, num }; `rows` = arrays of cells (string, Safe, or { v, num, cls }). */
@@ -406,9 +410,11 @@ export function layoutPicture(ctx, { scale = 1, theme } = {}) {
 function pictureSection(ctx, layout) {
   const url = layoutPicture(ctx, { scale: 1, theme: 'light' });
   if (!pngBytes(url)) return null;
-  const heat = ctx.store.getState().ui?.overlays?.heat;
-  const caption = `Layout of ${layout.name}, ${layout.grid.cols * layout.grid.cellSize} × ${layout.grid.rows * layout.grid.cellSize} m${heat && heat !== 'off' ? ', with the traffic heatmap of the simulation' : ''}.`;
-  return html`<figure><img alt="${`Layout of ${layout.name}`}" src="${raw(url)}"><figcaption>${caption}</figcaption></figure>`;
+  const { ui } = ctx.store.getState();
+  const heat = ui?.overlays?.heat;
+  const name = plantName(ctx.store.getState());
+  const caption = `Layout of ${name}, ${layout.grid.cols * layout.grid.cellSize} × ${layout.grid.rows * layout.grid.cellSize} m${heat && heat !== 'off' ? ', with the traffic heatmap of the simulation' : ''}.`;
+  return html`<figure><img alt="${`Layout of ${name}`}" src="${raw(url)}"><figcaption>${caption}</figcaption></figure>`;
 }
 
 // ---- results of the running simulation -------------------------------------------------------
@@ -523,7 +529,8 @@ function sweepLegend(result, series) {
 }
 
 function sweepHtml(result, state, metricId = 'throughput') {
-  const model = buildSweep(result, metricId);
+  const now = result.scenarioId === state.project.activeId ? result.param.get?.(state.layout) : null;
+  const model = buildSweep(result, metricId, finite(now) ? now : null);
   const stale = resultStaleness(result, state);
   const series = sweepSeries(result, model);
   const s = result.settings;
@@ -539,7 +546,7 @@ function sweepHtml(result, state, metricId = 'throughput') {
     html`<p class="small">${result.points.length} values, ${s.replications} ${s.replications === 1 ? 'run' : 'runs'} of ${formatDuration(s.duration)} each, the first ${formatDuration(s.warmup)} not measured.${result.partial && result.points.length < result.values.length ? ' The sweep was stopped early.' : ''}</p>`,
     result.points.length >= 2 ? svgLine(series, {
       xLabel: `${result.param.label}${unit}`, yLabel: model.scale.unit ? `${model.metric.label} (${model.scale.unit})` : model.metric.label,
-      xText: (v) => formatParamValue(v, result.param.unit, { short: true }), yText: (v) => formatNumber(v, model.scale.digits), current: result.current,
+      xText: (v) => formatParamValue(v, result.param.unit, { short: true }), yText: (v) => formatNumber(v, model.scale.digits), current: model.current,
       title: `${model.metric.label} over ${result.param.label}`,
     }) : null,
     html`<p class="small">${sweepLegend(result, series)}</p>`,
@@ -593,10 +600,10 @@ export function exportReportHtml(ctx, { includeComparison = true, results = null
   const layout = state.layout;
   const scenarios = state.project.scenarios;
   const variant = scenarios.length > 1 ? scenarios.find((s) => s.id === state.project.activeId) : null;
-  const title = `${layout.name} – LogiPlan report`;
+  const title = `${plantName(state)} – LogiPlan report`;
   const body = html`<div class="brand"><strong>LogiPlan</strong><span>Plant report · ${longDate(now)}</span></div>
-<h1>${layout.name}</h1>
-<p class="sub">${[state.project.name && state.project.name !== layout.name ? `Project ${state.project.name}` : '', variant ? `Variant ${variant.name}` : ''].filter(Boolean).join(' · ')}</p>
+<h1>${plantName(state)}</h1>
+${variant ? html`<p class="sub">Variant ${variant.name}</p>` : ''}
 ${section('Plant', pictureSection(ctx, layout), kv(plantRows(layout)), layout.notes ? html`<h3>Notes</h3><p>${layout.notes}</p>` : null)}
 ${resultsSection(ctx, layout)}
 ${insightsSection(ctx)}
@@ -621,7 +628,7 @@ const failure = (ctx, message) => ctx.toast?.(message, { kind: 'error' });
 export function downloadReport(ctx, opts = {}) {
   try {
     const now = opts.now || new Date();
-    const name = reportFileName(ctx.store.getState().layout.name, now);
+    const name = reportFileName(plantName(ctx.store.getState()), now);
     downloadFile(name, exportReportHtml(ctx, { ...opts, now }), 'text/html');
     ctx.toast?.(`Report saved as ${name}. Open it in a browser and use Print to get a PDF.`, { kind: 'success' });
     return name;
@@ -670,7 +677,7 @@ export function exportLayoutPng(ctx, { scale = 2 } = {}) {
     failure(ctx, 'The picture could not be created in this browser.');
     return false;
   }
-  downloadFile(`${slug(ctx.store.getState().layout.name)}-layout.png`, new Blob([bytes], { type: 'image/png' }), 'image/png');
+  downloadFile(`${slug(plantName(ctx.store.getState()))}-layout.png`, new Blob([bytes], { type: 'image/png' }), 'image/png');
   return true;
 }
 
@@ -681,7 +688,7 @@ export function exportLayoutPng(ctx, { scale = 2 } = {}) {
 export function exportLayoutJson(ctx) {
   try {
     const project = ctx.store.getState().project;
-    downloadFile(`${slug(project.name, 'logiplan-project')}.json`, exportProject(project), 'application/json');
+    downloadFile(`${slug(project.name, 'logiplan-project')}.logiplan.json`, exportProject(project), 'application/json');
     return true;
   } catch (err) {
     failure(ctx, `The project could not be saved: ${err.message}`);

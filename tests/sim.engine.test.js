@@ -140,8 +140,18 @@ test('advance: whole ticks only; a request is rounded up to the next tick and re
   assert.ok(Math.abs(sim.advance(1) - 1) < 1e-9);
   assert.equal(sim.time.toFixed(6), '1.000000');
   assert.equal(sim.advance(0.25).toFixed(6), '0.300000', '0.25 s need three 0.1 s ticks');
-  assert.equal(sim.advance(0.001).toFixed(6), '0.100000', 'any positive request advances at least one tick');
+  assert.equal(sim.advance(0.001).toFixed(6), '0.100000', 'a short request advances at least one tick');
   assert.equal(sim.time.toFixed(6), '1.400000');
+  assert.equal(sim.advance(sim.dt * 1e-7), 0, 'a request below the tolerance of dt * 1e-6 is already done (it absorbs clock rounding)');
+  assert.equal(sim.advance(sim.dt * 1e-5) > 0, true, 'above it, a tick is made');
+});
+
+test('advance: a remainder left by a clock that was summed tick by tick does not cost a whole extra tick', () => {
+  const sim = new Simulation(lineLayout());
+  let calls = 0;
+  while (sim.time < 100 - 1e-9 && calls++ < 10) sim.advance(100 - sim.time);
+  assert.ok(calls <= 2, `${calls} calls to reach 100 s`);
+  assert.ok(Math.abs(sim.time - 100) < 1e-6, `stopped at ${sim.time}`);
 });
 
 test('advance: non-positive and non-finite requests advance nothing', () => {
@@ -150,30 +160,51 @@ test('advance: non-positive and non-finite requests advance nothing', () => {
   assert.equal(sim.time, 0);
 });
 
-test('advance: the clock is read once per CLOCK_CHECK_TICKS ticks and only when a budget is given', () => {
-  assert.equal(CLOCK_CHECK_TICKS, 32);
+test('advance: no budget, no clock; a budget of nothing still makes progress (exactly one tick)', () => {
   const sim = new Simulation(lineLayout());
   let reads = 0;
   const now = () => { reads++; return 0; };
   sim.advance(60, { now });
   assert.equal(reads, 0, 'no budget, no clock');
   assert.equal(sim.time.toFixed(6), '60.000000');
-  const start = sim.time;
   const advanced = sim.advance(1000, { maxMillis: 0, now });
-  assert.equal(reads, 2, 'one reading at the start, one after the first batch of ticks');
-  assert.equal(Math.round(advanced / sim.dt), CLOCK_CHECK_TICKS, 'a budget of nothing still makes progress: exactly one batch');
-  assert.ok(Math.abs(sim.time - start - CLOCK_CHECK_TICKS * sim.dt) < 1e-9);
+  assert.equal(reads, 2, 'one reading at the start, one after the first tick');
+  assert.equal(Math.round(advanced / sim.dt), 1);
+  assert.equal(sim.time.toFixed(6), '60.100000');
 });
 
-test('advance: a budget stops a long request after the batch in which it ran out, never earlier', () => {
+test('advance: slow ticks are checked one by one: a budget stops a long request in the tick in which it ran out, never earlier', () => {
   const sim = new Simulation(lineLayout());
   let clock = 0;
-  const now = () => (clock += 3); // every reading is 3 ms later
+  const now = () => (clock += 3); // every reading is 3 ms later, i.e. a tick "takes" 3 ms
   const advanced = sim.advance(1000, { maxMillis: 10, now });
-  // readings: start 3, then 6 (3 ms used), 9 (6 ms), 12 (9 ms), 15 (12 ms >= 10): four batches
-  assert.equal(Math.round(advanced / sim.dt), 4 * CLOCK_CHECK_TICKS);
+  // readings: start 3, then 6 (3 ms used), 9 (6 ms), 12 (9 ms), 15 (12 ms >= 10): four ticks
+  assert.equal(Math.round(advanced / sim.dt), 4);
   const short = new Simulation(lineLayout());
-  assert.equal(short.advance(2, { maxMillis: 0, now: () => 0 }).toFixed(6), '2.000000', 'a request shorter than a batch is completed');
+  assert.equal(short.advance(2, { maxMillis: 0, now: () => 0 }).toFixed(6), '0.100000', 'a budget of nothing: one tick even when more was asked');
+});
+
+test('advance: fast ticks are checked in batches (at most CLOCK_CHECK_TICKS apart), so the clock costs next to nothing', () => {
+  assert.equal(CLOCK_CHECK_TICKS, 32);
+  const sim = new Simulation(lineLayout());
+  let clock = 0;
+  let reads = 0;
+  const now = () => { reads++; return (clock += 0.001); }; // a tick "takes" a microsecond
+  const advanced = sim.advance(60, { maxMillis: 1000, now });
+  assert.equal(advanced.toFixed(6), '60.000000');
+  assert.ok(reads <= 2 + Math.ceil(600 / CLOCK_CHECK_TICKS), `${reads} readings for 600 ticks`);
+  assert.ok(reads >= 600 / CLOCK_CHECK_TICKS, 'but it is looked at');
+});
+
+test('advance: slow ticks make the clock tighter, the overshoot of a budget stays below a tick plus an eighth of it', () => {
+  const sim = new Simulation(lineLayout());
+  let clock = 0;
+  let ticks = 0;
+  const original = sim.step.bind(sim);
+  sim.step = (dt) => { ticks++; clock += 2; original(dt); }; // every tick takes 2 ms of "real" time
+  const advanced = sim.advance(1000, { maxMillis: 20, now: () => clock });
+  assert.equal(Math.round(advanced / sim.dt), ticks);
+  assert.ok(ticks * 2 >= 20 && ticks * 2 <= 20 + 2 + 20 / 8, `${ticks} ticks of 2 ms for a budget of 20 ms`);
 });
 
 test('advance: the default clock is a real one (a generous budget does not cut anything)', () => {
@@ -458,23 +489,94 @@ test('deadlock: a traffic report becomes an event, a history entry, a logistics 
   assert.equal(entries[0].resolved, true);
 });
 
-test('deadlock: a jam reported unresolved and resolved later is one history entry', () => {
+/** Report the deadlock the way the traffic system does: its own counter goes up, then the hook is called. */
+function report(sim, options) {
+  sim.traffic.stats.deadlocks++;
+  sim.traffic.onDeadlock(trafficReport(sim, options));
+}
+
+/** Two vehicles that have stopped for good (broken down), as vehicles in a standing deadlock have. */
+function jammedPair() {
   const sim = new Simulation(lineLayout({ vehicles: 2 }));
   sim.advance(10);
-  sim.traffic.onDeadlock(trafficReport(sim));
+  for (const tv of sim.traffic.vehicles) tv.disabled = true;
+  sim.advance(10);
+  return sim;
+}
+
+test('deadlock: a jam reported unresolved and resolved later is one history entry', () => {
+  const sim = jammedPair();
+  report(sim);
   assert.equal(sim.deadlocks.length, 1);
   assert.equal(sim.deadlocks[0].resolved, false);
   assert.equal(sim.deadlocks[0].victim, null);
   assert.equal(sim.vehicles[0].replan, false, 'no re-plan while the jam stands');
   const reportedAt = sim.deadlocks[0].t;
   sim.advance(20);
-  sim.traffic.onDeadlock(trafficReport(sim, { resolved: true }));
+  sim.traffic.onDeadlock(trafficReport(sim, { resolved: true })); // traffic counted the jam once, at its first report
   assert.equal(sim.deadlocks.length, 1);
   assert.equal(sim.deadlocks[0].resolved, true);
   assert.equal(sim.deadlocks[0].victim, 'v1#1');
   assert.equal(sim.deadlocks[0].t, reportedAt, 'it keeps the time it was first seen');
+  assert.equal(sim.vehicles[0].replan, true, 'the relocated victim plans its leg again');
   assert.equal(sim.kpis().traffic.deadlockEvents.length, 1);
   assert.equal(sim.kpis().traffic.deadlockEvents[0].resolved, true);
+  assert.equal(sim.kpis().traffic.deadlocks, 1);
+});
+
+test('deadlock: a jam that stands is reported again and again by traffic, but it is one deadlock everywhere', () => {
+  const sim = jammedPair();
+  const events = [];
+  sim.on('deadlock', (payload) => events.push(payload));
+  for (let i = 0; i < 4; i++) {
+    report(sim); // the same two vehicles, still in the same place
+    sim.advance(30);
+  }
+  assert.equal(sim.traffic.stats.deadlocks, 4, 'traffic counted four reports');
+  assert.equal(events.length, 1, 'one event');
+  assert.equal(sim.deadlocks.length, 1, 'one history entry');
+  assert.equal(sim.logistics.deadlocks, 1);
+  const traffic = sim.kpis().traffic;
+  assert.equal(traffic.deadlocks, 1, 'one deadlock in the KPIs');
+  assert.equal(traffic.deadlockEvents.length, 1);
+  sim.advance(600); // long enough for the Results tab to say something
+  assert.match(sim.insights().find((i) => i.id === 'deadlocks').title, /\b1 time\b/);
+  // the order of the vehicles in the report does not matter
+  sim.traffic.stats.deadlocks++;
+  sim.traffic.onDeadlock({ ...trafficReport(sim), vehicles: [...trafficReport(sim).vehicles].reverse() });
+  assert.equal(events.length, 1);
+  assert.equal(sim.kpis().traffic.deadlocks, 1);
+});
+
+test('deadlock: the same vehicles jamming again after they drove away is a new deadlock', () => {
+  const sim = jammedPair();
+  const events = [];
+  sim.on('deadlock', (payload) => events.push(payload));
+  report(sim);
+  sim.advance(30);
+  for (const tv of sim.traffic.vehicles) tv.odometer += 3 * sim.graph.cellSize; // they went somewhere and came back
+  report(sim);
+  assert.equal(events.length, 2);
+  assert.equal(sim.deadlocks.length, 2);
+  assert.equal(sim.kpis().traffic.deadlocks, 2);
+  report(sim);
+  assert.equal(events.length, 2, 'and that one stands now');
+  assert.equal(sim.kpis().traffic.deadlocks, 2);
+});
+
+test('deadlock: a jam that is a different set of vehicles is a different deadlock, whatever the order of the reports', () => {
+  const sim = new Simulation(lineLayout({ vehicles: 3 }));
+  sim.advance(10);
+  for (const tv of sim.traffic.vehicles) tv.disabled = true;
+  sim.advance(10);
+  const events = [];
+  sim.on('deadlock', (payload) => events.push(payload));
+  report(sim, { a: 0, b: 1 });
+  report(sim, { a: 1, b: 2 });
+  report(sim, { a: 0, b: 1 });
+  report(sim, { a: 1, b: 2 });
+  assert.equal(events.length, 2);
+  assert.equal(sim.kpis().traffic.deadlocks, 2);
 });
 
 test('deadlock: sim.deadlocks keeps the most recent DEADLOCK_HISTORY reports', () => {

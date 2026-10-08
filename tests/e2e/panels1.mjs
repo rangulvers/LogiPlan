@@ -56,24 +56,24 @@ await withBrowser(async ({ page, url, errors }) => {
   await button('Fit view').click();
   eq((await calls()).at(-1), ['fitView'], 'Fit view calls ctx.actions.fitView');
 
-  // rename: typing is ONE undo step, the field is never overwritten while focused
+  // rename: the plant name is the project name of the top bar (not an undo step); the field is never overwritten while focused
+  const projectName = () => page.evaluate(() => window.harness.store.getState().project.name);
   const name = label('Plant name');
   await type(name, 'Factory North');
-  eq((await lay()).name, 'Factory North');
-  await page.evaluate(() => window.harness.store.commit('External edit', (d) => { d.name = 'Changed elsewhere'; }));
+  eq(await projectName(), 'Factory North', 'typing the plant name renames the project');
+  eq((await state()).undoLabel, null, 'a project rename is not an undo step');
+  await page.evaluate(() => window.harness.store.renameProject('Changed elsewhere'));
   eq(await name.inputValue(), 'Factory North', 'focused field is not overwritten by a store update');
   ok(await name.evaluate((el) => el === document.activeElement), 'focus kept');
   await name.blur();
   await page.waitForTimeout(30);
   eq(await name.inputValue(), 'Changed elsewhere', 'after blur the field shows the stored value');
-  await undo(); await undo();
-  eq((await lay()).name, original.name, 'typing + external edit undo in two steps');
-
-  await type(name, 'Plant Z');
+  await type(name, '   ');
   await name.blur();
-  await undo();
-  eq((await lay()).name, original.name, 'a typing burst is one undo step');
-  eq((await state()).undoLabel, null, 'no undo step left');
+  await page.waitForTimeout(30);
+  eq(await projectName(), 'Changed elsewhere', 'an empty name is refused and the stored name comes back');
+  eq(await name.inputValue(), 'Changed elsewhere', 'the field shows it again');
+  await page.evaluate((n) => window.harness.store.renameProject(n), original.name);
 
   // notes
   await type(label('Notes'), 'Check crane capacity.');

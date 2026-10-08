@@ -11,6 +11,10 @@
 //    nor modified, and `sim.layout` / `sim.settings` are the simulation's own (normalised) copies.
 //  * Events are delivered as fn(payload, name) for named listeners and for the '*' wildcard alike. The 'deadlock'
 //    payload is plain data { t, nodes, vehicles: ids, victim: id | null, resolved }; `t` is the end of the tick.
+//    One standing jam is one deadlock: traffic loses track of a jam for a moment now and then and reports the same vehicles
+//    again after its 20 s timer ran out anew. A repeated unresolved report about vehicles that have not left their place
+//    (less than a cell of driving since the first report) therefore produces no event and no history entry; the statistics are
+//    told ('deadlockRepeat') to take it off their count. Vehicles that drove away and jammed again are a new deadlock.
 //    A listener that throws cannot leave the simulation half-stepped: the tick is completed first, the remaining
 //    listeners still run, and the first error is rethrown by step() after the tick.
 //  * Warm-up: stats.reset() runs exactly once, in the tick that makes time reach settings.warmup (that tick belongs
@@ -18,8 +22,13 @@
 //    warmup 0 the measurement window simply starts at time 0 (the statistics start fresh), so no reset is needed.
 //  * advance() always steps whole ticks of `dt` and never a shorter last one, so the sequence of time steps - and with
 //    it every result - is the same however a run is cut into advance() calls or time budgets. A request that is not
-//    a multiple of dt is rounded up to the next whole tick, and any positive request advances at least one tick.
-//    Callers that need an exact end time keep an absolute target and ask for `target - sim.time` (the live runner does).
+//    a multiple of dt is rounded up to the next whole tick. A request shorter than dt * 1e-6 counts as already done: that
+//    tolerance absorbs the rounding of clocks that were accumulated tick by tick (1000 ticks of 0.1 s are not exactly 100 s),
+//    so "advance(target - sim.time)" never steps a whole extra tick for a remainder of 1e-12. Anything longer advances at least
+//    one tick. Callers that need an exact end time keep an absolute target and ask for `target - sim.time` (the live runner does).
+//  * A time budget (maxMillis) is checked between ticks, never inside one. The clock is read after every tick at first and then
+//    every few ticks, as many as keep the reading overhead small and the overshoot of the budget to about an eighth of it;
+//    a plant whose ticks are slow is therefore checked after every tick.
 //  * setRuntime() accepts exactly RUNTIME_KEYS. Other keys (e.g. when a whole settings object is passed) are ignored,
 //    so a structural setting can never be changed behind the simulation's back; junk values of the accepted keys
 //    keep the current value. Factors are clamped to [MIN_FACTOR, MAX_FACTOR].
@@ -36,13 +45,14 @@ import { generateInsights } from './insights.js';
 /** Range of the what-if factors accepted by setRuntime (demand, vehicle speed, process time). */
 export const MIN_FACTOR = 0.05;
 export const MAX_FACTOR = 20;
-/** advance() looks at the clock once per this many ticks. */
+/** advance() looks at the clock at most once per this many ticks (more often when ticks are slow, see advance). */
 export const CLOCK_CHECK_TICKS = 32;
+/** advance() aims at this many clock readings per time budget. */
+const CLOCK_READS_PER_BUDGET = 8;
 /** Deadlock reports kept in sim.deadlocks. */
 export const DEADLOCK_HISTORY = 50;
 
 const FACTOR_KEYS = new Set(['demandFactor', 'speedFactor', 'processFactor']);
-const noClock = () => 0;
 
 /** Wall clock for time budgets; without a high-resolution clock there is simply no budget (never Date.now: determinism). */
 function defaultNow() {
@@ -63,6 +73,7 @@ function seedValue(seed) {
   return typeof seed === 'number' && Number.isFinite(seed) ? Math.trunc(seed) >>> 0 : undefined;
 }
 
+const odometerOf = (v) => (v && Number.isFinite(v.odometer) ? v.odometer : 0);
 const idOf = (v) => (typeof v === 'string' ? v : v && v.id !== undefined ? String(v.id) : '');
 
 export class Simulation {
@@ -82,6 +93,8 @@ export class Simulation {
     this.rng = createRng(this.seed);
     /** Recent deadlock reports (newest last, at most DEADLOCK_HISTORY), see the 'deadlock' event. */
     this.deadlocks = [];
+    /** vehicle ids (sorted) -> { event, odometers } of the latest report about these vehicles, for recognising a jam that stands. */
+    this._jams = new Map();
 
     this._listeners = new Map();
     this._wildcards = [];
@@ -136,22 +149,33 @@ export class Simulation {
 
   /**
    * Run whole ticks until `seconds` of simulated time have passed or the time budget is used up.
-   * @param {number} seconds simulated time to advance (non-positive or non-finite: nothing happens)
-   * @param {{ maxMillis?: number, now?: () => number }} [opts] `maxMillis`: stop early after this much real time
-   *   (the clock is read once per CLOCK_CHECK_TICKS ticks, so at least that many ticks run unless the request is
-   *   shorter); `now`: clock in milliseconds, default performance.now
+   * @param {number} seconds simulated time to advance (non-positive or non-finite: nothing happens; shorter than dt * 1e-6: counts as done)
+   * @param {{ maxMillis?: number, now?: () => number }} [opts] `maxMillis`: stop early once this much real time has gone by
+   *   (the clock is read between ticks, so at least one tick always runs and the budget can be overshot by the tail of one
+   *   tick plus about an eighth of the budget); `now`: clock in milliseconds, default performance.now
    * @returns {number} simulated seconds actually advanced
    */
   advance(seconds, { maxMillis = Infinity, now = defaultNow } = {}) {
     if (!(seconds > 0) || !Number.isFinite(seconds)) return 0;
     const start = this.time;
     const end = start + seconds - this.dt * 1e-6;
-    const clock = Number.isFinite(maxMillis) ? now : noClock;
-    const t0 = clock();
-    let ticks = 0;
+    if (!Number.isFinite(maxMillis)) {
+      while (this.time < end) this.step(this.dt);
+      return this.time - start;
+    }
+    let last = now();
+    const began = last;
+    let interval = 1;
+    let sinceRead = 0;
     while (this.time < end) {
       this.step(this.dt);
-      if (++ticks % CLOCK_CHECK_TICKS === 0 && clock() - t0 >= maxMillis) break;
+      if (++sinceRead < interval) continue;
+      const stamp = now();
+      if (stamp - began >= maxMillis) break;
+      const perTick = (stamp - last) / sinceRead;
+      interval = perTick > 0 ? Math.min(CLOCK_CHECK_TICKS, Math.max(1, Math.floor(maxMillis / CLOCK_READS_PER_BUDGET / perTick))) : CLOCK_CHECK_TICKS;
+      last = stamp;
+      sinceRead = 0;
     }
     return this.time - start;
   }
@@ -226,25 +250,43 @@ export class Simulation {
 
   /** The traffic system reports a deadlock: logistics re-plans the victim, the event goes out, the history is updated. */
   handleDeadlock(info) {
-    this.logistics.handleDeadlock(info);
+    const vehicles = Array.from(info.vehicles || [], idOf).filter(Boolean);
     const event = {
       t: this._tickEnd,
       nodes: Array.from(info.nodes || [], Number),
-      vehicles: Array.from(info.vehicles || [], idOf).filter(Boolean),
+      vehicles,
       victim: info.victim ? idOf(info.victim) : null,
       resolved: info.resolved !== false,
     };
-    this.recordDeadlock(event);
+    const key = vehicles.slice().sort().join(',');
+    const known = this._jams.get(key);
+    const standing = known !== undefined && !known.event.resolved && !this.hasLeft(known, info.vehicles);
+    if (standing && !event.resolved) { // the same jam, reported once more
+      this.stats.onEvent('deadlockRepeat', event);
+      return;
+    }
+    this.logistics.handleDeadlock(info);
+    if (standing) Object.assign(known.event, event, { t: known.event.t }); // the jam was relocated after all
+    else this.recordDeadlock(event, key, info.vehicles);
     this.emit('deadlock', event);
   }
 
-  /** Append to sim.deadlocks; a later report about the same vehicles (jam resolved after all) updates the first one. */
-  recordDeadlock(event) {
-    const key = event.vehicles.slice().sort().join(',');
-    const open = this.deadlocks.find((d) => !d.resolved && d.vehicles.slice().sort().join(',') === key);
-    if (open !== undefined) Object.assign(open, event, { t: open.t });
-    else this.deadlocks.push(event);
-    if (this.deadlocks.length > DEADLOCK_HISTORY) this.deadlocks.shift();
+  /** Append to sim.deadlocks (at most DEADLOCK_HISTORY entries) and remember where the vehicles of the jam were. */
+  recordDeadlock(event, key, trafficVehicles) {
+    const odometers = new Map(Array.from(trafficVehicles || [], (v) => [idOf(v), odometerOf(v)]));
+    this._jams.set(key, { event, odometers });
+    this.deadlocks.push(event);
+    if (this.deadlocks.length > DEADLOCK_HISTORY) {
+      const dropped = this.deadlocks.shift();
+      const droppedKey = dropped.vehicles.slice().sort().join(',');
+      if (this._jams.get(droppedKey) !== undefined && this._jams.get(droppedKey).event === dropped) this._jams.delete(droppedKey);
+    }
+  }
+
+  /** Has any vehicle of a jam driven more than a cell since the jam was first reported? Then it is not the same jam any more. */
+  hasLeft(jam, trafficVehicles) {
+    const limit = this.graph.cellSize;
+    return Array.from(trafficVehicles || []).some((v) => Math.abs(odometerOf(v) - (jam.odometers.get(idOf(v)) ?? 0)) > limit);
   }
 
   // ---- results --------------------------------------------------------------------------------------------

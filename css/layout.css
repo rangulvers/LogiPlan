@@ -1,0 +1,714 @@
+/* LogiPlan app shell layout (docs/ARCHITECTURE.md 6.7). Loaded after the kit (tokens.css, components.css).
+ *
+ * Only placement lives here: the grid of top bar, tool palette, stage, right panel and status line, the floating controls
+ * over the canvas, the resizable panel, the narrow-screen drawer and the print rules. Colours, type and states come from the kit.
+ *
+ * Desktop (>= 900 px):  top bar / tools | stage | right panel (--side-w, draggable edge) / status line
+ * Narrow  (<  900 px):  top bar (two rows) / stage / tool strip / status line; the right panel is a drawer from the right.
+ */
+
+:root {
+  --topbar-h: 48px;
+  --side-w-default: 360px;
+  --drawer-w: min(92vw, 420px);
+  --narrow-toast-lift: 76px; /* keeps toasts above the bottom tool strip on narrow screens */
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  overflow: hidden; /* the app never scrolls as a page: every region scrolls itself */
+  overscroll-behavior: none; /* no pull-to-refresh while drawing on a touch screen */
+}
+
+/* ==========================================================================
+   App grid
+   ========================================================================== */
+
+.app {
+  --side-w: var(--side-w-default); /* set by app.js while the panel edge is dragged; remembered between visits */
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) var(--side-w);
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-areas:
+    'top top top'
+    'palette stage side'
+    'status status status';
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+  overflow: clip; /* tooltips and menus never widen the page; nothing can scroll the app sideways */
+  background: var(--bg);
+}
+
+.skip-link {
+  position: fixed;
+  z-index: var(--z-tooltip);
+  top: var(--sp-2);
+  left: var(--sp-2);
+  transform: translateY(-200%);
+  text-decoration: none;
+}
+
+.skip-link:focus {
+  transform: none;
+}
+
+/* ==========================================================================
+   Top bar
+   ========================================================================== */
+
+.topbar {
+  grid-area: top;
+  position: relative;
+  z-index: var(--z-sticky); /* above the stage, so its menus open over the canvas */
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: var(--topbar-h);
+  padding: 0 var(--sp-3);
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.brand {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--text);
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-semibold);
+  text-decoration: none;
+}
+
+.brand__logo {
+  display: block;
+  border-radius: 7px;
+}
+
+.topbar__group {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+}
+
+.topbar .dropdown__menu {
+  width: max-content;
+  max-width: min(340px, calc(100vw - var(--sp-4)));
+}
+
+.topbar__spacer {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.topbar__name {
+  width: clamp(120px, 16vw, 240px);
+  min-width: 0;
+  border-color: transparent;
+  border-bottom-color: var(--border-strong);
+  background: transparent;
+  font-weight: var(--fw-semibold);
+  text-overflow: ellipsis;
+}
+
+.topbar__name:hover {
+  border-color: var(--control-border);
+}
+
+.topbar__name:focus {
+  background: var(--surface);
+}
+
+.savechip {
+  gap: 6px;
+  color: var(--text-dim);
+  font-weight: var(--fw-regular);
+}
+
+.variants {
+  display: flex;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+
+.variants__tabs {
+  display: flex;
+  gap: 2px;
+  min-width: 0;
+  max-width: 36vw;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.variants__tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.variants__tab {
+  flex: none;
+  max-width: 18ch;
+}
+
+.variants__tab > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.topbar__panel-toggle,
+.topbar__more {
+  display: none; /* narrow screens only */
+}
+
+/* ==========================================================================
+   Tool palette
+   ========================================================================== */
+
+.palette {
+  grid-area: palette;
+  position: relative;
+  z-index: var(--z-raised); /* its tooltips reach over the stage */
+  padding: var(--sp-2);
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+}
+
+.palette .toolbar {
+  display: flex;
+}
+
+.tool__label {
+  display: none; /* shown under the icons on narrow screens, where tooltips do not exist */
+}
+
+@media (max-height: 640px) {
+  .palette {
+    overflow-y: auto; /* a short window scrolls the tools; their tooltips are clipped then */
+    scrollbar-width: none;
+  }
+}
+
+/* ==========================================================================
+   Stage: canvas and floating controls
+   ========================================================================== */
+
+.stage {
+  grid-area: stage;
+  position: relative;
+  isolation: isolate; /* floating controls stay below the top bar's menus */
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.stage__canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* The frame around the whole plan means "the keyboard is on the plan": it is drawn after Tab put it there (app.js sets
+   data-tabbed), not after a shortcut key or when a dialog hands the plan back, which :focus-visible alone would also show. */
+.stage__canvas:focus-visible {
+  outline: none;
+}
+
+.app[data-tabbed] .stage__canvas:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: -3px;
+}
+
+.stage__loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  padding: var(--sp-4);
+  color: var(--text-dim);
+  text-align: center;
+  pointer-events: none;
+}
+
+/* Only shown if the app has not started after a while (a browser without module support never removes this block). */
+.stage__slow {
+  max-width: 420px;
+  font-size: var(--fs-sm);
+  opacity: 0;
+  animation: stage-slow-in 0s linear 8s forwards;
+}
+
+@keyframes stage-slow-in {
+  to {
+    opacity: 1;
+  }
+}
+
+.stage__top {
+  position: absolute;
+  z-index: var(--z-float);
+  top: var(--sp-2);
+  right: var(--sp-2);
+  left: var(--sp-2);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  pointer-events: none; /* the canvas stays clickable between the bars */
+}
+
+.stage__top > * {
+  pointer-events: auto;
+}
+
+.stage__zoom {
+  position: absolute;
+  z-index: var(--z-float);
+  right: var(--sp-2);
+  bottom: var(--sp-2);
+}
+
+.stage__options {
+  position: absolute;
+  z-index: var(--z-float);
+  bottom: var(--sp-2);
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.stage__empty {
+  position: absolute;
+  z-index: var(--z-raised);
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: var(--sp-4);
+  pointer-events: none;
+}
+
+.stage__empty .empty {
+  max-width: 380px;
+  padding: var(--sp-6) var(--sp-5);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  background: var(--surface);
+  box-shadow: var(--shadow-2);
+  pointer-events: auto;
+}
+
+.stage__empty .empty__text {
+  max-width: none;
+}
+
+.stagebar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  max-width: 100%;
+}
+
+.stagebar .input {
+  width: auto;
+}
+
+.simbar__clock {
+  min-width: 5.5ch;
+  padding: 0 var(--sp-1);
+  color: var(--text);
+  font-weight: var(--fw-semibold);
+  text-align: center;
+}
+
+.simbar__speed {
+  width: 76px;
+}
+
+.overlays {
+  flex-wrap: wrap; /* a narrow stage puts the heatmap choice on a second line instead of hiding it */
+  column-gap: var(--sp-3);
+  margin-left: auto; /* stays at the right edge when it wraps below the simulation bar */
+}
+
+.overlays__group {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.overlays__label {
+  flex: none;
+  padding: 0 var(--sp-1) 0 var(--sp-2);
+  color: var(--text-faint);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+/* ==========================================================================
+   Right panel
+   ========================================================================== */
+
+.side {
+  grid-area: side;
+  position: relative;
+  z-index: var(--z-raised); /* the resize handle straddles the stage edge */
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--surface);
+  border-left: 1px solid var(--border);
+}
+
+/* The tab strip decides how much of each label fits (a container query on its own width). */
+.side__bar {
+  display: flex;
+  flex: none;
+  align-items: stretch;
+  container: side-bar / inline-size;
+  border-bottom: 1px solid var(--border);
+}
+
+.side__bar .tabs {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0 var(--sp-1);
+  border-bottom: 0;
+}
+
+.side__bar .tab {
+  gap: 6px;
+  padding: 0 var(--sp-2);
+}
+
+.side__bar .tab__label {
+  display: none;
+}
+
+.side__bar .tab[aria-selected='true'] .tab__label {
+  display: inline;
+}
+
+@container side-bar (min-width: 520px) {
+  .side__bar .tab__label {
+    display: inline;
+  }
+}
+
+.side__close {
+  display: none; /* drawer only */
+  flex: none;
+  margin: auto var(--sp-1);
+}
+
+.side__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.panel-error {
+  padding: var(--sp-3);
+}
+
+.side__resize {
+  position: absolute;
+  z-index: var(--z-raised);
+  top: 0;
+  bottom: 0;
+  left: -4px;
+  width: 8px;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.side__resize::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 3px;
+  width: 2px;
+  background: transparent;
+  transition: background-color var(--t-fast) var(--ease);
+}
+
+.side__resize:hover::after,
+.side__resize:focus-visible::after,
+.side__resize.is-dragging::after {
+  background: var(--accent);
+}
+
+.side__resize:focus-visible {
+  outline-offset: -2px; /* the kit's focus ring, drawn inside the thin handle */
+}
+
+body.is-resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+
+.scrim {
+  position: fixed;
+  z-index: calc(var(--z-drawer) - 1);
+  inset: 0;
+  background: var(--scrim);
+}
+
+/* ==========================================================================
+   Status line
+   ========================================================================== */
+
+.statusbar {
+  grid-area: status;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  min-height: 28px;
+  padding: 0 var(--sp-3);
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+}
+
+.statusbar__text {
+  flex: 1 1 auto;
+}
+
+.statusbar__meta {
+  flex: none;
+  color: var(--text-faint);
+}
+
+/* Without JavaScript the message covers the lifeless skeleton. */
+.noscript {
+  position: fixed;
+  z-index: var(--z-modal);
+  inset: 0;
+  padding: var(--sp-8) var(--sp-4);
+  background: var(--bg);
+  color: var(--text);
+}
+
+.noscript > * {
+  max-width: 460px;
+  margin-right: auto;
+  margin-left: auto;
+}
+
+.noscript h1 {
+  margin-bottom: var(--sp-3);
+  font-size: var(--fs-xl);
+}
+
+/* Not enough room for the labels of the top-bar buttons: icons only. */
+@media (max-width: 1239px) {
+  .topbar .btn__label,
+  .topbar .btn__caret {
+    display: none;
+  }
+
+  .topbar .btn--labelled {
+    width: var(--control-h);
+    padding: 0;
+  }
+}
+
+/* ==========================================================================
+   Narrow screens: drawer instead of side panel, tools at the bottom
+   ========================================================================== */
+
+@media (max-width: 899.98px) {
+  .app {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr) auto auto;
+    grid-template-areas:
+      'top'
+      'stage'
+      'palette'
+      'status';
+  }
+
+  .topbar {
+    flex-wrap: wrap;
+    row-gap: 0;
+    padding: 0 var(--sp-2);
+  }
+
+  .brand__name,
+  .topbar__desktop,
+  .savechip__text {
+    display: none;
+  }
+
+  .topbar__name {
+    flex: 1 1 0;
+    width: auto;
+  }
+
+  .topbar__spacer {
+    display: none;
+  }
+
+  .topbar__panel-toggle,
+  .topbar__more {
+    display: inline-flex;
+  }
+
+  .variants {
+    flex: 1 0 100%;
+    order: 10; /* a second row of its own */
+    padding-bottom: var(--sp-1);
+  }
+
+  .variants__tabs {
+    max-width: none;
+    flex: 0 1 auto;
+  }
+
+  /* The tools become a scrolling strip with visible labels (touch screens have no tooltips). */
+  .palette {
+    padding: var(--sp-1) var(--sp-2);
+    overflow-x: auto;
+    overflow-y: hidden;
+    border-top: 1px solid var(--border);
+    border-right: 0;
+    scrollbar-width: none;
+  }
+
+  .palette .toolbar {
+    width: max-content;
+    flex-direction: row;
+  }
+
+  .palette [data-tip]::before,
+  .palette [data-tip]::after {
+    display: none;
+  }
+
+  .palette .btn--icon {
+    flex-direction: column;
+    gap: 2px;
+    width: auto;
+    min-width: 52px;
+    height: auto;
+    padding: 6px 4px 4px;
+  }
+
+  .tool__label {
+    display: block;
+    font-size: var(--fs-xs);
+    font-weight: var(--fw-medium);
+    line-height: 1.1;
+  }
+
+  .stage__top {
+    flex-direction: column;
+    align-items: flex-start;
+    flex-wrap: nowrap;
+  }
+
+  .stagebar {
+    max-width: 100%;
+  }
+
+  .simbar__limited-text {
+    display: none; /* the warning icon stays */
+  }
+
+  .side {
+    position: fixed;
+    z-index: var(--z-drawer);
+    inset: 0 0 0 auto;
+    width: var(--drawer-w);
+    border-left: 1px solid var(--border);
+    box-shadow: var(--shadow-3);
+    transform: translateX(100%);
+    visibility: hidden;
+    transition: transform var(--t-slow) var(--ease), visibility 0s linear var(--t-slow);
+  }
+
+  .app.is-drawer-open .side {
+    transform: none;
+    visibility: visible;
+    transition-delay: 0s;
+  }
+
+  .side__resize {
+    display: none;
+  }
+
+  .side__close {
+    display: inline-flex;
+  }
+
+  .toast-region {
+    bottom: calc(var(--sp-4) + var(--narrow-toast-lift));
+  }
+}
+
+@media (max-height: 520px) {
+  .statusbar {
+    display: none; /* a phone held sideways needs every line for the plan */
+  }
+}
+
+@media (forced-colors: active) {
+  .side__resize:hover::after,
+  .side__resize:focus-visible::after,
+  .side__resize.is-dragging::after {
+    background: Highlight;
+  }
+}
+
+/* ==========================================================================
+   Print: only the plan, no chrome (the full report is Export > Report)
+   ========================================================================== */
+
+@media print {
+  .topbar,
+  .palette,
+  .side,
+  .statusbar,
+  .scrim,
+  .skip-link,
+  .stage__top,
+  .stage__zoom,
+  .stage__empty,
+  .stage__loading,
+  .toast-region {
+    display: none !important;
+  }
+
+  html,
+  body,
+  .app,
+  .stage {
+    display: block;
+    height: auto;
+    overflow: visible;
+  }
+
+  .stage__canvas {
+    position: static;
+    width: 100%;
+    height: auto;
+  }
+}

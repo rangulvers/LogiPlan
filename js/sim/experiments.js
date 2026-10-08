@@ -2,6 +2,7 @@
 // seeds, compare variants and sweep one parameter. Everything is asynchronous and cooperative: a run is cut into
 // slices of about `yieldEveryMs` of real work, the event loop gets a turn between the slices (so a browser tab stays
 // responsive), progress is reported after every slice and an AbortSignal stops the run at the next slice boundary.
+// Building the simulation (tens of milliseconds on the biggest plants) is a slice of its own.
 //
 // How the open points of the spec were resolved:
 //  * Replication r of a layout uses the seed (seed0 ?? settings.seed) + r, wrapped to 32 bits. Sweeps and
@@ -188,6 +189,8 @@ export async function runSimulation(layout, opts = {}) {
     plant.settings.warmup = Math.min(plant.settings.warmup, duration / 2);
   }
   const sim = new Simulation(plant, { seed });
+  await yieldToEventLoop(); // building a big plant is a slice of its own
+  throwIfAborted(signal);
   const finished = () => sim.time >= duration - sim.dt * 1e-6;
   const progress = typeof onProgress === 'function'
     ? () => onProgress({ fraction: finished() ? 1 : sim.time / duration, simTime: sim.time, label })
@@ -288,9 +291,11 @@ function scaledRange(current, factors, { lo, hi, whole = false }) {
   return { min, max, step, values: suggest(current, factors.map((f) => round(current * f)), min, max) };
 }
 
-/** Range for a what-if factor (an absolute multiplier). */
+/** Range for a what-if factor (an absolute multiplier): 0.25 to 3, wider when the layout's own value lies outside. */
 function factorRange(current) {
-  return { min: 0.25, max: 3, step: 0.05, values: suggest(current, [0.5, 0.75, 1, 1.25, 1.5, 2], 0.25, 3) };
+  const min = Math.min(0.25, current);
+  const max = Math.max(3, current);
+  return { min, max, step: 0.05, values: suggest(current, [0.5, 0.75, 1, 1.25, 1.5, 2], min, max) };
 }
 
 const SPEED_FACTORS = [0.5, 0.75, 1, 1.25, 1.5, 2];

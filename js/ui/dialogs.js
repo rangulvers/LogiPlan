@@ -31,6 +31,15 @@ const plural = (n, one, many = `${one}s`) => `${formatNumber(n)} ${n === 1 ? one
 const quoted = (name) => `“${name}”`;
 const nextTask = () => new Promise((resolve) => setTimeout(resolve, 0));
 
+/** Is the device touch-only (no mouse or pen hover)? Then hints must not talk about keys such as Space. */
+export const isTouchOnly = () => Boolean(globalThis.matchMedia && globalThis.matchMedia('(hover: none)').matches);
+
+/**
+ * After a dialog replaced the plant, the plan gets the keyboard (Space plays, the tool keys work) instead of the button that
+ * opened the dialog: Space on "Examples" would open the gallery again, although the toast just said Space runs the example.
+ */
+const focusPlan = (ctx) => { if (ctx.canvas && ctx.canvas.isConnected) ctx.canvas.focus({ preventScroll: true }); };
+
 // ---------------------------------------------------------------------------------------------------------
 // Pure helpers
 // ---------------------------------------------------------------------------------------------------------
@@ -450,6 +459,7 @@ function openWelcome(ctx, dlg, { auto = false } = {}) {
   const { store } = ctx;
   const state = store.getState();
   let handle = null;
+  let replaced = false;
 
   const cards = EXAMPLES.map((example) => {
     const layout = example.build();
@@ -475,6 +485,7 @@ function openWelcome(ctx, dlg, { auto = false } = {}) {
     title: 'Welcome to LogiPlan', size: 'lg', body: stackOf(20, ...sections),
     leading: h('label', { class: 'check' }, hide, h('span', null, 'Don’t show this again')),
     actions: [{ label: 'Close' }],
+    onClose: () => { if (replaced) focusPlan(ctx); },
   });
   drawPreviews();
 
@@ -490,7 +501,9 @@ function openWelcome(ctx, dlg, { auto = false } = {}) {
 
   async function pickExample(example) {
     const result = await ctx.actions.loadExample(example.id);
-    if (result !== false) handle.close();
+    if (result === false) return;
+    replaced = true;
+    handle.close();
   }
 
   async function createEmpty(spec) {
@@ -502,8 +515,10 @@ function openWelcome(ctx, dlg, { auto = false } = {}) {
     }
     store.newProject(createLayout({ name: spec.name || undefined, cols: spec.cols, rows: spec.rows, cellSize: spec.cellSize }), spec.name || undefined);
     ctx.actions.fitView();
+    replaced = true;
     handle.close();
-    ctx.toast('Empty plant ready. Draw roads with the Road tool (R) and place stations with the keys 1 to 5.', { kind: 'success' });
+    ctx.toast(isTouchOnly() ? 'Empty plant ready. Pick the Road tool below to draw roads, then a station tool to place stations.'
+      : 'Empty plant ready. Draw roads with the Road tool (R) and place stations with the keys 1 to 5.', { kind: 'success' });
   }
   return handle;
 }
@@ -550,7 +565,9 @@ const KEY_TABLE = [
   [['Space'], 'Play or pause the simulation (hold it and drag to pan)'],
   [['.'], 'Advance the simulation by one step'],
   [['+', '−'], 'Faster or slower simulation'],
-  [['double click'], 'On empty ground: fit the whole plant into view'],
+  [['0'], 'Fit the whole plant into view (a double click on empty ground does the same)'],
+  [['Ctrl', 'S'], 'Download the project file'],
+  [['?'], 'Open this help'],
 ];
 
 const kbd = (key) => h('kbd', { class: 'kbd' }, key);
@@ -727,6 +744,7 @@ const MAX_FILE_BYTES = 25e6;
 
 function openImportExport(ctx, dlg) {
   const { store } = ctx;
+  let opened = false;
   const status = h('div', { 'aria-live': 'polite' });
   const showError = (text) => status.replaceChildren(callout({ severity: 'error', title: 'This could not be opened', text }));
 
@@ -747,6 +765,7 @@ function openImportExport(ctx, dlg) {
     }
     store.loadProject(project);
     ctx.actions.fitView();
+    opened = true;
     handle.close();
     ctx.toast(`Opened ${quoted(project.name)} with ${plural(project.scenarios.length, 'scenario')}.`, { kind: 'success' });
     if (project.warnings) ctx.toast(project.warnings.join(' '), { kind: 'warn', ms: 9000 });
@@ -776,7 +795,7 @@ function openImportExport(ctx, dlg) {
       paragraph(`Download ${quoted(project.name)} with ${plural(project.scenarios.length, 'scenario')} as one file. Open it later, on any computer, in the Open section below.`),
       h('div', null, h('button', { class: 'btn btn--primary', type: 'button', onclick: () => downloadProject(ctx) }, icon('download', { size: 16 }), 'Download project file'))),
     stackOf(8, heading('Open'), zone, pasted.el, h('div', null, readPasted), status));
-  const handle = dlg.show({ title: 'Import and export', body, actions: [{ label: 'Close' }] });
+  const handle = dlg.show({ title: 'Import and export', body, actions: [{ label: 'Close' }], onClose: () => { if (opened) focusPlan(ctx); } });
   return handle;
 }
 
