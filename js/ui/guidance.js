@@ -234,7 +234,7 @@ function dockSteps(layout, issues) {
   for (const s of layout.stations) {
     if (docksOf(layout, s.id).length) continue;
     steps.push(makeStep(`no-dock:${s.id}`, 'warn', 'plant', 'warning', `${s.name} does not touch a road`,
-      'Vehicles cannot reach it. Select it and drag it next to a road, or draw a road up to it.',
+      'Vehicles cannot reach it. Drag it next to a road, or draw a road up to it.',
       { type: 'focus', refs: { stationIds: [s.id] }, hint: 'Select the station and drag it next to a road.', label: 'Show me' }, { refs: { stationIds: [s.id] } }));
   }
   const names = new Map(layout.stations.map((s) => [s.id, s.name]));

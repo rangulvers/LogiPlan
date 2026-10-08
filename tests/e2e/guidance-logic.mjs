@@ -411,7 +411,7 @@ await withBrowser(async ({ browser, url, errors }) => {
     eq(await list.locator('.guide-check__row.is-done').count(), 1, 'one row is done');
     eq(await list.locator('[aria-current=step] .guide-check__title').innerText(), 'Place stations next to the road', 'and the next one is current');
     eq(await list.locator('.progress').getAttribute('aria-valuenow'), '1', 'the progress bar follows');
-    ok((await card(page).innerText()).includes('Place a Goods in and a Workstation next to the road'), 'the Next steps card says the same in words');
+    ok(await card(page).isHidden(), 'the Next steps card does not say "Place a Goods in and a Workstation" a second time: the list shows it');
 
     // collapse and hide
     await list.getByRole('button', { name: 'Collapse the getting started list' }).click();
@@ -420,6 +420,7 @@ await withBrowser(async ({ browser, url, errors }) => {
     ok(await list.locator('.guide-check__list').isVisible(), 'expanded again');
     await list.getByRole('button', { name: 'Hide the getting started list' }).click();
     ok(await list.isHidden(), 'dismissed');
+    ok((await card(page).innerText()).includes('Place a Goods in and a Workstation next to the road'), 'and with the list gone the Next steps card says it');
     eq(await page.evaluate(() => JSON.parse(localStorage.getItem('logiplan:guidance-dismissed'))), ['checklist'], 'remembered in localStorage');
     await page.reload();
     await page.waitForFunction(() => document.getElementById('app')?.dataset.state === 'ready');

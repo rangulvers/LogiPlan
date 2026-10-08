@@ -40,7 +40,14 @@
 //   WARM-8  low     vehicle-idle-some grammar: "1 of 4 vehicles ... hardly work", "#4 (0 trips) made far fewer trips than their fleet-mates".
 //   WARM-9  low     One new vehicle that may serve no flow (all flows dedicated to other fleets, the Two lines example) gets NO insight (fleet-oversized
 //                   needs two vehicles, fleet-unused needs other vehicles on the same flows); a fleet of two gets fleet-oversized but its strip shows no badge.
-//   (UI findings - toast wording, card labels cut off, hint at 390 px, 22 px close button - are in tests/e2e/edit-feedback-review.mjs.)
+//   WARM-10 low     (e2e only) a: the card clips the list of edits to two lines and gives no way to read the rest; b: the "Hide this hint" button is 22 x 22 px;
+//                   c: at 390 px the hint is cut off and nothing gives it in full; d: the honesty line and the figures change without being announced.
+//   Not defects, but worth knowing: every commit on a 160 x 160 plant blocks the page for about 190-270 ms in the app's own update (ui/app.js, not the pre-roll: no
+//   long animation frame during priming); the unused-resource verdict flickers with the window (at the 10 minute window right after a restart 7 of 90 random plants
+//   raised fleet-unused / vehicle-idle-some / station-never-used and 5 of those 7 were gone after 2 h; a new fleet of two forklifts next to 5 AGVs is "barely used" at
+//   10 minutes in most seeds and carries 1 trip per vehicle and hour two hours later); a restarted simulation keeps one replaced simulation referenced until the next
+//   'kpis' event (kpiSeen), at most 250 ms; runtime what-if edits made earlier still dilute the old baseline (known, reported by the builder).
+//   (The UI findings, the toast wording, "Compare properly..." and the long-label layout are in tests/e2e/edit-feedback-review.mjs.)
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -609,6 +616,32 @@ test('WARM-GUARD-H1: a real, large effect is still reported as worse once the wi
   rig.runner.destroy();
 });
 
+test('WARM-GUARD-H2: cosmetic edits (label, obstacle, plant name, run duration) rebuild nothing and show no card; a runtime edit applies live; only a structural one restarts', async () => {
+  const Fake = fakeSimClass({ capacity: 400 });
+  const rig = makeRig({ Sim: Fake });
+  await rig.runTo(1500);
+  const sim = rig.runner.sim;
+  const made = Fake.made;
+  rig.commit('Add label', (l) => { L.addLabel(l, { x: 20, y: 20, text: 'Hello' }); });
+  rig.commit('Rename plant', (l) => { l.name = 'Another name'; });
+  rig.commit('Run length', (l) => { L.updateSettings(l, { duration: 7200 }); });
+  const obstacle = rig.commit('Add obstacle', (l) => { L.addObstacle(l, { x: 1, y: 28, w: 2, h: 1, kind: 'wall' }); });
+  rig.frames(80);
+  assert.equal(Fake.made, made, 'nothing was built');
+  assert.equal(rig.runner.sim, sim);
+  assert.equal(rig.runner.baseline, null);
+  assert.equal(rig.runner.priming, false);
+  rig.commit('Demand', (l) => { l.settings.demandFactor = 1.5; });
+  rig.frames(80);
+  assert.equal(Fake.made, made, 'a runtime change is applied to the running simulation');
+  assert.equal(rig.runner.sim, sim);
+  rig.commit('Rename a station', (l) => { l.stations[0].name = 'Renamed'; });
+  rig.until(() => rig.runner.warm && !rig.runner.priming);
+  assert.equal(Fake.made, made + 1, 'a station rename IS a structural change and restarts (that is what WARM-1 is about)');
+  assert.equal(typeof obstacle, 'boolean');
+  rig.runner.destroy();
+});
+
 test('WARM-1: a restart that cannot change anything (renaming a station) must not produce a red or green verdict', { todo: 'js/ui/panels/impact.js classifyDelta + js/ui/runner.js baseline: the 3 % / 1 load-per-hour noise rule is far inside the run-to-run noise of a 10-20 minute window compared with a long baseline (measured: throughput up to 19-28 %, lead time 35 %, waiting 9 points); compare like with like (a control run of the old layout, pre-rolled the same way) or scale the threshold with the window' }, async () => {
   const verdicts = [];
   for (const id of ['starter', 'two-lines', 'congestion-lab']) {
@@ -667,8 +700,13 @@ test('WARM-4: priming ends within a bounded wall-clock time however slow the pla
   await rig.runTo(700);
   const first = rig.runner.sim;
   addSource(rig);
-  const slowest = 20000; // ms: the planner's patience
-  rig.until(() => rig.runner.sim !== first, Math.ceil(slowest / 16) + 20, 16);
+  const patience = 20000; // ms of wall-clock time the planner waits for an edit to show
+  let frames = 0;
+  while (rig.runner.sim === first && frames * 16 < patience + 600) { // + the 250 ms debounce and the first frames
+    rig.frame(16);
+    frames++;
+  }
+  assert.ok(rig.runner.sim !== first, `still priming after ${Math.round((frames * 16) / 1000)} s of wall-clock time (${Math.round(rig.runner.primeProgress * 100)} % of the pre-roll), the old simulation stands still`);
   rig.runner.destroy();
 });
 

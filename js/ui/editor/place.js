@@ -90,7 +90,7 @@ export function createPlaceTool(ed, tool) {
       const shift = press.shift || p.shift;
       press = null;
       ed.view.ghost = null;
-      if (reason) ed.toast(`Cannot place ${noun()} here: ${reason}.${!isObstacle && /road/.test(reason) ? ' Put it beside the road, not on it.' : ''}`, { kind: 'warn' });
+      if (reason) ed.toast(`Cannot place ${noun()} here: ${reason}.${isObstacle ? '' : /road/.test(reason) ? ' Put it beside the road, not on it.' : /station/.test(reason) ? ' To select or move a station, choose the Select tool (V).' : ''}`, { kind: 'warn' });
       else place(rect, shift, p.cell);
     },
     cancel() {

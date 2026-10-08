@@ -614,7 +614,8 @@ export function createFleetPanel(ctx) {
   });
   empty.querySelector('.empty__actions').style.flexWrap = 'wrap';
   empty.querySelector('.empty__actions').style.justifyContent = 'center';
-  const guide = createGuidanceHeader(ctx, { filter: forFleet }); // adding vehicles, parking, and how vehicles find work
+  // adding vehicles, parking, and how vehicles find work; what a fleet card already says in place (an empty fleet, a flow dedicated to it) is not said twice
+  const guide = createGuidanceHeader(ctx, { filter: forFleet, hide: (step) => /^(fleet-empty|no-carrier):/.test(step.id) });
   const el = h('div', { 'data-panel': 'fleet' }, guide.el, top, list, empty);
 
   function addFromPreset(preset) {

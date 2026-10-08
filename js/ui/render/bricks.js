@@ -12,7 +12,7 @@
 
 import { STATION_TYPES } from '../../model/defaults.js';
 import { STATUS_COLORS, STATUS_INK } from '../theme.js';
-import { fitText } from './geometry.js';
+import { fitText, shortNameAlternatives } from './geometry.js';
 import { TAU, roundRectPath, fontOf, measure, fillPill } from './draw.js';
 import { drawStationIcon, drawStatusMark, drawBolt, drawBox } from './glyphs.js';
 import { drawVehicleIcon } from './vehicles.js';
@@ -300,7 +300,7 @@ function fitName(ctx, st, name, avail, slot) {
   let c = st ? fitCache.get(st) : null;
   if (c && (c.font !== ctx.font || c.name !== name)) c = null;
   if (c && c.keys[slot] === key) return c.texts[slot];
-  const text = fitText((s) => measure(ctx, s), name, avail);
+  const text = fitText((s) => measure(ctx, s), name, avail, shortNameAlternatives(name));
   if (st) {
     if (!c) {
       c = { font: ctx.font, name, keys: [-1, -1], texts: ['', ''] };

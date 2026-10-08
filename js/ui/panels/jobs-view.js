@@ -16,6 +16,7 @@ import { icon } from '../icons.js';
 import { getStation, getFlow, getFleet, flowsFrom, flowsTo, addFlow, updateFlow, removeFlow } from '../../model/layout.js';
 import { formatNumber } from '../../util/format.js';
 import { validDestinations, validOrigins, suggestDestination, suggestOrigin, stationLabel, applyFix, backToSelect, DEFAULT_FLEET } from '../guidance.js';
+import { flowCreatedText, FLOW_CREATED } from '../editor/connect.js';
 import { section, switchField, callout, uid } from './fields.js';
 import {
   WEIGHT_MIN, WEIGHT_MAX, stepWeight, describeSplit, describeInflows, describeServedBy, servedFlows, fleetJobsSummary,
@@ -310,8 +311,9 @@ function createLoadsBlock(ctx, station, dir) {
     chosen = null;
     open = false;
     backToSelect(ctx);
-    const several = to.type === 'process' && flowsTo(store.getState().layout, to.id).length > 1;
-    setText(status, `Connected ${from.name} to ${to.name}.${several ? ` ${to.name} now needs a load from every input before each cycle.` : ''}`);
+    const message = flowCreatedText(store.getState().layout, created);
+    setText(status, `Connected ${from.name} to ${to.name}. ${message.slice(FLOW_CREATED.length + 1)}`.trim()); // read out by a screen reader
+    undoToast(ctx, message); // and shown to everyone else: this is where "vehicles will serve it automatically" is said
     paint(store.getState());
     // back to the button that opened the picker; when nothing is left to add, to the row that was just created
     (toggle.hidden ? rows.get(created.id)?.focusTarget : toggle)?.focus();

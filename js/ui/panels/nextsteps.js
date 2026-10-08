@@ -51,6 +51,9 @@ export function rankBySelection(steps, selection) {
 export const forFlows = (step) => step.scopes.includes('flows');
 export const forFleet = (step) => step.scopes.includes('fleet');
 
+/** Steps the Getting started list already shows as its first two rows ("Draw roads", "Place stations next to the road"). */
+const MIRRORED_BY_CHECKLIST = new Set(['no-road', 'place-stations']);
+
 /**
  * `hide` rule of the Properties tab: while one station is selected its form asks "Where do loads go?" / "Where do loads come from?"
  * itself, with the same choice and the same Connect button one block further down, so the card leaves those steps out: two pickers
@@ -380,9 +383,13 @@ export function createChecklistCard(ctx, { onHidden = null } = {}) {
  * @param {object} ctx
  * @param {{ checklist?: boolean, filter?: (step: object) => boolean, max?: number, follow?: boolean }} [options]
  */
-export function createGuidanceHeader(ctx, { checklist = false, ...cardOptions } = {}) {
-  const card = createNextStepsCard(ctx, cardOptions);
-  const list = checklist ? createChecklistCard(ctx, { onHidden: () => (firstControl(card.el) || card.el.querySelector('.guide__title'))?.focus({ preventScroll: true }) }) : null;
+export function createGuidanceHeader(ctx, { checklist = false, hide = null, ...cardOptions } = {}) {
+  let list = null;
+  // On an empty plant the first two Getting started rows ARE the first two steps (same words, same action): while the list is on
+  // screen the card does not say them a second time.
+  const card = createNextStepsCard(ctx, { ...cardOptions, hide: (step, state) => Boolean(hide && hide(step, state)) || (MIRRORED_BY_CHECKLIST.has(step.id) && list !== null && !list.el.hidden) });
+  let rescue = false; // the list that held the keyboard focus went away: the card (which may only now show its steps) takes it
+  list = checklist ? createChecklistCard(ctx, { onHidden: () => { rescue = true; } }) : null;
   const el = h('div', { class: 'guide-stack', 'data-guidance': '' }, list?.el, card.el);
   return {
     el,
@@ -390,6 +397,10 @@ export function createGuidanceHeader(ctx, { checklist = false, ...cardOptions } 
       list?.update(state);
       card.update(state);
       el.hidden = card.el.hidden && (!list || list.el.hidden);
+      if (rescue) {
+        rescue = false;
+        (firstControl(card.el) || card.el.querySelector('.guide__title'))?.focus({ preventScroll: true });
+      }
     },
     destroy() { list?.destroy(); card.destroy(); el.remove(); },
   };

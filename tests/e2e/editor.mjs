@@ -359,8 +359,12 @@ await withBrowser(async ({ page, url, errors, browser }) => {
     assert.equal(await undoLabel(), 'Add workstation');
     assert.deepEqual(await selection(), sel('station', 's1'), 'the new station is selected');
     assert.equal((await ui()).tool, 'process', 'the tool stays active');
+    // (found by the first-time-planner walkthrough) a red "blocked" ghost over the brick that was just placed looked like a failed placement
+    assert.equal((await view()).ghost, null, 'no ghost over the brick that was just placed while the pointer rests there');
+    assert.match(await status(), /^Workstation placed\. Click elsewhere to place another, or press Esc to stop\.$/);
+    await move([11, 8]);
     g = (await view()).ghost;
-    assert.equal(g.valid, false, 'the ghost over the new station is red');
+    assert.equal(g.valid, false, 'moving on over the new station, the ghost is red again');
     await snap('08-place-invalid-light');
     await page.mouse.down();
     await page.mouse.up();

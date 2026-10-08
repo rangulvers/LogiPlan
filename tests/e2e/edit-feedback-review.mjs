@@ -341,9 +341,13 @@ await withBrowser(async ({ browser, url, errors }) => {
   // ---------------------------------------------------------------------------------------------------------------
   await run('keyboard', async () => {
     const { page, context } = await openApp();
-    await start(page, 'two-lines', { seconds: 1500 });
+    await start(page, 'two-lines', { seconds: 1500, tabName: 'simulate' });
     await addForklifts(page, 2);
     await warmReady(page);
+    // the toast's "See effect" leads to the card
+    await page.locator('.toast').filter({ hasText: 'Plant changed' }).getByRole('button', { name: 'See effect' }).click();
+    eq(await page.evaluate(() => window.__logiplan.store.getState().ui.rightTab), 'results', '"See effect" opens the Results tab');
+    ok(await card(page).isVisible(), 'and the card is there');
     await card(page).scrollIntoViewIfNeeded();
     // the card is a labelled region; the buttons have names; the dismiss button is reachable by Tab
     eq(await card(page).getAttribute('aria-labelledby') !== null, true, 'the card is labelled by its title');
@@ -360,6 +364,8 @@ await withBrowser(async ({ browser, url, errors }) => {
     ok(roles.chipStatus.includes('status'), 'the run chip ("Updating…") is a status');
     eq(roles.toastLive, 'polite', 'the toast region announces politely');
     ok(roles.rowsList && roles.srWord, 'rows are a list and every chip has a hidden word for readers who cannot see colour');
+    const announced = await page.evaluate(() => Boolean(document.querySelector('[data-panel=impact] .impact__status')?.closest('[aria-live], [role=status], [role=alert]')) || Boolean(document.querySelector('[data-panel=impact]')?.closest('[aria-live], [role=status], [role=alert]')));
+    defect('WARM-10d', announced, 'the honesty line ("Indicative: only 10 of 20 minutes measured so far" -> "Measured over 20 min") and the figures change without being announced: only the toast and the "Updating..." chip are live regions');
 
     // Tab from the Results tab reaches Dismiss, then Keep; Enter and Space activate; the focus never falls to the page
     await page.locator('#tab-results').focus();
@@ -432,7 +438,7 @@ await withBrowser(async ({ browser, url, errors }) => {
     };
     requestAnimationFrame(loop);
     try {
-      new PerformanceObserver((list) => { for (const e of list.getEntries()) window.__p.loaf.push({ duration: e.duration, blocking: e.blockingDuration, priming: Boolean(window.__logiplan && window.__logiplan.runner.priming), scripts: e.scripts.map((s) => `${(s.sourceURL || '').split('/').slice(-2).join('/')}:${s.sourceFunctionName || '(anonymous)'} ${Math.round(s.duration)}ms`) }); }).observe({ type: 'long-animation-frame', buffered: true });
+      new PerformanceObserver((list) => { for (const e of list.getEntries()) window.__p.loaf.push({ start: e.startTime, duration: e.duration, blocking: e.blockingDuration, scripts: e.scripts.map((s) => `${(s.sourceURL || '').split('/').slice(-2).join('/')}:${s.sourceFunctionName || '(anonymous)'} ${Math.round(s.duration)}ms`) }); }).observe({ type: 'long-animation-frame', buffered: true });
     } catch { /* not supported: the gaps remain */ }
   };
 
@@ -472,8 +478,9 @@ await withBrowser(async ({ browser, url, errors }) => {
     const out = [];
     for (let i = 0; i < rounds; i++) {
       await page.evaluate(() => {
-        window.__p.gaps.length = 0; window.__p.loaf.length = 0; window.__p.on = true; window.__swapAt = 0; window.__t0 = performance.now();
+        window.__p.gaps.length = 0; window.__p.loaf.length = 0; window.__p.on = true; window.__swapAt = 0; window.__primeAt = 0; window.__t0 = performance.now();
         window.__logiplan.runner.on('rebuild', (e) => { if (e.warm && !window.__swapAt) window.__swapAt = performance.now(); });
+        window.__logiplan.runner.on('priming', () => { if (!window.__primeAt) window.__primeAt = performance.now(); });
         window.__logiplan.store.commit(`One more vehicle ${Math.random()}`, (l) => { l.fleets[0].count += 1; });
       });
       await page.waitForFunction(() => window.__swapAt, null, { timeout: 120000, polling: 50 });
@@ -482,7 +489,9 @@ await withBrowser(async ({ browser, url, errors }) => {
         toSwap: window.__swapAt - window.__t0,
         primingGaps: window.__p.gaps.filter((g) => g[1]).map((g) => g[0]),
         otherGaps: window.__p.gaps.filter((g) => !g[1]).map((g) => g[0]),
-        loaf: window.__p.loaf.map((e) => ({ duration: Math.round(e.duration), priming: e.priming, scripts: e.scripts })),
+        // a long frame belongs to priming when it started after the pre-roll began and before the swap; the one at the moment of the edit is the app's own
+        loaf: window.__p.loaf.map((e) => ({ duration: Math.round(e.duration), at: Math.round(e.start - window.__t0), priming: e.start >= window.__primeAt - 1 && e.start <= window.__swapAt, scripts: e.scripts })),
+        primeAt: Math.round(window.__primeAt - window.__t0),
       })));
     }
     return out;
@@ -514,10 +523,10 @@ await withBrowser(async ({ browser, url, errors }) => {
     const bigGaps = stats(bigRounds.flatMap((r) => r.primingGaps));
     const bigLoaf = bigRounds.flatMap((r) => r.loaf);
     results.big100 = { toSwapMs: bigRounds.map((r) => Math.round(r.toSwap)), primingFrameGaps: bigGaps, longFrames: bigLoaf };
-    console.log(`   big plant (160 x 160, 100 vehicles): edit -> swap ${results.big100.toSwapMs.join(', ')} ms; priming frame gaps p95=${bigGaps.p95} ms max=${bigGaps.max} ms; long frames ${JSON.stringify(bigLoaf.map((e) => `${e.duration} ms${e.priming ? ' (priming)' : ''} [${e.scripts.join('; ')}]`))}`);
+    console.log(`   big plant (160 x 160, 100 vehicles): edit -> swap ${results.big100.toSwapMs.join(', ')} ms; priming frame gaps p95=${bigGaps.p95} ms max=${bigGaps.max} ms; long frames ${JSON.stringify(bigLoaf.map((e) => `${e.duration} ms at +${e.at} ms${e.priming ? ' (priming)' : ''} [${e.scripts.join('; ')}]`))}`);
     ok(bigGaps.max <= 100, `big plant: no frame gap over 100 ms while priming: ${bigGaps.max} ms`);
     ok(bigRounds.every((r) => r.toSwap < 5000), 'big plant: the pre-roll ends within 5 s');
-    ok(bigLoaf.filter((e) => e.priming).length === 0, 'big plant: the pre-roll itself never produces a long animation frame (the one at the moment of the edit is the app\'s own validation of the 160 x 160 plant, not priming)');
+    ok(bigLoaf.filter((e) => e.priming).length === 0, `big plant: the pre-roll itself never produces a long animation frame: ${JSON.stringify(bigLoaf.filter((e) => e.priming))}`);
 
     // memory over 100 edits, a real-engine run; the undo history is capped at 100 steps, so the heap must level off, not grow without end
     await start(page, 'starter', { seconds: 1500, speed: 1200 });

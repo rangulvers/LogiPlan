@@ -24,9 +24,10 @@ export function lerpAngle(a, b, t) {
  * fits and '' when not even the ellipsis fits.
  * @param {(s: string) => number} measure width of a string in px
  */
-export function fitText(measure, text, maxWidth) {
+export function fitText(measure, text, maxWidth, alternatives) {
   if (!text || !(maxWidth > 0)) return '';
   if (measure(text) <= maxWidth) return text;
+  if (alternatives) for (const alt of alternatives) if (alt && measure(alt) <= maxWidth) return alt;
   let lo = 0;
   let hi = text.length - 1;
   while (lo < hi) {
@@ -35,6 +36,28 @@ export function fitText(measure, text, maxWidth) {
   }
   const out = text.slice(0, lo).trimEnd() + '…';
   return lo === 0 && measure(out) > maxWidth ? '' : out;
+}
+
+/** Default station names and their shorter forms, longest first ("Goods in 2" -> "In 2"), so that two
+ *  neighbouring bricks ("Goods in 1", "Goods out 1") stay distinguishable when the plan is zoomed out. */
+const NAME_SHORTENINGS = [
+  [/^goods in\b/i, ['In']],
+  [/^goods out\b/i, ['Out']],
+  [/^workstation\b/i, ['Work', 'WS']],
+  [/^storage\b/i, ['Stor', 'St']],
+  [/^parking\b/i, ['Park', 'P']],
+];
+
+/**
+ * Shorter spellings of a station name to try before falling back to an ellipsis. Custom names have none.
+ * @returns {string[]} alternatives, longest first (empty when the name is not a default one)
+ */
+export function shortNameAlternatives(name) {
+  if (!name) return [];
+  for (const [re, shorts] of NAME_SHORTENINGS) {
+    if (re.test(name)) return shorts.map((s) => name.replace(re, s));
+  }
+  return [];
 }
 
 // ---- flow curves -------------------------------------------------------------------------------------

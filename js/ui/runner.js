@@ -33,10 +33,22 @@
 // whole ticks), so the result is deterministic. Reset, the first play() of a plant, switching variants and loading another plant
 // stay COLD starts from an empty plant. Hidden tabs do not prime (frames stop there anyway); destroy() ends priming at once.
 //
+// The pre-roll is bounded in WALL-CLOCK time too (PRIME_MAX_MS per phase, counted from the frames that actually primed): a plant too
+// big to be pre-rolled in that time swaps in with what is done (the 'rebuild' event says warmedUp: false) instead of freezing the
+// displayed simulation for as long as it takes. runner.primeProgress shows how far the pre-roll has come.
+//
 // BASELINE (the "before" of the change-impact card). When a warm restart replaces a simulation whose measured window was at least
-// BASELINE_MIN_SECONDS long, its last KpiReport becomes the baseline together with the labels of the edits since; later warm restarts keep
-// that ORIGINAL baseline and only add labels, until keepBaseline() (promote the current numbers) or dismissBaseline() (drop it).
-// runner.baseline is a plain, replaced-never-mutated object { report, simTime, labels, edits } or null; it is cleared by every cold start.
+// BASELINE_MIN_SECONDS long, that run becomes the baseline together with the labels of the edits since; later warm restarts keep
+// that ORIGINAL baseline and only add labels, until keepBaseline() (the plant as it is now) or dismissBaseline() (drop it).
+// runner.baseline is a plain, replaced-never-mutated object or null; it is cleared by every cold start:
+//   { report, simTime, labels, edits,    the old run's last KpiReport (its long, cumulative window) and the edits since
+//     layout,                            the plant those figures describe (what "Compare properly" offers as a variant)
+//     control: { window, report } | null the OLD plant simulated afresh for the same measured `window` as the new one ...
+//     after:   { window, report } | null ... and the NEW plant at the end of its pre-roll }
+// control and after are the FAIR comparison: the same seed, the same measured window, run side by side, so an edit that changes nothing
+// reads exactly +-0 and one that does is not drowned in the run-to-run noise of comparing a short window with a long one. The control
+// is a second, silent pre-roll of the old plant (the layout the displayed simulation was built from, with the what-if settings in
+// force now) that follows the pre-roll of the new plant; consecutive edits reuse it (it only depends on the old plant and the window).
 //
 // Frame (every animation frame, also while paused): auto-pause when the tab is hidden (it stays paused when the tab comes
 // back); while playing target += min(realDt, 0.1) * speed and sim.advance(target - sim.time, { maxMillis: 10, now });
@@ -61,7 +73,9 @@
 //    runner.sim is replaced (sim is null, and nothing else is set, when construction failed). `reason` keeps its old meaning
 //    (the spec's "reason: lastCommit label" is `label`, the edits joined in words, with `labels` as the list); `warm` is true for
 //    a pre-rolled replacement, whose `previous` is { report, simTime } of the simulation it replaced; `baseline` says whether the
-//    change-impact card has something to compare against. 'baseline' fires with the new runner.baseline (or null). 'priming' fires
+//    change-impact card has something to compare against (`paired`: it holds the fair old-versus-new figures; `warmedUp`: the new
+//    simulation has finished its warm-up, `warmupLeft` the simulated seconds still to go if not). 'baseline' fires with the new
+//    runner.baseline (or null). 'priming' fires
 //    with { priming: true, target } when a replacement starts to be pre-rolled (its end is the 'rebuild' event). 'state' fires with { playing, speed, limited } on play / pause / speed / limited changes. 'frame'
 //    carries { time, alpha, playing, speed, limited } for every drawn frame. 'kpis' carries the KpiReport, at most every 250 ms
 //    and only when the simulation has advanced since the last one. 'error' carries { error, phase } (phase: 'load' | 'create' |
@@ -89,6 +103,8 @@ export const KPI_INTERVAL_MS = 250;
 export const PAUSED_FRAME_MS = 30;
 /** Wall-clock budget of one pre-roll slice (ms): one slice per animation frame, so a frame never does more than this much simulation work. */
 export const PRIME_SLICE_MS = 12;
+/** Longest wall-clock time (ms) one pre-roll phase (the new plant, then the old plant for the comparison) may take; then it swaps in with what is done. */
+export const PRIME_MAX_MS = 4000;
 /** A warm restart simulates the warm-up plus this much measured time (s) before it is shown ... */
 export const PRIME_MEASURED_SECONDS = 600;
 /** ... but never less (s) ... */
@@ -211,7 +227,7 @@ export function createRunner(options = {}) {
   let lastFailure = { key: '', at: -Infinity };
   let frameHandle = null;
   let destroyed = false;
-  let priming = null; // { sim, layout, target, fresh, constructMs }: the simulation being pre-rolled behind the displayed one
+  let priming = null; // the replacement being pre-rolled behind the displayed one, see startPriming
   let pendingLabels = []; // labels of the structural edits since the displayed simulation was built
   let coldPending = false; // a plant was loaded or a variant switched since then: the next rebuild starts from an empty plant
   let baseline = null; // { report, simTime, labels, edits } or null, see the header
@@ -369,7 +385,29 @@ export function createRunner(options = {}) {
     priming = null;
   }
 
-  /** Start pre-rolling a new simulation for `layout` behind the displayed one. */
+  /** The plant the displayed simulation runs: the layout it was built from with the what-if settings in force now. */
+  const plantNow = () => ({ ...builtFrom, settings: { ...builtFrom.settings, ...runtimeApplied } });
+
+  /** Does the baseline already hold the old plant's figures for a measured window of `seconds`? (They depend on nothing else.) */
+  const controlFits = (seconds, dt) => Boolean(baseline && baseline.control && Math.abs(baseline.control.window - seconds) <= (dt > 0 ? dt : FALLBACK_DT) / 2);
+
+  /** A report of `simulation`, or null (reported) if it cannot be computed. */
+  function reportOf(simulation) {
+    try {
+      return simulation.kpis();
+    } catch (err) {
+      fail('results', err);
+      return null;
+    }
+  }
+
+  /**
+   * Start pre-rolling a new simulation for `layout` behind the displayed one. `priming` is
+   *   { sim, layout, target, fresh, constructMs, elapsed /* ms of frames spent in this phase */, phase: 'main' | 'control',
+   *     pair /* the old plant to simulate for the fair comparison, or null */, window, extra /* simulated s the comparison still needs */, control }
+   * Phase 'main' pre-rolls the new plant; phase 'control' (only when there is a baseline or the old run was long enough to become one, and
+   * the new plant got past its warm-up) then simulates the OLD plant for the same measured window. Both end in swapIn.
+   */
   function startPriming(layout) {
     const began = clock();
     let next;
@@ -380,25 +418,40 @@ export function createRunner(options = {}) {
       dropSim('structural');
       return;
     }
-    priming = { sim: next, layout, target: primeSeconds(layout.settings.warmup), fresh: true, constructMs: clock() - began };
-    emit('priming', { priming: true, target: priming.target });
+    const target = primeSeconds(layout.settings.warmup);
+    const window = target - layout.settings.warmup;
+    const pair = baseline || isMeasured(kpis()) ? { before: (baseline && baseline.layout) || plantNow() } : null;
+    const extra = pair && window > 0 && !controlFits(window, next.dt) ? pair.before.settings.warmup + window : 0;
+    priming = { sim: next, layout, target, fresh: true, constructMs: clock() - began, elapsed: 0, phase: 'main', pair, window, extra, control: null };
+    emit('priming', { priming: true, target });
   }
 
-  /** The baseline after a warm restart that replaces a simulation whose last report is `previous`. Returns whether there is one now. */
-  function recordBaseline(previous, labels) {
-    if (baseline) setBaseline({ ...baseline, labels: mergeLabels(baseline.labels, labels), edits: baseline.edits + 1 });
-    else if (isMeasured(previous.report)) setBaseline({ report: previous.report, simTime: previous.simTime, labels: mergeLabels([], labels), edits: 1 });
+  /**
+   * The baseline after a warm restart that replaces a simulation whose last report is `previous`. `before` is the plant that report
+   * describes, `paired` the fair figures { control, after } of this restart (null: there are none). Returns whether there is a baseline now.
+   */
+  function recordBaseline(previous, labels, before, paired) {
+    const control = paired ? paired.control : null;
+    const after = paired ? paired.after : null;
+    if (baseline) setBaseline({ ...baseline, labels: mergeLabels(baseline.labels, labels), edits: baseline.edits + 1, control: control || baseline.control, after });
+    else if (isMeasured(previous.report)) {
+      setBaseline({ report: previous.report, simTime: previous.simTime, labels: mergeLabels([], labels), edits: 1, layout: before, control, after });
+    }
     return baseline !== null;
   }
 
-  /** The primed simulation `p` takes the place of the displayed one, in one step. */
-  function swapIn(p) {
+  /** The primed simulation `p` takes the place of the displayed one, in one step. `control` = { window, report } of the old plant, or null. */
+  function swapIn(p, control = null) {
     priming = null;
     const old = sim;
     const previous = { report: cached('kpis', computeKpis, true), simTime: old.time };
     const labels = pendingLabels;
     pendingLabels = [];
-    const hasBaseline = recordBaseline(previous, labels);
+    const arrived = reportOf(p.sim);
+    const warmup = p.layout.settings.warmup;
+    const warmedUp = arrived && arrived.window ? arrived.window.warmingUp !== true : p.sim.time >= warmup;
+    const paired = p.pair && control && arrived && warmedUp ? { control, after: { window: Math.max(0, p.sim.time - warmup), report: arrived } } : null;
+    const hasBaseline = recordBaseline(previous, labels, p.pair ? p.pair.before : null, paired);
     if (pendingStep) { // a step() asked for during priming goes on in the new simulation
       const remaining = Math.max(0, pendingStep.target - old.time);
       pendingStep.start = p.sim.time;
@@ -419,27 +472,83 @@ export function createRunner(options = {}) {
       emitState();
     }
     applyRuntime(store.getState().layout); // a runtime-only change made while priming
-    emit('rebuild', { reason: 'structural', sim, warm: true, label: labelsText(labels), labels: labels.slice(), previous, baseline: hasBaseline });
+    emit('rebuild', {
+      reason: 'structural', sim, warm: true, label: labelsText(labels), labels: labels.slice(), previous, baseline: hasBaseline,
+      paired: paired !== null, warmedUp, warmupLeft: warmedUp ? 0 : Math.max(0, warmup - sim.time),
+    });
   }
 
-  /** One pre-roll slice. Called once per frame while priming; the frame does nothing else with a simulation. */
-  function stepPriming() {
-    const p = priming;
-    if (!p || (doc && doc.hidden)) return;
-    if (p.fresh) {
-      p.fresh = false;
-      if (p.constructMs > CONSTRUCT_SLOW_MS) return; // building took the frame: the first slice comes with the next one
+  /** One slice of `part` ({ sim, target, fresh, constructMs }): 'working', 'done' (target reached) or 'stuck' (the engine cannot go further). */
+  function slice(part) {
+    if (part.fresh) {
+      part.fresh = false;
+      if (part.constructMs > CONSTRUCT_SLOW_MS) return 'working'; // building took the frame: the first slice comes with the next one
     }
-    const dt = p.sim.dt > 0 ? p.sim.dt : FALLBACK_DT;
-    const before = p.sim.time;
+    const dt = part.sim.dt > 0 ? part.sim.dt : FALLBACK_DT;
+    const before = part.sim.time;
+    if (part.target - before > dt * 1e-6) part.sim.advance(part.target - before, { maxMillis: PRIME_SLICE_MS, now: clock });
+    if (part.target - part.sim.time <= dt * 1e-6) return 'done';
+    return part.sim.time <= before ? 'stuck' : 'working';
+  }
+
+  /** The new plant is as far as it will get (target reached, engine stuck or out of time): simulate the old one for the same window, or swap. */
+  function finishMain(p) {
+    const window = p.sim.time - p.layout.settings.warmup;
+    if (!p.pair || !(window > 0)) swapIn(p);
+    else if (controlFits(window, p.sim.dt)) swapIn(p, baseline.control);
+    else {
+      p.phase = 'control';
+      p.elapsed = 0;
+      p.window = window;
+    }
+  }
+
+  function stepMain(p) {
+    let state;
     try {
-      if (p.target - before > dt * 1e-6) p.sim.advance(p.target - before, { maxMillis: PRIME_SLICE_MS, now: clock });
+      state = slice(p);
     } catch (err) {
       fail('advance', err);
       dropSim('structural');
       return;
     }
-    if (p.target - p.sim.time <= dt * 1e-6 || p.sim.time <= before) swapIn(p); // done, or the engine cannot go further
+    if (state === 'working' && p.elapsed < PRIME_MAX_MS) return;
+    finishMain(p);
+  }
+
+  /** One slice of the old plant's run for the fair comparison; any trouble here costs the comparison, never the restart. */
+  function stepControl(p) {
+    if (!p.control) {
+      const began = clock();
+      try {
+        const old = new SimClass(p.pair.before);
+        p.control = { sim: old, target: old.settings.warmup + p.window, fresh: true, constructMs: clock() - began };
+      } catch (err) {
+        fail('create', err);
+        swapIn(p);
+        return;
+      }
+    }
+    let state;
+    try {
+      state = slice(p.control);
+    } catch (err) {
+      fail('advance', err);
+      swapIn(p);
+      return;
+    }
+    if (state === 'working' && p.elapsed < PRIME_MAX_MS) return;
+    const report = state === 'done' ? reportOf(p.control.sim) : null;
+    swapIn(p, report ? { window: p.window, report } : null);
+  }
+
+  /** One pre-roll slice. Called once per frame while priming; the frame does nothing else with a simulation. */
+  function stepPriming(frameMs) {
+    const p = priming;
+    if (!p || (doc && doc.hidden)) return;
+    p.elapsed += Math.min(frameMs, MAX_FRAME_SECONDS * 1000);
+    if (p.phase === 'control') stepControl(p);
+    else stepMain(p);
   }
 
   function ensureEngine() {

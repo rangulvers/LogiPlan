@@ -40,6 +40,7 @@ const SCRIPTS = Object.freeze([
   { name: 'guidance-logic', what: 'coaching: Next steps, guide chip, Getting started, Checks fixes (the second Goods in journey)' },
   { name: 'guidance-canvas', what: 'canvas guidance: flow handle, connect mode, hint after placing, vehicle jobs and waiting loads' },
   { name: 'guidance-panels', what: 'who serves which flow: station Where do loads go?, Jobs this fleet serves, Served by, Help page and welcome tips' },
+  { name: 'walkthrough', what: 'first-time planner: the second Goods in end to end, every way to connect, from scratch, breaking it, touch, dark, keyboard, performance', exclusive: true },
   { name: 'edit-feedback', what: 'edit feedback: warm restart after edits, "Effect of your change" card, baseline, fleet status, frame times', exclusive: true },
   { name: 'uikit-review', what: 'independent review of the UI kit', review: true },
   { name: 'render-review', what: 'independent review of the renderer', review: true },
