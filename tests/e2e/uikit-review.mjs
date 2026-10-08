@@ -333,7 +333,7 @@ async function reviewIcons() {
     defect('medium', 'icons', outside.length === 0, `icons touch the edge of the 24 px grid (live area is 1..23): ${outside.map((m) => m.name).join(', ')}`);
     defect('medium', 'icons', result.pairs[0][2] < 0.97, `two icons are nearly identical: ${result.pairs[0].join(' / ')}`);
     const dense = Object.entries(result.fill).filter(([, v]) => v > 0.15).map(([name, v]) => `${name} ${(v * 100).toFixed(0)} %`);
-    defect('medium', 'icons', dense.length === 0, `strokes closer than ~1 px at 16 px merge into a blob (visual review of the 16 px sheet also finds depot (P plus bolt), speedzone, oneway (arrowhead), forklift and export/import (arrow direction) muddy; share of ink gained by closing 1.5-unit gaps; median ${(Object.values(result.fill).sort((a, b) => a - b)[34] * 100).toFixed(1)} %): ${dense.join(', ')}`);
+    defect('medium', 'icons', dense.length === 0, `strokes closer than ~1 px at 16 px merge into a blob in the art drawn below 18 px (share of ink gained by closing 1.5-unit gaps; median ${(Object.values(result.fill).sort((a, b) => a - b)[34] * 100).toFixed(1)} %): ${dense.join(', ')}`);
     notes.push(`icons: closest pair ${result.pairs[0].slice(0, 2).join('/')} IoU ${result.pairs[0][2].toFixed(2)}; contact sheet ${png('icons-16-and-24px')}`);
   });
 }

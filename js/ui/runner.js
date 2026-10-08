@@ -148,12 +148,21 @@ export function createRunner(options = {}) {
 
   // ---- events ----
 
+  /** Hand a problem to the error sink; a sink that throws must not take the runner down. */
+  function reportError(err, context) {
+    try {
+      onError(err, context);
+    } catch {
+      // nothing left to do
+    }
+  }
+
   function emit(name, payload) {
     for (const fn of [...handlers[name]]) {
       try {
         fn(payload);
       } catch (err) {
-        onError(err, { event: name });
+        reportError(err, { event: name });
       }
     }
   }
@@ -168,7 +177,7 @@ export function createRunner(options = {}) {
     if (key === lastFailure.key && t - lastFailure.at < REPEAT_ERROR_MS) return;
     lastFailure = { key, at: t };
     if (handlers.error.size) emit('error', { error, phase });
-    else onError(error, { phase });
+    else reportError(error, { phase });
   }
 
   // ---- play state ----
@@ -301,12 +310,15 @@ export function createRunner(options = {}) {
 
   // ---- results ----
 
-  /** Cached result of `compute` for the current simulation: fresh for 250 ms, or for as long as the simulation has not moved. */
-  function cached(slot, compute) {
+  /**
+   * Result of `compute` for the current simulation, cached: fresh for 250 ms, or for as long as the simulation has not moved.
+   * `force` recomputes (used by the 'kpis' event, which is rate limited itself and must reflect the state it announces).
+   */
+  function cached(slot, compute, force = false) {
     if (!sim) return null;
     const t = clock();
     const hit = cache[slot];
-    if (hit && hit.sim === sim && (t - hit.at < KPI_INTERVAL_MS || hit.time === sim.time)) return hit.value;
+    if (!force && hit && hit.sim === sim && (t - hit.at < KPI_INTERVAL_MS || hit.time === sim.time)) return hit.value;
     let value = null;
     try {
       value = compute();
@@ -317,7 +329,8 @@ export function createRunner(options = {}) {
     return value;
   }
 
-  const kpis = () => cached('kpis', () => sim.kpis());
+  const computeKpis = () => sim.kpis();
+  const kpis = () => cached('kpis', computeKpis);
   const insights = () => cached('insights', () => sim.insights(kpis() ?? undefined));
 
   /** Emit 'kpis' (outside the simulation loop, after drawing) if 250 ms have passed and the simulation has moved. */
@@ -325,7 +338,7 @@ export function createRunner(options = {}) {
     if (!sim || t - lastKpiAt < KPI_INTERVAL_MS || (kpiSeen.sim === sim && kpiSeen.time === sim.time)) return;
     lastKpiAt = t;
     kpiSeen = { sim, time: sim.time };
-    const report = kpis();
+    const report = cached('kpis', computeKpis, true);
     if (report) emit('kpis', report);
   }
 

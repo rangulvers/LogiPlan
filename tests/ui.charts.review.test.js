@@ -173,7 +173,7 @@ test('UI-KIT.md: every documented class exists in the stylesheets (guard)', () =
 
 test('UI-KIT.md: every documented export exists with the documented name (guard)', () => {
   const exported = { ...charts, ...iconsModule };
-  const names = new Set([...uiKitDoc.matchAll(/`((?:create[A-Z]\w+|segmentsFromShares|niceTicks|timeTicks|formatTick|formatTimeTick|formatValue|autoDigits|stepDecimals|linearScale|bandScale|groupLayout|stackSegments|segmentRects|nearestIndex|nearestPoint|hitRect|clampTooltip|truncateText|crispLine|seriesExtent|allIntegers|finiteRuns|bestWorst|gaugeFraction|gaugeBands|gaugeBandAt|STATE_KEYS|STATE_LABELS|icon|iconSvg|ICON_NAMES))\b/g)].map((m) => m[1]));
+  const names = new Set([...uiKitDoc.matchAll(/`((?:create[A-Z]\w+|segmentsFromShares|niceTicks|timeTicks|formatTick|formatTimeTick|formatValue|autoDigits|stepDecimals|linearScale|bandScale|groupLayout|stackSegments|segmentRects|nearestIndex|nearestPoint|hitRect|clampTooltip|truncateText|crispLine|hairlineWidth|fitTicks|seriesExtent|allIntegers|finiteRuns|bestWorst|gaugeFraction|gaugeBands|gaugeBandAt|STATE_KEYS|STATE_LABELS|icon|iconSvg|ICON_NAMES))\b/g)].map((m) => m[1]));
   assert.ok(names.size > 30);
   assert.deepEqual([...names].filter((n) => !(n in exported)), []);
   const section = uiKitDoc.slice(uiKitDoc.indexOf('### 5.6'), uiKitDoc.indexOf('## 6.'));

@@ -121,22 +121,29 @@ export function formatTick(value, step) {
 
 /**
  * Axis ticks whose labels fit side by side: starts with `maxCount` ticks and asks for fewer until neighbouring labels
- * (centred on their tick) keep `gap` px between them. Never fewer than two ticks, so it always returns something.
+ * keep `gap` px between them, measured where the labels are really drawn (`place` may shift an edge label inwards).
+ * Never fewer than two ticks, so it always returns something.
  * @param {number} maxCount largest tick budget to try
  * @param {object} spec
- * @param {number} spec.span pixels that the axis domain covers
  * @param {(count: number) => { min: number, max: number, ticks: number[] }} spec.build tick set for a budget (niceTicks / timeTicks)
  * @param {(tick: number, set: object) => number} spec.labelWidth measured width of a tick's label
- * @param {[number, number]} [spec.domain] axis domain when it is narrower than the tick range (default: the set's own range)
+ * @param {(tick: number, set: object, width: number) => number} spec.place x of the label's centre in px
+ * @param {[number, number]} [spec.domain] ticks outside it are not drawn and do not compete (default: the set's own range)
  * @param {number} [spec.gap] minimum space between labels in px
  * @returns {{ min: number, max: number, step: number, ticks: number[] }}
  */
-export function fitTicks(maxCount, { span, build, labelWidth, domain, gap = 12 }) {
+export function fitTicks(maxCount, { build, labelWidth, place, domain, gap = 12 }) {
   const fits = (set) => {
     const [lo, hi] = domain ?? [set.min, set.max];
-    const perUnit = hi > lo ? span / (hi - lo) : 0;
-    const shown = set.ticks.filter((t) => t >= lo - EPS && t <= hi + EPS);
-    return shown.every((t, i) => i === 0 || (t - shown[i - 1]) * perUnit >= (labelWidth(t, set) + labelWidth(shown[i - 1], set)) / 2 + gap);
+    let right = -Infinity;
+    for (const tick of set.ticks) {
+      if (tick < lo - EPS || tick > hi + EPS) continue;
+      const width = labelWidth(tick, set);
+      const centre = place(tick, set, width);
+      if (centre - width / 2 < right + gap) return false;
+      right = centre + width / 2;
+    }
+    return true;
   };
   let count = Math.max(2, Math.floor(maxCount) || 2);
   let set = build(count);
@@ -864,20 +871,20 @@ export function createLineChart(options = {}) {
     const timed = opts.xAxis === 'time';
     const integerX = allIntegers([model.xs]);
     const labelOf = (v, set) => (opts.xFormat ? opts.xFormat(v) : timed ? formatTimeTick(v, set.step) : formatTick(v, set.step));
+    const place = (v, set, width) => clamp(xS(v), width / 2 + 2, w - width / 2 - 2); // end labels slide inwards instead of leaving the canvas
     const xTicks = fitTicks(clamp(Math.floor((plot.x1 - plot.x0) / 84), 2, 10), {
-      span: xS(xMax) - xS(xMin),
       domain: [xMin, xMax],
       build: (count) => (timed ? timeTicks(xMin, xMax, count) : niceTicks(xMin, xMax, count, { integer: integerX })),
       labelWidth: (v, set) => ctx.measureText(labelOf(v, set)).width,
+      place,
     });
-    const xText = (v) => labelOf(v, xTicks);
     ctx.textBaseline = 'top';
     ctx.textAlign = 'center';
     ctx.fillStyle = theme.dim;
     for (const t of xTicks.ticks) {
       if (t < xMin - EPS || t > xMax + EPS) continue;
-      const half = ctx.measureText(xText(t)).width / 2;
-      ctx.fillText(xText(t), clamp(xS(t), half + 2, w - half - 2), plot.y1 + 8);
+      const text = labelOf(t, xTicks);
+      ctx.fillText(text, place(t, xTicks, ctx.measureText(text).width), plot.y1 + 8);
     }
     if (opts.xLabel) {
       ctx.fillStyle = theme.faint;
@@ -910,10 +917,11 @@ export function createLineChart(options = {}) {
       if (ref.label) {
         setFont(ctx, theme, 11, 500);
         ctx.fillStyle = theme.dim;
-        ctx.textBaseline = 'bottom';
+        const above = vertical || pos - 3 - 11 >= 0; // a horizontal line at the very top of the canvas takes its label below it
+        ctx.textBaseline = above ? 'bottom' : 'top';
         ctx.textAlign = vertical ? 'left' : 'right';
         const lx = vertical ? pos + 4 : plot.x1;
-        const ly = vertical ? plot.y0 + 12 : pos - 3;
+        const ly = vertical ? plot.y0 + 12 : pos + (above ? -3 : 3);
         ctx.lineJoin = 'round';
         ctx.lineWidth = 4;
         ctx.strokeStyle = theme.surface;
@@ -1170,7 +1178,11 @@ export function createBarChart(options = {}) {
     if (!plot) return;
     if (horizontal()) { // tick labels run along the axis: use fewer ticks when long labels (valueFormat) would touch
       setFont(ctx, theme, 11);
-      ticks = fitTicks(budget, { span: plot.x1 - plot.x0, build, labelWidth: (t, set) => ctx.measureText(tickLabel(t, set)).width });
+      ticks = fitTicks(budget, {
+        build,
+        labelWidth: (t, set) => ctx.measureText(tickLabel(t, set)).width,
+        place: (t, set, width) => clamp(linearScale([opts.min ?? set.min, opts.max ?? set.max], [plot.x0, plot.x1])(t), width / 2 + 2, w - width / 2 - 2),
+      });
     }
     const domain = [opts.min ?? ticks.min, opts.max ?? ticks.max];
     const tickText = (v) => tickLabel(v, ticks);
@@ -1233,7 +1245,8 @@ export function createBarChart(options = {}) {
       if (horizontal()) {
         ctx.moveTo(p, plot.y0); ctx.lineTo(p, plot.y1); ctx.stroke();
         ctx.textAlign = 'center'; ctx.textBaseline = 'top';
-        ctx.fillText(tickText(t), p, plot.y1 + 8);
+        const half = ctx.measureText(tickText(t)).width / 2;
+        ctx.fillText(tickText(t), clamp(p, half + 2, g.w - half - 2), plot.y1 + 8);
       } else {
         ctx.moveTo(plot.x0, p); ctx.lineTo(plot.x1, p); ctx.stroke();
         ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
@@ -1704,7 +1717,9 @@ export function createSparkline(options = {}) {
         for (let i = a; i <= b; i++) ctx.lineTo(xS(i), yS(values[i]));
         ctx.lineTo(xS(b), hgt);
         ctx.closePath();
-        const fill = fadeFill(ctx, color, Math.min(...values.slice(a, b + 1).map((v) => yS(v))), hgt);
+        let top = hgt;
+        for (let i = a; i <= b; i++) top = Math.min(top, yS(values[i]));
+        const fill = fadeFill(ctx, color, top, hgt);
         ctx.fillStyle = fill;
         ctx.globalAlpha = typeof fill === 'string' ? 0.12 : 1;
         ctx.fill();
@@ -1827,6 +1842,7 @@ export function createGauge(options = {}) {
     el.style.width = `${size}px`; // the dial's height follows its width in CSS, so a narrower container shrinks it
     el.style.setProperty('--gauge-size', `${size}px`);
     valueEl.textContent = known ? format(opts.value) : '–';
+    el.style.setProperty('--gauge-chars', String(Math.max(4, valueEl.textContent.length))); // the readout shrinks to stay inside the dial
     captionEl.textContent = opts.label ?? '';
     captionEl.hidden = !opts.label;
     statusEl.textContent = '';

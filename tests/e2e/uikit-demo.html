@@ -582,7 +582,7 @@
     // ---- foundations: swatches, states, spacing
     const css = getComputedStyle(root);
     const swatch = (name, label = name) => `<div class="demo-swatch"><i style="background: var(${name})"></i><strong>${label}</strong><code data-token="${name}"></code></div>`;
-    $('#sw-surfaces').innerHTML = ['--bg', '--surface', '--surface-2', '--surface-3', '--border', '--border-strong', '--text', '--text-dim', '--text-faint'].map((n) => swatch(n)).join('');
+    $('#sw-surfaces').innerHTML = ['--bg', '--surface', '--surface-2', '--surface-3', '--border', '--border-strong', '--control-border', '--control-track', '--text', '--text-dim', '--text-faint'].map((n) => swatch(n)).join('');
     $('#sw-semantic').innerHTML = ['--accent', '--accent-solid', '--accent-soft', '--good', '--good-soft', '--warn', '--warn-soft', '--bad', '--bad-soft', '--info', '--info-soft'].map((n) => swatch(n)).join('');
     $('#sw-series').innerHTML = [1, 2, 3, 4, 5, 6, 7, 8].map((n) => swatch(`--series-${n}`, `series ${n}`)).join('');
     $('#states').innerHTML = ['busy', 'starved', 'blocked', 'down', 'idle', 'driving', 'waiting', 'loading', 'unloading', 'parked', 'charging', 'broken']

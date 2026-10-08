@@ -102,20 +102,20 @@ function buildTwoLines() {
   road(layout, [[41, 18], [41, 21]]); // Machining
   road(layout, [[22, 18], [22, 22]]); // AGV charging
 
-  const receiving = station(layout, 'source', 'Goods receiving', 10, 2, { w: 3, h: 2 }, { interArrival: arrivals(60, 0.2), outCap: 6 });
+  const receiving = station(layout, 'source', 'Goods receiving', 10, 2, { w: 3, h: 2 }, { interArrival: arrivals(55, 0.2), outCap: 6 });
   const forkliftPark = station(layout, 'depot', 'Forklift park', 17, 2, { w: 3, h: 2 }, { slots: 4, chargers: 0 });
   const dispatch = station(layout, 'sink', 'Dispatch', 44, 2, { w: 3, h: 2 });
   const warehouse = station(layout, 'storage', 'Central warehouse', 22, 10, { w: 6, h: 4 }, { capacity: 80, dwell: 30 });
   const press = station(layout, 'process', 'Press line', 12, 23, { w: 4, h: 3 },
-    { cycle: arrivals(60, 0.1), inCap: 4, outCap: 6, mtbf: 7200, mttr: 420 });
-  const machining = station(layout, 'process', 'Machining', 40, 22, { w: 3, h: 3 }, { cycle: arrivals(90, 0.1), inCap: 4, outCap: 4 });
-  const assembly = station(layout, 'process', 'Final assembly', 30, 23, { w: 5, h: 4 }, { cycle: arrivals(120, 0.1), inCap: 4, outCap: 4 });
+    { cycle: arrivals(45, 0.1), inCap: 4, outCap: 6, mtbf: 7200, mttr: 420 });
+  const machining = station(layout, 'process', 'Machining', 40, 22, { w: 3, h: 3 }, { cycle: arrivals(70, 0.1), inCap: 4, outCap: 4 });
+  const assembly = station(layout, 'process', 'Final assembly', 30, 23, { w: 5, h: 4 }, { cycle: arrivals(115, 0.1), inCap: 4, outCap: 4 });
   const charging = station(layout, 'depot', 'AGV charging', 20, 23, { w: 4, h: 2 }, { slots: 8, chargers: 4 });
 
   // Compact trucks carrying two pallets: 2 m long, so they fit a 2 m road cell.
   const forklifts = must(addFleet(layout, 'forklift', { name: 'Forklifts', count: 3, capacity: 2, length: 2, home: forkliftPark.id }), 'forklift fleet');
   const agvs = must(addFleet(layout, 'agv', {
-    name: 'AGVs', count: 6, home: charging.id, battery: { enabled: true, runtimeMin: 300, chargeTimeMin: 60, lowPct: 25, resumePct: 90 },
+    name: 'AGVs', count: 7, home: charging.id, battery: { enabled: true, runtimeMin: 120, chargeTimeMin: 15, lowPct: 50, resumePct: 85 },
   }), 'AGV fleet');
 
   flow(layout, receiving, warehouse, { fleetId: forklifts.id, batchMin: 2, maxWait: 120 });
@@ -141,7 +141,7 @@ function buildCongestionLab() {
   const layout = createLayout({ name: 'Congestion lab', cols: 48, rows: 28, cellSize: 2 });
   setNotes(layout, 'A deliberately awkward plant. All traffic shares one narrow one-way loop; Packing has its docks directly on the main aisle '
     + '(every stop blocks the lane behind it); a two-way cross aisle crosses the loop at two junctions; trucks unload 4 pallets at a time and every '
-    + 'hand-over takes 24 s; and 9 AGVs are more than this layout can use. Run it, look at the heat map and the Results tab, then fix it.');
+    + 'hand-over takes 24 s; and 8 AGVs, which wait on the aisle instead of driving back to the parking bay, are more than this layout can use. Run it, look at the heat map and the Results tab, then fix it.');
 
   road(layout, [[6, 8], [41, 8], [41, 20], [6, 20], [6, 8]], { oneWay: true }); // the narrow one-way loop
   road(layout, [[24, 3], [24, 25]]); // two-way cross aisle: crosses the loop at (24,8) and (24,20)
@@ -159,7 +159,7 @@ function buildCongestionLab() {
   flow(layout, inboundA, packing);
   flow(layout, inboundB, packing);
   flow(layout, packing, dispatch);
-  addFleet(layout, 'agv', { name: 'AGV', count: 9, loadTime: 24, unloadTime: 24, home: parking.id });
+  addFleet(layout, 'agv', { name: 'AGV', count: 8, loadTime: 24, unloadTime: 24, idle: 'stay', home: parking.id });
 
   obstacles(layout, 'rack', [[9, 12, 12, 5], [28, 12, 11, 5]]);
   must(addLabel(layout, { x: 27.5, y: 3.6, text: 'Docks on the main aisle' }), 'label');

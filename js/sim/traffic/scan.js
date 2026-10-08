@@ -131,7 +131,8 @@ function scanHead(sys, tv, e, j) {
  * Find the nearest obstacle ahead of `tv` within `dLimit` metres of its front: the rear-most vehicle of each edge on
  * the route (and on its straight continuation), parked vehicles on node centres, and vehicles that have turned off
  * onto a sibling edge but whose rear still sticks back into the lane the observer is driving in.
- * Sets tv._ldQ (rear coordinate, Infinity if none), tv._ldTv, tv._ldV and tv._ldDec.
+ * Sets tv._ldRaw (rear coordinate of the obstacle on the route, Infinity if none), tv._ldQ (the same, shortened by the
+ * corners in between: the gap to keep along the real path), tv._ldTv, tv._ldV and tv._ldDec.
  */
 function scanLeader(sys, tv, dLimit) {
   const L = sys.L;
@@ -158,6 +159,7 @@ function scanLeader(sys, tv, dLimit) {
   const x = tv._ldTv;
   tv._ldV = x === null ? 0 : x.v;
   tv._ldDec = x === null ? 1 : x.decel;
+  tv._ldRaw = tv._ldQ;
   if (x !== null) tv._ldQ -= pathCompression(sys, tv, ri * L + tv.s + tv.length / 2, tv._ldQ);
 }
 
@@ -187,12 +189,22 @@ export function cancelRequest(sys, tv) {
 }
 
 /**
+ * Does a lock request have to cover the cell `nd` besides its target? Every cell that can need a lock: controlled
+ * cells and bends. A bend is locked only while somebody docks in it, but a vehicle that waits in front of a bend
+ * while still holding the cell behind it would be caught in a hold-and-wait with that docking vehicle.
+ */
+function coveredByRequest(sys, nd) {
+  return sys._lockable[nd] === 1;
+}
+
+/**
  * Update the vehicle's lock request and look for the nearest obstacle ahead (`dShort` metres, more if the request
- * needs to see the room beyond the exit). The target is the first controlled cell on the route whose lock the vehicle
- * does not hold, once its stop line is within `dReq`. Besides the cell itself the request covers every further
- * controlled cell the vehicle would still overlap while clearing it (atomic acquisition, so two vehicles can never
- * each hold half of a pair of adjacent cells). It is eligible only if nothing stands in the room beyond the exit
- * that the vehicle needs to come to rest (length + headway): no box-blocking.
+ * needs to see the room beyond the exit). The target is the first cell on the route that needs a lock the vehicle
+ * does not hold, once its stop line is within `dReq`. Besides the cell itself the request covers every further cell
+ * that needs a lock which the vehicle could still be waiting in front of while its rear is inside the last cell
+ * of the request: a vehicle never holds a cell while it waits for another one (no hold-and-wait), so two vehicles
+ * can never each hold half of a row of adjacent cells. The request is eligible only if nothing stands in the room
+ * beyond the exit of the LAST cell that the vehicle needs to come to rest (length + headway): no box-blocking.
  */
 export function evaluateRequest(sys, tv, dReq, dShort) {
   const { graph, L, r, headway } = sys;
@@ -222,31 +234,38 @@ export function evaluateRequest(sys, tv, dReq, dShort) {
     tv._req = node;
     sys._pending.push(tv);
   }
-  const exitQ = target * L + r;
-  const zoneEnd = Math.min(exitQ + tv.length, n * L + half);
   tv._chainN.length = 0;
   tv._chainQ.length = 0;
+  let lastExit = target * L + r;
   let gate = null;
   for (let k = target; ; k++) {
-    // A later cell is part of the request if the vehicle could end up waiting at its stop line while its rear is
-    // still inside the first cell - otherwise it would hold one cell while waiting for the next (hold and wait).
     const lineQ = k * L - r - half - sys.standoff;
-    if (k > target && (lineQ - half >= exitQ - EPS || lineQ >= n * L - EPS)) break;
+    if (k > target && (lineQ - half >= lastExit - EPS || lineQ >= n * L - EPS)) break;
     const nd = nodeAhead(sys, tv, k);
     if (nd < 0) break;
+    if (k !== target && !coveredByRequest(sys, nd)) continue;
     const holder = sys._lock[nd];
-    if (k !== target && graph.controlled[nd] !== 1 && (holder === null || holder === tv)) continue;
     tv._chainN.push(nd);
     tv._chainQ.push(k * L + r);
+    lastExit = k * L + r;
     if (gate === null && holder !== null && holder !== tv) gate = holder;
+    if (gate === null && k === n && sys._bend[nd] === 1 && graph.controlled[nd] !== 1) gate = cellOccupant(sys, tv, nd, k > 0 ? edgeAhead(tv, k - 1) : -1);
   }
-  if (gate === null && sys._bend[node] === 1 && graph.controlled[node] !== 1) {
-    gate = cellOccupant(sys, tv, node, target > 0 ? edgeAhead(tv, target - 1) : -1);
-  }
+  const zoneEnd = Math.min(lastExit + tv.length, n * L + half);
   scanLeader(sys, tv, Math.max(dShort, zoneEnd + headway - (q + half) + 1)); // must see the room beyond the exit
-  if (gate === null && tv._ldQ < zoneEnd + headway - EPS) gate = tv._ldTv;
+  if (gate === null && roomBeyond(sys, tv, lastExit) < zoneEnd + headway - EPS) gate = tv._ldTv;
   tv._gate = gate;
   tv._elig = gate === null;
+}
+
+/**
+ * Route coordinate of the nearest obstacle ahead as far as the room beyond route coordinate `exitQ` is concerned: the
+ * corners between the exit and the obstacle count (the follower comes to rest earlier), those before it do not. The
+ * measure must not depend on where the vehicle turns inside the cells it is about to take, or two requests for the
+ * same cell and the same exit would not be equally eligible and the younger could overtake the older.
+ */
+function roomBeyond(sys, tv, exitQ) {
+  return tv._ldRaw === Infinity ? Infinity : tv._ldRaw - pathCompression(sys, tv, exitQ, tv._ldRaw);
 }
 
 /** Grant pending requests in FIFO order to every vehicle that is eligible and whose whole cell chain is free. */

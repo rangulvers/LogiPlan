@@ -8,7 +8,10 @@
 //   * stop targets: the final node centre, the dead-end reversal point, the stop line of a controlled cell whose
 //     lock is not held (stop at the line, front bumper at the cell boundary);
 //   * the leader: v^2 <= 2 * decel * (gap - headway + leader braking distance), i.e. the vehicle could stop in
-//     time even if the leader brakes as hard as it can;
+//     time even if the leader brakes as hard as it can. The leader's braking distance is credited with at most the
+//     follower's own deceleration: a follower that brakes harder than its leader must not count on the leader
+//     stopping slowly, or it would close in on a leader that keeps driving and have to be slammed to a halt by the
+//     hard clamp below (at equal speed it can follow at the headway);
 // and the advance is hard-clamped to (gap - headway), measured from the start-of-tick leader position, so a vehicle
 // can never get closer than the headway however large dt is. Vehicles never decelerate harder than `decel` unless
 // that hard clamp or an exact stop snap forces it.
@@ -93,7 +96,7 @@ export function planMotion(sys, tv, dt) {
   let dLead = Infinity;
   if (tv._ldQ !== Infinity) {
     dLead = Math.max(0, tv._ldQ - (q + half) - headway);
-    limLead = limit(v, dLead + stoppingDistance(tv._ldV, tv._ldDec), 0, dec, dt);
+    limLead = limit(v, dLead + stoppingDistance(tv._ldV, Math.max(tv._ldDec, dec)), 0, dec, dt);
   }
 
   const vFloor = Math.max(0, v - dec * dt);

@@ -2356,8 +2356,11 @@ button.chart-legend__item[aria-pressed='false'] .chart-legend__key {
   pointer-events: none;
 }
 
+/* The number sits inside the dial: long text (123,456 units) shrinks with the dial width instead of overflowing it. */
 .gauge__value {
   font-size: var(--fs-2xl);
+  font-size: clamp(11px, calc(107cqw / var(--gauge-chars, 4)), var(--fs-2xl));
+  white-space: nowrap;
   font-weight: var(--fw-semibold);
   line-height: 1.1;
   letter-spacing: -0.01em;

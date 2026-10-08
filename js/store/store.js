@@ -240,7 +240,7 @@ function sanitizeProject(raw) {
   }
   if (!scenarios.length) throw new Error('A project needs at least one scenario with a layout.');
   const active = scenarios.find((s) => s.id === raw.activeId) || scenarios[0];
-  return { name: cleanText(raw.name, NAME_MAX, scenarios[0].layout.name), scenarios, activeId: active.id };
+  return { name: cleanText(raw.name, NAME_MAX, scenarios[0].layout.name), scenarios: frozen(scenarios), activeId: active.id };
 }
 
 /** The "session" member written next to the project export (see the header). */
@@ -374,7 +374,7 @@ export function createStore(options = {}) {
   }
 
   function setActiveLayout(layout) {
-    scenarios = scenarios.map((s) => (s.id === activeId ? scenarioEntry(s.id, s.name, layout) : s));
+    scenarios = frozen(scenarios.map((s) => (s.id === activeId ? scenarioEntry(s.id, s.name, layout) : s)));
   }
 
   /** Install a sanitized project as a new document: empty histories, clean, nothing selected. */
@@ -552,7 +552,7 @@ export function createStore(options = {}) {
   /** Start over with one scenario "A" holding `layout` (normalized; default: an empty plant). */
   function newProject(layout, name) {
     const first = layout == null ? createLayout() : normalizeLayout(layout);
-    install({ name: cleanText(name, NAME_MAX, first.name), scenarios: [scenarioEntry('sc1', 'A', first)], activeId: 'sc1' });
+    install({ name: cleanText(name, NAME_MAX, first.name), scenarios: frozen([scenarioEntry('sc1', 'A', first)]), activeId: 'sc1' });
     publish('load', { selection: 'clear' });
     return true;
   }
@@ -584,7 +584,7 @@ export function createStore(options = {}) {
     const clean = cleanText(wanted, NAME_MAX, '');
     const name = clean ? uniqueName(clean, taken) : letterName(taken);
     const id = nextId('sc', scenarios.map((s) => s.id));
-    scenarios = [...scenarios, scenarioEntry(id, name, layout)];
+    scenarios = frozen([...scenarios, scenarioEntry(id, name, layout)]);
     activeId = id;
     dirty = true;
     publish('scenario', { selection: 'clear' });
@@ -616,7 +616,7 @@ export function createStore(options = {}) {
     if (!target || !clean) return false;
     const finalName = uniqueName(clean, namesOf(scenarios, id));
     if (finalName === target.name) return false;
-    scenarios = scenarios.map((s) => (s.id === id ? scenarioEntry(s.id, finalName, s.layout) : s));
+    scenarios = frozen(scenarios.map((s) => (s.id === id ? scenarioEntry(s.id, finalName, s.layout) : s)));
     dirty = true;
     publish('scenario');
     return true;
@@ -627,7 +627,7 @@ export function createStore(options = {}) {
     const index = scenarios.findIndex((s) => s.id === id);
     if (index < 0 || scenarios.length === 1) return false;
     const wasActive = id === activeId;
-    scenarios = scenarios.filter((s) => s.id !== id);
+    scenarios = frozen(scenarios.filter((s) => s.id !== id));
     histories.delete(id);
     if (wasActive) activeId = (scenarios[index - 1] || scenarios[index]).id;
     dirty = true;

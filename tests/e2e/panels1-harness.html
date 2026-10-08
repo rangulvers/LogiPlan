@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>panels 1 harness</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="../../css/tokens.css"><link rel="stylesheet" href="../../css/components.css">
+<style>
+  /* Stand-in for the app shell: a stage on the left, the tabbed right panel (default 360 px) on the right. */
+  html, body { height: 100%; margin: 0; }
+  body { display: flex; }
+  #stage { flex: 1 1 auto; min-width: 0; padding: 16px; color: var(--text-dim); background: var(--bg); font-size: var(--fs-sm); }
+  #pane { flex: none; width: var(--pane-w, 360px); max-width: 100%; display: flex; flex-direction: column; background: var(--surface); border-left: 1px solid var(--border); }
+  #pane .tabs { flex: none; }
+  #body { flex: 1 1 auto; overflow: auto; }
+  #body > [data-tab] { display: none; }
+  #body > [data-tab].is-shown { display: block; }
+  body.narrow #stage { display: none; }
+  body.narrow #pane { width: 100%; border-left: 0; }
+  html:has(body.tall), body.tall { height: auto; }
+  body.tall #pane, body.tall #body { height: auto; overflow: visible; }
+  #debug { white-space: pre-wrap; font-family: var(--font-mono); font-size: var(--fs-xs); }
+  .toast-region { position: fixed; left: 16px; bottom: 16px; transform: none; }
+</style></head>
+<body>
+<div id="stage"><strong>Harness for the Properties, What-if and Checks panels</strong><div id="debug"></div></div>
+<div id="pane">
+  <div class="tabs" role="tablist" aria-label="Panels" id="tabs"></div>
+  <div id="body"></div>
+</div>
+<div class="toast-region" id="toasts" aria-live="polite"></div>
+<script type="module">
+import { createStore } from '../../js/store/store.js';
+import { EXAMPLES } from '../../js/model/examples.js';
+import { validateLayout } from '../../js/model/validate.js';
+import { buildGraph } from '../../js/sim/graph.js';
+import { createInspectorPanel } from '../../js/ui/panels/inspector.js';
+import { createSimulatePanel } from '../../js/ui/panels/simulate.js';
+import { createChecksPanel } from '../../js/ui/panels/checks.js';
+
+const params = new URLSearchParams(location.search);
+if (params.get('theme')) document.documentElement.dataset.theme = params.get('theme');
+if (params.get('w')) document.documentElement.style.setProperty('--pane-w', `${params.get('w')}px`);
+if (params.get('narrow')) document.body.classList.add('narrow');
+
+// ---- store and context ---------------------------------------------------------------------------
+const store = createStore({ storage: undefined });
+store.newProject(EXAMPLES.find((e) => e.id === 'two-lines').build());
+
+const harness = {
+  store,
+  calls: [],           // [name, arg] of every ctx.actions call
+  toasts: [],          // { msg, kind, action } of every ctx.toast call
+  confirms: [],        // arguments of every ctx.dialogs.confirm call
+  confirmAnswer: true, // what the next confirm() resolves to
+  runner: { sim: null },
+  issueRuns: 0,        // how often validateLayout really ran (ctx.issues() is cached per layout identity)
+};
+
+const cache = { graphFor: null, graph: null, issuesFor: null, issues: null };
+const ctx = {
+  store,
+  runner: harness.runner,
+  graph() {
+    const layout = store.getState().layout;
+    if (cache.graphFor !== layout) { cache.graphFor = layout; cache.graph = buildGraph(layout); }
+    return cache.graph;
+  },
+  issues() {
+    const layout = store.getState().layout;
+    if (cache.issuesFor !== layout) { cache.issuesFor = layout; cache.issues = validateLayout(layout, { graph: ctx.graph() }); harness.issueRuns++; }
+    return cache.issues;
+  },
+  toast(msg, opts = {}) {
+    harness.toasts.push({ msg, kind: opts.kind || 'info', action: opts.action ? opts.action.label : null });
+    const el = document.createElement('div');
+    el.className = `toast toast--${opts.kind === 'warn' ? 'warn' : opts.kind || 'info'}`;
+    el.setAttribute('role', 'status');
+    const text = document.createElement('span');
+    text.className = 'toast__msg';
+    text.textContent = msg;
+    el.append(text);
+    if (opts.action) {
+      const b = document.createElement('button');
+      b.className = 'toast__action';
+      b.type = 'button';
+      b.textContent = opts.action.label;
+      b.addEventListener('click', () => { opts.action.onClick(); el.remove(); });
+      el.append(b);
+    }
+    document.getElementById('toasts').replaceChildren(el);
+    setTimeout(() => el.remove(), opts.ms ?? 3500);
+  },
+  dialogs: {
+    async confirm(opts) { harness.confirms.push(opts); return harness.confirmAnswer; },
+  },
+  actions: {
+    fitView() { harness.calls.push(['fitView']); },
+    setTool(name) { harness.calls.push(['setTool', name]); },
+    setRightTab(name) { harness.calls.push(['setRightTab', name]); },
+    focus(refs) {
+      harness.calls.push(['focus', refs]);
+      if (refs.stationIds) store.select('station', refs.stationIds);
+      else if (refs.flowIds) store.select('flow', refs.flowIds);
+      else if (refs.fleetIds) store.select('fleet', refs.fleetIds);
+      else if (refs.cells) store.select('cell', refs.cells.slice(0, 1));
+      harness.showTab('properties');
+    },
+  },
+};
+harness.ctx = ctx;
+
+// ---- panels in a tabbed pane (like the shell: every panel is updated on every store change) --------
+const panels = {
+  properties: createInspectorPanel(ctx),
+  simulate: createSimulatePanel(ctx),
+  checks: createChecksPanel(ctx),
+};
+harness.panels = panels;
+const TAB_NAMES = { properties: 'Properties', simulate: 'Simulate', checks: 'Checks' };
+const tabs = document.getElementById('tabs');
+const body = document.getElementById('body');
+const countBadge = document.createElement('span');
+for (const [key, panel] of Object.entries(panels)) {
+  const tab = document.createElement('button');
+  tab.className = 'tab';
+  tab.type = 'button';
+  tab.setAttribute('role', 'tab');
+  tab.dataset.tab = key;
+  tab.textContent = TAB_NAMES[key];
+  tab.addEventListener('click', () => harness.showTab(key));
+  tabs.append(tab);
+  const host = document.createElement('div');
+  host.dataset.tab = key;
+  host.setAttribute('role', 'tabpanel');
+  host.append(panel.el);
+  body.append(host);
+}
+countBadge.className = 'badge badge--bad';
+countBadge.hidden = true;
+tabs.querySelector('[data-tab=checks]').append(countBadge);
+panels.checks.onCount = (n) => { countBadge.textContent = String(n); countBadge.hidden = n === 0; harness.badge = n; };
+harness.showTab = (key) => {
+  for (const t of tabs.children) t.setAttribute('aria-selected', String(t.dataset.tab === key));
+  for (const host of body.children) host.classList.toggle('is-shown', host.dataset.tab === key);
+  harness.tab = key;
+};
+
+function updateAll(state) {
+  for (const panel of Object.values(panels)) panel.update(state);
+  document.getElementById('debug').textContent = `selection: ${JSON.stringify(state.ui.selection)}\nundo: ${state.undoLabel}\nstations: ${state.layout.stations.length}`;
+}
+store.subscribe(updateAll);
+harness.updateAll = () => updateAll(store.getState());
+
+// ---- helpers for the test script -------------------------------------------------------------------
+/** A scriptable stand-in for the running simulation: only what the Properties panel reads (sim.logistics.stationById). */
+harness.setSim = async (mode) => {
+  if (mode === 'none') harness.runner.sim = null;
+  if (mode === 'stub') {
+    const byId = new Map();
+    const make = (st, rt) => byId.set(st.id, { id: st.id, type: st.type, ...rt });
+    for (const st of store.getState().layout.stations) {
+      if (st.type === 'process') make(st, { state: 'busy', fill: 0.5, fillLabel: '2/4', machines: [{ state: 'busy' }, { state: 'idle' }] });
+      else if (st.type === 'source') make(st, { state: 'blocked', fill: 1, fillLabel: '6/6 +3' });
+      else if (st.type === 'storage') make(st, { state: 'normal', fill: 0.35, fillLabel: '14/40' });
+      else if (st.type === 'depot') make(st, { state: 'normal', fill: 0.5, fillLabel: '2/4' });
+      else make(st, { state: 'normal', fill: 0, fillLabel: '' });
+    }
+    harness.runner.sim = { logistics: { stationById: byId } };
+  }
+  if (mode === 'real') {
+    const { Simulation } = await import('../../js/sim/engine.js');
+    const sim = new Simulation(store.getState().layout);
+    sim.advance(900);
+    harness.runner.sim = sim;
+  }
+  harness.updateAll();
+};
+harness.startLive = (ms = 250) => { harness.liveTimer = setInterval(harness.updateAll, ms); };
+harness.stopLive = () => clearInterval(harness.liveTimer);
+harness.layout = () => store.getState().layout;
+harness.reset = (id = 'two-lines') => { store.newProject(EXAMPLES.find((e) => e.id === id).build()); harness.calls.length = 0; harness.toasts.length = 0; harness.confirms.length = 0; harness.confirmAnswer = true; };
+
+window.harness = harness;
+harness.showTab(params.get('tab') || 'properties');
+updateAll(store.getState());
+window.ready = true;
+</script></body></html>

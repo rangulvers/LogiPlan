@@ -67,23 +67,33 @@ test('timeTicks: clock-friendly steps; falls back to plain ticks for empty range
 test('fitTicks: fewer ticks when the labels would touch, never fewer than two, never more than the budget', () => {
   const build = (count) => niceTicks(0, 100, count);
   const width = (px) => () => px; // every label is px wide
-  const gapBetween = (set, span, px) => (set.ticks[1] - set.ticks[0]) * (span / (set.max - set.min)) - px;
-  const roomy = fitTicks(5, { span: 400, build, labelWidth: width(30) });
+  const along = (span) => (t, set) => (t - set.min) * (span / (set.max - set.min)); // label centre on a plain axis of `span` px
+  const roomy = fitTicks(5, { build, labelWidth: width(30), place: along(400) });
   assert.deepEqual(roomy.ticks, [0, 25, 50, 75, 100], 'labels that fit keep the full budget');
-  const tight = fitTicks(5, { span: 400, build, labelWidth: width(90) });
+  const tight = fitTicks(5, { build, labelWidth: width(90), place: along(400) });
   assert.ok(tight.ticks.length < 5 && tight.ticks.length >= 2, `ticks: ${tight.ticks}`);
-  assert.ok(gapBetween(tight, 400, 90) >= 12 - 1e-9, 'neighbouring labels keep the minimum gap');
-  const hopeless = fitTicks(8, { span: 100, build, labelWidth: width(500) });
-  assert.equal(hopeless.ticks.length, 2, 'two ticks is the floor');
-  assert.equal(fitTicks(0, { span: 100, build, labelWidth: width(1) }).ticks.length, 2, 'a budget below two is repaired');
+  assert.ok((tight.ticks[1] - tight.ticks[0]) * (400 / 100) - 90 >= 12 - 1e-9, 'neighbouring labels keep the minimum gap');
+  assert.equal(fitTicks(8, { build, labelWidth: width(500), place: along(100) }).ticks.length, 2, 'two ticks is the floor');
+  assert.equal(fitTicks(0, { build, labelWidth: width(1), place: along(100) }).ticks.length, 2, 'a budget below two is repaired');
   // the width may depend on the tick set (decimals follow the step): it is passed in
-  const seen = [];
-  fitTicks(4, { span: 300, build, labelWidth: (t, set) => { seen.push(set.step); return 10; } });
-  assert.ok(seen.every((step) => step > 0));
+  const steps = [];
+  fitTicks(4, { build, labelWidth: (t, set) => { steps.push(set.step); return 10; }, place: along(300) });
+  assert.ok(steps.length > 0 && steps.every((step) => step > 0));
   // only ticks inside the axis domain compete for room
-  const clipped = fitTicks(5, { span: 400, domain: [10, 90], build: (count) => niceTicks(0, 100, count), labelWidth: width(60) });
+  const clipped = fitTicks(5, { domain: [10, 90], build: (count) => niceTicks(0, 100, count), labelWidth: width(60), place: along(400) });
   assert.ok(clipped.ticks.length >= 2);
-  assert.equal(fitTicks(5, { span: 0, build, labelWidth: width(10) }).ticks.length, 2, 'a collapsed axis cannot fit more than the floor');
+  assert.equal(fitTicks(5, { build, labelWidth: width(10), place: () => 0 }).ticks.length, 2, 'labels stacked on one spot cannot fit more than the floor');
+});
+
+test('fitTicks: an end label that is pushed inwards by the canvas edge counts where it is drawn', () => {
+  // 0..100 over a 300 px canvas with 100 px labels: the labels at both ends are pushed 50 px inwards, so all three touch.
+  const build = (count) => niceTicks(0, 100, count);
+  const place = (t, set, width) => Math.min(Math.max((t - set.min) * 3, width / 2), 300 - width / 2);
+  const naive = (t, set) => (t - set.min) * 3;
+  const sliding = fitTicks(3, { build, labelWidth: () => 100, place });
+  const plain = fitTicks(3, { build, labelWidth: () => 100, place: naive });
+  assert.equal(plain.ticks.length, 3, 'ignoring the slide, three labels look fine');
+  assert.equal(sliding.ticks.length, 2, 'with the slide they would overprint: two labels remain');
 });
 
 test('stepDecimals: decimals needed to print a step exactly', () => {
