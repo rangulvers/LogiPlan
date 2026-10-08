@@ -8,7 +8,7 @@ import { cloneLayout, createLayout, addStation, addFlow, addFleet, paintRoadPath
 import { defaultSettings, RUNTIME_KEYS } from '../js/model/defaults.js';
 import { layoutFromAscii } from './helpers/ascii.js';
 import { createRng } from '../js/util/rng.js';
-import { assertAllFinite, lineLayout, randomPlant } from './helpers/sim-invariants.js';
+import { assertAllFinite, createSimChecker, lineLayout, randomPlant } from './helpers/sim-invariants.js';
 
 const starter = () => EXAMPLES.find((e) => e.id === 'starter').build();
 const json = (sim) => JSON.stringify(sim.kpis());
@@ -831,4 +831,36 @@ test('defaults: a simulation built from default settings advances with the defau
   assert.equal(sim.dt, defaultSettings().dt);
   sim.step();
   assert.ok(Math.abs(sim.time - defaultSettings().dt) < 1e-12);
+});
+
+// ---------------------------------------------------------------------------------------------------------------------
+// The checker of the tests has teeth
+// ---------------------------------------------------------------------------------------------------------------------
+
+test('checker: a KPI distance that is not what the odometers say, and a vehicle that stands still on its way, are reported', () => {
+  const layout = starter();
+  updateSettings(layout, { warmup: 0 });
+  const sim = new Simulation(layout, { seed: 2 });
+  const checker = createSimChecker(sim);
+  for (let i = 0; i < 12000; i++) { sim.step(); checker.check(); }
+  checker.checkReport();
+  const honest = sim.kpis();
+  const fleet = Object.keys(honest.fleets)[0];
+  assert.ok(honest.fleets[fleet].distance > 1000);
+  const wrong = (factor) => { const r = sim.kpis(); r.fleets[fleet].distance *= factor; return r; };
+  assert.throws(() => checker.checkReport(wrong(0.6)), /driving to depots left out/, 'a distance that leaves out the parking trips');
+  assert.throws(() => checker.checkReport(wrong(1.5)), /odometers/, 'a distance that is more than the vehicles drove');
+
+  const v = sim.vehicles[0];
+  assert.deepEqual(checker.stuck({ seconds: 600 }), []);
+  v.state = 'toPickup'; // the vehicle "starts driving" and then stands still for a quarter of an hour
+  assert.deepEqual(checker.stuck({ seconds: 600 }), []);
+  sim.time += 900;
+  const found = checker.stuck({ seconds: 600 }).filter((m) => m.startsWith('v1#1')); // (the clock jumped: other vehicles on their way look stuck too)
+  assert.equal(found.length, 1);
+  assert.match(found[0], /v1#1 has been toPickup for 900 s without moving \[other\]/);
+  v.state = 'toDrop';
+  v.tv.disabled = true; // a broken vehicle is not "stuck", it is broken
+  sim.time += 900;
+  assert.deepEqual(checker.stuck({ seconds: 600 }).filter((m) => m.startsWith('v1#1')), []);
 });
