@@ -541,6 +541,12 @@ ctx = {
 ```
 Panels call only what is listed here (never reach into app internals), so each panel can be exercised in isolation with a harness `ctx`.
 
+### 6.9 Guidance — coaching a first-time planner
+Goal: someone who has never seen the tool can build a working plant without reading docs, and every "dead" configuration (a Goods-in nobody collects from, a station off the road, no vehicles) is visible **where the planner is working** and has a one-click fix. The model the UI must teach: *vehicles are not assigned to stations; flows say where loads go, and every free vehicle automatically serves every flow (nearest/oldest/balanced, per Simulate tab) unless a flow is restricted to one fleet.*
+* `js/ui/guidance.js` (pure, Node-tested): `computeNextSteps(layout, { issues, simRunning, simulatedSeconds })` → ordered `NextStep[]` (`{ id, severity: 'todo'|'warn', title, text, refs, fix }`, `fix = { type: 'connect-flow'|'add-fleet'|'set-tool'|'focus'|'run', ... }`), `computeChecklist(layout, runnerInfo)` (getting-started steps with live done-state), `validDestinations(layout, stationId)` / `validOrigins(layout, stationId)` (stations a new flow may legally target, closest first), `suggestDestination(layout, stationId)`, `applyFix(ctx, fix)` (commits through the store with a clear label).
+* UI surfaces: a **Next steps** card at the top of Properties / Flows / Fleet; a canvas **guide chip** ("2 steps to finish") that opens the same list; a dismissible **Getting started** checklist; **Fix** buttons on Checks issues; inline **Loads in / Loads out** sections in the station inspector with "Add destination"; fleet cards explaining which flows they serve; Help section "How vehicles find work".
+* Canvas: a **flow handle** on a selected station (drag from it to another station to create a flow), a toast with a **Connect** action right after placing a station, valid-target highlighting while connecting, a **Jobs** overlay (dashed line from each vehicle to the station it is heading for, colour by phase, and a "n waiting" badge on stations with loads waiting for pickup).
+
 ## 7. Visual design ("Lego baseplate for engineers")
 Calm, precise, slightly playful. **Canvas:** light grey-blue baseplate with subtle studs in each cell; roads are dark plates with lane markings and chevrons for one-way; stations are
 colour-coded **bricks** (top face + darker front edge + studs) with icon and name, a fill bar and a status dot; vehicles are small coloured bodies with a heading notch, a load box when
