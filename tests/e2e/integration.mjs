@@ -1018,7 +1018,7 @@ await withBrowser(async ({ browser, url, errors }) => {
   };
 
   /** One random thing a restless planner might do. Returns a short description for the failure message. */
-  async function monkeyStep(page, rand, vp) {
+  async function monkeyStep(page, rand, vp, note) {
     const pick = (list) => list[Math.floor(rand() * list.length)];
     const canvasBox = await page.locator('#plant').boundingBox();
     const point = () => [canvasBox.x + 10 + rand() * (canvasBox.width - 20), canvasBox.y + 10 + rand() * (canvasBox.height - 20)];
@@ -1026,6 +1026,7 @@ await withBrowser(async ({ browser, url, errors }) => {
     switch (kind) {
       case 'key': {
         const key = pick([...Object.keys(TOOL_KEYS), 'Delete', 'Escape', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Shift+ArrowLeft', 'Control+d', 'Control+a', 'Backspace']);
+        note(`key ${key}`);
         await page.keyboard.press(key);
         return `key ${key}`;
       }
@@ -1033,6 +1034,7 @@ await withBrowser(async ({ browser, url, errors }) => {
         const [ax, ay] = point();
         const [bx, by] = point();
         const mods = pick([[], [], ['Shift'], ['Alt']]);
+        note(`drag ${mods.join('+')} ${Math.round(ax)},${Math.round(ay)} -> ${Math.round(bx)},${Math.round(by)}`);
         for (const m of mods) await page.keyboard.down(m);
         await page.mouse.move(ax, ay);
         await page.mouse.down();
@@ -1043,6 +1045,7 @@ await withBrowser(async ({ browser, url, errors }) => {
       }
       case 'click': {
         const [x, y] = point();
+        note(`click ${Math.round(x)},${Math.round(y)}`);
         await page.mouse.click(x, y, { clickCount: rand() < 0.15 ? 2 : 1 });
         return `click ${Math.round(x)},${Math.round(y)}`;
       }
@@ -1053,6 +1056,7 @@ await withBrowser(async ({ browser, url, errors }) => {
       }
       case 'sim': {
         const what = pick(['toggle', 'toggle', 'step', 'reset', 'speed']);
+        note(`sim ${what}`);
         await page.evaluate(async ([w, sp]) => {
           const r = window.__logiplan.runner;
           if (w === 'toggle') await r.toggle(); else if (w === 'step') await r.step(1); else if (w === 'reset') r.reset(); else r.setSpeed(sp);
@@ -1061,6 +1065,7 @@ await withBrowser(async ({ browser, url, errors }) => {
       }
       case 'view': {
         const what = pick(['wheel', 'fit', 'zoomin', 'zoomout', 'overlay', 'heat']);
+        note(`view ${what}`);
         if (what === 'wheel') { const [x, y] = point(); await page.mouse.move(x, y); await page.mouse.wheel(0, pick([-400, 400, -120, 120])); } else if (what === 'fit') await page.keyboard.press('0');
         else if (what === 'overlay') await page.evaluate((f) => window.__logiplan.store.setUi({ overlays: { [f]: Math.random() < 0.5 } }), pick(['grid', 'studs', 'flows', 'docks', 'ids', 'labels']));
         else if (what === 'heat') await page.evaluate((m) => window.__logiplan.store.setUi({ overlays: { heat: m } }), pick(['off', 'traffic', 'waiting']));
@@ -1074,6 +1079,7 @@ await withBrowser(async ({ browser, url, errors }) => {
       }
       case 'misc': {
         const what = pick(['variant', 'switch', 'resize', 'example', 'help', 'theme']);
+        note(`misc ${what}`);
         if (what === 'variant') await page.getByRole('button', { name: /^Add a variant/ }).click({ timeout: 2000 }).catch(() => {});
         else if (what === 'switch') await page.evaluate(() => { const s = window.__logiplan.store; const ids = s.getState().project.scenarios.map((x) => x.id); s.switchScenario(ids[Math.floor(Math.random() * ids.length)]); });
         else if (what === 'resize') await page.setViewportSize(pick([vp, { width: 900, height: 700 }, { width: 1100, height: 760 }, { width: 600, height: 800 }, { width: 390, height: 800 }]));
@@ -1095,6 +1101,7 @@ await withBrowser(async ({ browser, url, errors }) => {
         const el = handle.asElement();
         if (!el) return 'panel (nothing to touch)';
         const info = await el.evaluate((e) => ({ tag: e.tagName, type: e.type, label: e.getAttribute('aria-label') || e.textContent.trim().slice(0, 30) }));
+        note(`panel ${info.tag} ${info.type || ''} "${info.label}"`);
         await el.scrollIntoViewIfNeeded({ timeout: 1000 }).catch(() => {});
         if (info.tag === 'SELECT') {
           const values = await el.evaluate((e) => [...e.options].map((o) => o.value));
@@ -1129,8 +1136,9 @@ await withBrowser(async ({ browser, url, errors }) => {
         if (await page.locator('[role=dialog]').count()) { await page.keyboard.press('Escape'); await page.waitForTimeout(50); }
         trace(`step ${i}: begin`);
         try {
-          const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('the step did not finish in 20 s')), 20000));
-          log.push(await Promise.race([monkeyStep(page, rand, DESKTOP), timeout]));
+          let doing = 'choosing';
+          const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error(`the step did not finish in 20 s: ${doing}`)), 20000));
+          log.push(await Promise.race([monkeyStep(page, rand, DESKTOP, (text) => { doing = text; trace(`step ${i}: doing ${text}`); }), timeout]));
           trace(`step ${i}: ${log.at(-1)}`);
         } catch (err) {
           log.push(`step failed: ${err.message.split('\n')[0]}`);
@@ -1155,6 +1163,96 @@ await withBrowser(async ({ browser, url, errors }) => {
       await context.close();
     }
     noErrors('resilience');
+  });
+
+  // ---------------------------------------------------------------------------------------------------------------
+  /** Frame intervals (ms, from requestAnimationFrame) and the simulated speed actually reached, over `seconds` of real time. */
+  const measureFrames = (page, speed, seconds = 5) => page.evaluate(async ({ speed: x, seconds: secs }) => {
+    const { runner } = window.__logiplan;
+    runner.reset();
+    runner.setSpeed(x);
+    await runner.play();
+    await new Promise((resolve) => setTimeout(resolve, 1000)); // let the first frames and the engine settle
+    const dts = [];
+    let last = performance.now();
+    const t0 = last;
+    const sim0 = runner.time;
+    let limitedFrames = 0;
+    await new Promise((resolve) => {
+      const tick = (now) => {
+        dts.push(now - last);
+        last = now;
+        if (runner.limited) limitedFrames++;
+        if (now - t0 < secs * 1000) requestAnimationFrame(tick); else resolve();
+      };
+      requestAnimationFrame(tick);
+    });
+    const reached = (runner.time - sim0) / secs;
+    runner.pause();
+    dts.shift();
+    dts.sort((a, b) => a - b);
+    const at = (q) => Math.round(dts[Math.min(dts.length - 1, Math.floor(q * dts.length))] * 10) / 10;
+    return { speed: x, frames: dts.length, median: at(0.5), p95: at(0.95), p99: at(0.99), max: at(1), reached: Math.round(reached), limitedShare: Math.round((limitedFrames / dts.length) * 100) / 100 };
+  }, { speed, seconds });
+
+  await run('perf', async () => {
+    const { page, context } = await openApp();
+    const results = {};
+    for (const [id, name, speeds] of [['two-lines', 'Two production', [60, 600, 1200]], ['congestion-lab', 'Congestion', [600]], ['starter', 'Starter', [600]]]) {
+      await pickExample(page, name);
+      for (const speed of speeds) {
+        const r = await measureFrames(page, speed);
+        results[`${id}@${speed}x`] = r;
+        console.log(`   ${id.padEnd(15)} ${String(speed).padStart(4)}x  reached ${String(r.reached).padStart(5)}x  frame median ${r.median} ms, p95 ${r.p95} ms, p99 ${r.p99} ms, max ${r.max} ms, limited ${Math.round(r.limitedShare * 100)} % of frames`);
+        ok(r.p95 <= 34, `${id} at ${speed}x stays smooth: p95 frame ${r.p95} ms`);
+        ok(r.reached >= speed * 0.9, `${id} reaches ${speed}x: ${r.reached}x`);
+        ok(r.limitedShare <= 0.05, `${id} at ${speed}x is not "speed limited": ${r.limitedShare}`);
+      }
+    }
+
+    // the same with the Results tab open (the dashboard refreshes four times a second) and the heatmap on
+    await pickExample(page, 'Two production');
+    await tab(page, 'results');
+    await page.locator('[data-heat=waiting]').click();
+    const busy = await measureFrames(page, 600);
+    results['two-lines@600x+results+heatmap'] = busy;
+    console.log(`   two-lines with Results tab and heatmap, 600x: p95 ${busy.p95} ms, max ${busy.max} ms`);
+    ok(busy.p95 <= 34 && busy.reached >= 540, `600x with the Results tab and the heatmap stays smooth: p95 ${busy.p95} ms, reached ${busy.reached}x`);
+
+    // a plant far bigger than any example: 380 stations, 317 flows, 100 vehicles on 160 x 160 cells
+    await page.evaluate(async () => {
+      const L = await import('/js/model/layout.js');
+      const layout = L.createLayout({ name: 'Stress plant', cols: 160, rows: 160, cellSize: 2 });
+      const hy = []; for (let y = 8; y < 154; y += 16) hy.push(y);
+      const vx = []; for (let x = 8; x < 154; x += 24) vx.push(x);
+      for (const y of hy) L.paintRoadPath(layout, Array.from({ length: 156 }, (_, i) => [i + 2, y]));
+      for (const x of vx) L.paintRoadPath(layout, Array.from({ length: 156 }, (_, i) => [x, i + 2]));
+      const types = ['source', 'process', 'process', 'storage', 'process', 'sink'];
+      const made = [];
+      let k = 0;
+      for (const y of hy) for (let x = 12; x < 152; x += 7) for (const dy of [-3, 1]) {
+        const station = L.addStation(layout, { type: types[k++ % types.length], x: x + (dy < 0 ? 0 : 3), y: y + dy, w: 2, h: 2 });
+        if (station) made.push(station);
+      }
+      const of = (type) => made.filter((s) => s.type === type);
+      of('source').forEach((s, i) => L.addFlow(layout, s.id, of('process')[i % of('process').length].id));
+      of('process').forEach((p, i) => L.addFlow(layout, p.id, i % 3 === 0 ? of('storage')[i % of('storage').length].id : of('sink')[i % of('sink').length].id));
+      of('storage').forEach((s, i) => L.addFlow(layout, s.id, of('sink')[i % of('sink').length].id));
+      const fleet = L.addFleet(layout, 'agv');
+      L.updateFleet(layout, fleet.id, { count: 100 });
+      window.__logiplan.store.newProject(layout, 'Stress plant');
+      window.__logiplan.ctx.actions.fitView();
+    });
+    await frames(page, 3);
+    for (const speed of [10, 60]) {
+      const r = await measureFrames(page, speed, 4);
+      results[`stress-plant@${speed}x`] = r;
+      console.log(`   stress plant (380 stations, 100 vehicles) ${String(speed).padStart(3)}x  reached ${r.reached}x, frame median ${r.median} ms, p95 ${r.p95} ms, max ${r.max} ms`);
+      ok(r.p95 <= 67, `the stress plant at ${speed}x stays interactive: p95 frame ${r.p95} ms`);
+    }
+    writeFileSync(path.join(OUT, 'int-perf.json'), JSON.stringify(results, null, 2));
+    await context.close();
+    noErrors('perf');
   });
 
   console.log(`\n${checks} checks passed`);
