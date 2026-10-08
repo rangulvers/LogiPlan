@@ -48,6 +48,17 @@
 //   10 minutes in most seeds and carries 1 trip per vehicle and hour two hours later); a restarted simulation keeps one replaced simulation referenced until the next
 //   'kpis' event (kpiSeen), at most 250 ms; runtime what-if edits made earlier still dilute the old baseline (known, reported by the builder).
 //   (The UI findings, the toast wording, "Compare properly..." and the long-label layout are in tests/e2e/edit-feedback-review.mjs.)
+//
+// FIX PASS (all of the above are fixed and their tests no longer `todo`). WARM-1: the runner simulates the OLD plant afresh for the same
+// measured window and seed (baseline.control, baseline.after), so a rename reads exactly +-0, and the card colours a figure only beyond a band
+// measured on paired runs (tests/ui.impact.paired.test.js). WARM-2: a plant that finished nothing gets a note and no green figure, and a
+// plant where nothing drove no verdict on traffic. WARM-3: the 'rebuild' event says warmedUp / warmupLeft and the toast follows it. WARM-4:
+// each pre-roll phase stops after PRIME_MAX_MS of frames and swaps in what is done; the chip shows the progress after 600 ms. WARM-5:
+// keepBaseline() leaves the baseline alone when it refuses, the button is disabled meanwhile. WARM-6: baseline.layout is kept and "Compare
+// properly..." adds it as a variant. WARM-7..9: insights.js (fleet-no-jobs is new; fleet-oversized no longer says the same for such a fleet).
+// Four assertions of guards were adapted because they described the previous design, each says why where it is made: H1 (no 'solid' window
+// any more, the card compares a fixed paired window), H2 (a restart builds two Simulations: the new and the old plant), C3 (a noise band
+// per figure; a change that rounds to nothing reads "±0" instead of "−0 pts"), WARM-9b (fleet-no-jobs instead of fleet-oversized).
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -549,6 +560,8 @@ test('WARM-GUARD-C2: the baseline is the OLD simulation\'s report with its full 
   rig.runner.destroy();
 });
 
+const relative = (before, delta) => (before !== 0 ? delta / Math.abs(before) : Infinity);
+
 test('WARM-GUARD-C3: delta semantics: lower-is-better figures are bad when they rise, utilization is never coloured, signs follow the change, nothing is NaN', () => {
   const rng = createRng(2024);
   const better = new Map(METRICS.map((m) => [m.id, m.better]));
@@ -561,12 +574,15 @@ test('WARM-GUARD-C3: delta semantics: lower-is-better figures are bad when they 
       assert.equal(c.known, true);
       assert.ok(!/NaN|undefined|Infinity/.test(c.text), `${figure.id}: ${c.text}`);
       const delta = after - before;
-      if (delta !== 0) assert.equal(c.text.startsWith(delta > 0 ? '+' : '−'), true, `${figure.id}: ${before} -> ${after} reads "${c.text}"`);
+      // Changed in the fix pass: a change that rounds to nothing in the digits shown reads "±0", not "−0 pts" (seen in the screenshots); the sign
+      // rule holds for every change that shows a digit, and "±0" is only ever used for a negligible one.
+      if (/^±0/.test(c.text)) assert.ok(Math.abs(delta) < 0.05 || Math.abs(relative(before, delta)) < 0.0005, `${figure.id}: ${before} -> ${after} reads "${c.text}"`);
+      else if (delta !== 0) assert.equal(c.text.startsWith(delta > 0 ? '+' : '−'), true, `${figure.id}: ${before} -> ${after} reads "${c.text}"`);
       if (direction === null) assert.equal(c.tone, 'neutral', `${figure.id} is never coloured`);
       else if (!c.noise) assert.equal(c.tone, (direction === 'higher') === (delta > 0) ? 'good' : 'bad', `${figure.id}: ${before} -> ${after}`);
       else assert.equal(c.tone, 'neutral');
       // the exact documented noise rule
-      const noise = Math.abs(delta) < figure.floor || (before !== 0 && Math.abs(delta / before) < NOISE_RELATIVE);
+      const noise = Math.abs(delta) < figure.floor || (before !== 0 && Math.abs(delta / before) < (figure.relative ?? NOISE_RELATIVE)); // a band per figure since the fix of WARM-1
       assert.equal(c.noise, noise, `${figure.id}: ${before} -> ${after}`);
     }
     for (const bad of [null, undefined, NaN, Infinity, -Infinity]) {
@@ -605,14 +621,16 @@ async function afterEdit({ id, seed = 1, before = 3600, edit, label = 'Edit' }) 
   return { rig, model };
 }
 
-test('WARM-GUARD-H1: a real, large effect is still reported as worse once the window is solid (halving the vehicles on Two lines)', async () => {
+test('WARM-GUARD-H1: a real, large effect is still reported as worse by the paired comparison (cutting the vehicles of Two lines to one each)', async () => {
+  // Changed with the fix of WARM-1: the card no longer waits for a growing window ('solid' after 20 min) but compares the old and the new
+  // plant over the same fixed pre-roll window at once; so the check is made at the swap, and the honesty line stays 'indicative'.
   const { rig, model } = await afterEdit({ id: 'two-lines', edit: (l) => { for (const f of l.fleets) f.count = 1; }, label: 'Fewer vehicles' });
-  rig.until(() => rig.runner.kpis().window.duration >= 1300);
   const rows = Object.fromEntries(model().rows.map((r) => [r.id, r.change]));
   assert.equal(rows.throughput.tone, 'bad');
   assert.equal(rows.wip.tone, 'bad');
   assert.equal(rows.fleet.tone, 'neutral');
-  assert.equal(model().status.key, 'solid');
+  assert.equal(model().status.key, 'indicative');
+  assert.equal(model().paired, true);
   rig.runner.destroy();
 });
 
@@ -637,12 +655,13 @@ test('WARM-GUARD-H2: cosmetic edits (label, obstacle, plant name, run duration) 
   assert.equal(rig.runner.sim, sim);
   rig.commit('Rename a station', (l) => { l.stations[0].name = 'Renamed'; });
   rig.until(() => rig.runner.warm && !rig.runner.priming);
-  assert.equal(Fake.made, made + 1, 'a station rename IS a structural change and restarts (that is what WARM-1 is about)');
+  // two constructions since the fix of WARM-1: the new plant and, for the fair comparison, the old plant simulated afresh over the same window
+  assert.equal(Fake.made, made + 2, 'a station rename IS a structural change and restarts (that is what WARM-1 is about)');
   assert.equal(typeof obstacle, 'boolean');
   rig.runner.destroy();
 });
 
-test('WARM-1: a restart that cannot change anything (renaming a station) must not produce a red or green verdict', { todo: 'js/ui/panels/impact.js classifyDelta + js/ui/runner.js baseline: the 3 % / 1 load-per-hour noise rule is far inside the run-to-run noise of a 10-20 minute window compared with a long baseline (measured: throughput up to 19-28 %, lead time 35 %, waiting 9 points); compare like with like (a control run of the old layout, pre-rolled the same way) or scale the threshold with the window' }, async () => {
+test('WARM-1: a restart that cannot change anything (renaming a station) must not produce a red or green verdict', async () => {
   const verdicts = [];
   for (const id of ['starter', 'two-lines', 'congestion-lab']) {
     for (const seed of [1, 2, 3]) {
@@ -654,14 +673,14 @@ test('WARM-1: a restart that cannot change anything (renaming a station) must no
   assert.equal(verdicts.length, 0, `a pure rename is shown ${verdicts.length} times (of 54 figures) as a change that is better or worse, e.g.\n  ${verdicts.slice(0, 8).join('\n  ')}`);
 });
 
-test('WARM-1b: the one-line hint under the simulation bar does not quote noise as a result either', { todo: 'same cause as WARM-1: impactHintText prints every non-neutral row, "Throughput 19.9 -> 18 /h (indicative)" for a rename' }, async () => {
+test('WARM-1b: the one-line hint under the simulation bar does not quote noise as a result either', async () => {
   const { rig, model } = await afterEdit({ id: 'starter', seed: 1, edit: (l) => { l.stations[0].name = 'Renamed station'; }, label: 'Rename station' });
   const hint = impactHintText(model());
   assert.match(hint, /^No clear change/, hint);
   rig.runner.destroy();
 });
 
-test('WARM-2: a change that breaks the plant says so (nothing was finished) and does not call the traffic better', { todo: 'js/ui/panels/impact.js: with no driving at all "Time waiting in traffic 2.2 -> 0 %" is green "better" and lead time is "not comparable"; the card needs a note (no load finished since the change, check Checks) and a neutral traffic row when nothing drove' }, async () => {
+test('WARM-2: a change that breaks the plant says so (nothing was finished) and does not call the traffic better', async () => {
   const { rig, model } = await afterEdit({
     id: 'starter', edit: (l) => { for (const key of Object.keys(l.roads)) { const [x, y] = key.split(',').map(Number); L.eraseRoadCell(l, x, y); } }, label: 'Erase all roads',
   });
@@ -675,7 +694,7 @@ test('WARM-2: a change that breaks the plant says so (nothing was finished) and 
   rig.runner.destroy();
 });
 
-test('WARM-5: "Keep as baseline" while the numbers are not reliable must not throw the existing baseline away', { todo: 'js/ui/runner.js keepBaseline(): the refusal calls dismissBaseline(), so the click answers "nothing to keep" and the card disappears; return false and leave the baseline alone (also while priming)' }, async () => {
+test('WARM-5: "Keep as baseline" while the numbers are not reliable must not throw the existing baseline away', async () => {
   const { rig } = await afterEdit({ id: 'starter', edit: (l) => { l.fleets[0].count += 1; }, label: 'More AGVs' });
   const base = rig.runner.baseline;
   assert.ok(base);
@@ -686,7 +705,7 @@ test('WARM-5: "Keep as baseline" while the numbers are not reliable must not thr
   rig.runner.destroy();
 });
 
-test('WARM-6: the baseline carries the plant it was measured on, so that "Compare properly..." can offer the old plant as a variant', { todo: 'js/ui/runner.js recordBaseline + js/ui/panels/impact.js: runner.baseline has { report, simTime, labels, edits } and no layout; the Experiments tab lists only the current plant ("Create a variant to compare"), so the promised run of the old and the new plant is impossible' }, async () => {
+test('WARM-6: the baseline carries the plant it was measured on, so that "Compare properly..." can offer the old plant as a variant', async () => {
   const before = example('starter');
   const { rig } = await afterEdit({ id: 'starter', edit: (l) => { l.fleets[0].count += 1; }, label: 'More AGVs' });
   assert.ok(rig.runner.baseline.layout, 'baseline.layout');
@@ -694,7 +713,7 @@ test('WARM-6: the baseline carries the plant it was measured on, so that "Compar
   rig.runner.destroy();
 });
 
-test('WARM-4: priming ends within a bounded wall-clock time however slow the plant is (and the planner is told how far it is)', { todo: 'js/ui/runner.js stepPriming: a 160 x 160 plant with 300 vehicles needs 13 s of engine time for the 1200 s pre-roll (Node), the old simulation stands still all that time and every further edit starts over; cap the pre-roll by wall-clock time (swap with what is done and call the figures indicative) and show primeProgress' }, async () => {
+test('WARM-4: priming ends within a bounded wall-clock time however slow the plant is (and the planner is told how far it is)', async () => {
   const Fake = fakeSimClass({ capacity: 1 }); // one tick (0.1 s) per frame: a plant that is 100 times too slow for its pre-roll
   const rig = makeRig({ Sim: Fake });
   await rig.runTo(700);
@@ -766,7 +785,7 @@ test('WARM-GUARD-I2: 24 random edited plants (fleet sizes, extra fleets, dispatc
   assert.deepEqual(problems, []);
 });
 
-test('WARM-7: station-never-used does not blame the road for a destination behind a storage whose dwell is longer than the window', { todo: 'js/sim/insights.js neverUsedStations: the supplier is a storage with dwell 1800 s and the window is 20 min; "Most likely no vehicle can drive to its dock" is wrong, skip origins that hold their loads for at least the window (layout dwell is available through ctx.layout)' }, () => {
+test('WARM-7: station-never-used does not blame the road for a destination behind a storage whose dwell is longer than the window', () => {
   const layout = example('starter');
   const assembly = layout.stations.find((s) => s.name === 'Assembly');
   const dispatch = layout.stations.find((s) => s.type === 'sink');
@@ -780,7 +799,7 @@ test('WARM-7: station-never-used does not blame the road for a destination behin
   assert.deepEqual(insights.filter((i) => i.id.startsWith('station-never-used')).map((i) => `${i.id}: ${i.title} ${i.detail}`), []);
 });
 
-test('WARM-8: vehicle-idle-some agrees in number ("1 of 4 vehicles ... hardly works", "made none")', { todo: 'js/sim/insights.js idleVehicles: title and detail are written for the plural also when exactly one vehicle is quiet' }, () => {
+test('WARM-8: vehicle-idle-some agrees in number ("1 of 4 vehicles ... hardly works", "made none")', () => {
   const layout = example('starter');
   layout.settings.seed = 5;
   L.updateFleet(layout, layout.fleets[0].id, { count: 4 });
@@ -791,7 +810,7 @@ test('WARM-8: vehicle-idle-some agrees in number ("1 of 4 vehicles ... hardly wo
   assert.doesNotMatch(hit.detail, /#\d+ \(\d+ trips?\) made far fewer trips than their /, hit.detail);
 });
 
-test('WARM-9: a single new vehicle that may serve no flow (Two lines: every flow is dedicated) is not silent', { todo: 'js/sim/insights.js: fleet-oversized needs 2 vehicles and fleet-unused needs other vehicles on the same flows, so one added vehicle with no job gets no insight and no badge in its strip; say "no flow may use this fleet" (the Fleet tab says it, Results do not)' }, () => {
+test('WARM-9: a single new vehicle that may serve no flow (Two lines: every flow is dedicated) is not silent', () => {
   const layout = example('two-lines');
   const depot = layout.stations.find((s) => s.type === 'depot');
   const added = L.addFleet(layout, 'forklift', { name: 'New forklift', count: 1, home: depot.id });
@@ -800,13 +819,16 @@ test('WARM-9: a single new vehicle that may serve no flow (Two lines: every flow
   assert.deepEqual(insights.filter((i) => i.id.endsWith(`:${added.id}`)).map((i) => i.id).length > 0, true, 'some insight names the idle vehicle');
 });
 
-test('WARM-9b: the strip of a fleet the insights call mostly idle (two vehicles, no job) shows a badge', { todo: 'js/ui/panels/fleet-status.js usageBadge: only fleet-unused and vehicle-idle-some produce a badge; fleet-oversized with utilization ~0 says the same thing in Results and leaves the strip silent' }, () => {
+test('WARM-9b: the strip of a fleet the insights call mostly idle (two vehicles, no job) shows a badge', () => {
   const layout = example('two-lines');
   const depot = layout.stations.find((s) => s.type === 'depot');
   const added = L.addFleet(layout, 'forklift', { name: 'New forklifts', count: 2, home: depot.id });
   const { insights } = simulate(layout, 2 * 3600);
-  assert.ok(insights.some((i) => i.id === `fleet-oversized:${added.id}`), 'Results call the fleet mostly idle');
+  // Changed with the fix of WARM-9: a fleet that no flow may use is named by the more specific fleet-no-jobs (and no longer ALSO by
+  // fleet-oversized, which said the same in vaguer words); what the test is about - the strip must not stay silent about it - is unchanged.
+  assert.ok(insights.some((i) => i.id === `fleet-no-jobs:${added.id}`), 'Results call the fleet jobless');
   assert.ok(usageBadge(insights, added.id), 'so the strip must say so too');
+  assert.equal(usageBadge(insights, added.id).text, 'no jobs');
 });
 
 test('WARM-GUARD-X: the pre-roll length is what the documentation says and a slice is the documented budget', () => {

@@ -43,12 +43,13 @@
 // runner.baseline is a plain, replaced-never-mutated object or null; it is cleared by every cold start:
 //   { report, simTime, labels, edits,    the old run's last KpiReport (its long, cumulative window) and the edits since
 //     layout,                            the plant those figures describe (what "Compare properly" offers as a variant)
-//     control: { window, report } | null the OLD plant simulated afresh for the same measured `window` as the new one ...
+//     control: { window, report, runtime } | null   the OLD plant simulated afresh for the same measured `window` as the new one, under the what-if settings `runtime` ...
 //     after:   { window, report } | null ... and the NEW plant at the end of its pre-roll }
 // control and after are the FAIR comparison: the same seed, the same measured window, run side by side, so an edit that changes nothing
 // reads exactly +-0 and one that does is not drowned in the run-to-run noise of comparing a short window with a long one. The control
-// is a second, silent pre-roll of the old plant (the layout the displayed simulation was built from, with the what-if settings in
-// force now) that follows the pre-roll of the new plant; consecutive edits reuse it (it only depends on the old plant and the window).
+// is a second, silent pre-roll of the old plant (the layout the displayed simulation was built from, with the what-if settings of the
+// new plant, so that only the edits differ) that follows the pre-roll of the new plant; consecutive edits reuse it (it only depends on
+// the old plant, the window and the what-if settings; a what-if moved in between simulates the old plant again).
 //
 // Frame (every animation frame, also while paused): auto-pause when the tab is hidden (it stays paused when the tab comes
 // back); while playing target += min(realDt, 0.1) * speed and sim.advance(target - sim.time, { maxMillis: 10, now });
@@ -385,11 +386,18 @@ export function createRunner(options = {}) {
     priming = null;
   }
 
-  /** The plant the displayed simulation runs: the layout it was built from with the what-if settings in force now. */
-  const plantNow = () => ({ ...builtFrom, settings: { ...builtFrom.settings, ...runtimeApplied } });
+  /** `layout` with the what-if settings `patch` (the RUNTIME_KEYS) in force. */
+  const withRuntime = (layout, patch) => ({ ...layout, settings: { ...layout.settings, ...patch } });
 
-  /** Does the baseline already hold the old plant's figures for a measured window of `seconds`? (They depend on nothing else.) */
-  const controlFits = (seconds, dt) => Boolean(baseline && baseline.control && Math.abs(baseline.control.window - seconds) <= (dt > 0 ? dt : FALLBACK_DT) / 2);
+  /** The plant the displayed simulation runs: the layout it was built from with the what-if settings in force now. */
+  const plantNow = () => withRuntime(builtFrom, runtimeApplied);
+
+  /**
+   * Does the baseline already hold the old plant's figures for a measured window of `seconds` under the what-if settings `runtime`?
+   * (They depend on nothing else; a what-if moved since is not an effect of the edit, so the old plant is simulated again with it.)
+   */
+  const controlFits = (seconds, dt, runtime) => Boolean(baseline && baseline.control && baseline.control.runtime && sameRuntime(baseline.control.runtime, runtime)
+    && Math.abs(baseline.control.window - seconds) <= (dt > 0 ? dt : FALLBACK_DT) / 2);
 
   /** A report of `simulation`, or null (reported) if it cannot be computed. */
   function reportOf(simulation) {
@@ -421,8 +429,9 @@ export function createRunner(options = {}) {
     }
     const target = primeSeconds(layout.settings.warmup);
     const window = target - layout.settings.warmup;
-    const pair = baseline || isMeasured(kpis()) ? { before: (baseline && baseline.layout) || plantNow() } : null;
-    const extra = pair && window > 0 && !controlFits(window, next.dt) ? pair.before.settings.warmup + window : 0;
+    // the old plant under the what-if settings of the new one: only the edits differ
+    const pair = baseline || isMeasured(kpis()) ? { before: withRuntime((baseline && baseline.layout) || builtFrom, runtimeOf(layout)) } : null;
+    const extra = pair && window > 0 && !controlFits(window, next.dt, runtimeOf(layout)) ? pair.before.settings.warmup + window : 0;
     priming = { sim: next, layout, target, fresh: true, constructMs: clock() - began, elapsed: 0, phase: 'main', pair, window, extra, control: null };
     emit('priming', { priming: true, target });
   }
@@ -496,7 +505,7 @@ export function createRunner(options = {}) {
   function finishMain(p) {
     const window = p.sim.time - p.layout.settings.warmup;
     if (!p.pair || !(window > 0)) swapIn(p);
-    else if (controlFits(window, p.sim.dt)) swapIn(p, baseline.control);
+    else if (controlFits(window, p.sim.dt, runtimeOf(p.layout))) swapIn(p, baseline.control);
     else {
       p.phase = 'control';
       p.elapsed = 0;
@@ -525,7 +534,7 @@ export function createRunner(options = {}) {
         const old = new SimClass(p.pair.before);
         p.control = { sim: old, target: old.settings.warmup + p.window, fresh: true, constructMs: clock() - began };
       } catch (err) {
-        fail('create', err);
+        reportError(err, { phase: 'compare' }); // the restart itself is fine: only the comparison with the old plant is lost
         swapIn(p);
         return;
       }
@@ -534,13 +543,13 @@ export function createRunner(options = {}) {
     try {
       state = slice(p.control);
     } catch (err) {
-      fail('advance', err);
+      reportError(err, { phase: 'compare' });
       swapIn(p);
       return;
     }
     if (state === 'working' && p.elapsed < PRIME_MAX_MS) return;
     const report = state === 'done' ? reportOf(p.control.sim) : null;
-    swapIn(p, report ? { window: p.window, report } : null);
+    swapIn(p, report ? { window: p.window, report, runtime: runtimeOf(p.layout) } : null);
   }
 
   /** One pre-roll slice. Called once per frame while priming; the frame does nothing else with a simulation. */
@@ -690,7 +699,7 @@ export function createRunner(options = {}) {
     // While a replacement is being primed the displayed simulation stands still and the frame's work is one pre-roll slice.
     const wasPriming = priming !== null;
     if (wasPriming) {
-      stepPriming();
+      stepPriming(realDt * 1000);
       target = sim ? sim.time : 0;
       behindSince = null;
     }
@@ -803,14 +812,15 @@ export function createRunner(options = {}) {
     if (sim) buildSim('reset');
   }
 
-  /** The current numbers become the baseline of the impact card (and the card goes away). False without usable numbers. */
+  /**
+   * The plant on screen, as it is now, becomes the baseline of the impact card (and the card goes away): the next edit is compared with
+   * it. False, with the baseline left exactly as it was, while there is nothing reliable to keep (a replacement is being pre-rolled, the
+   * run is still warming up or has measured less than ten minutes).
+   */
   function keepBaseline() {
     const report = sim && !priming ? kpis() : null;
-    if (!report || !isMeasured(report)) { // numbers that are not reliable yet cannot serve as a reference
-      dismissBaseline();
-      return false;
-    }
-    setBaseline({ report, simTime: sim.time, labels: [], edits: 0 });
+    if (!report || !isMeasured(report)) return false;
+    setBaseline({ report, simTime: sim.time, labels: [], edits: 0, layout: plantNow(), control: null, after: null });
     return true;
   }
 
@@ -818,6 +828,15 @@ export function createRunner(options = {}) {
   function dismissBaseline() {
     if (!baseline) return false;
     setBaseline(null);
+    const p = priming;
+    if (p && p.pair) { // a restart under way is "the next change" now: its old plant is the one on screen, not the plant the dismissed baseline named
+      p.pair = { before: withRuntime(builtFrom, runtimeOf(p.layout)) };
+      p.extra = p.window > 0 ? p.pair.before.settings.warmup + p.window : 0;
+      if (p.phase === 'control') {
+        p.control = null; // the run of the wrong plant is thrown away, the right one is built by the next frame
+        p.elapsed = 0;
+      }
+    }
     return true;
   }
 
@@ -869,15 +888,18 @@ export function createRunner(options = {}) {
     get priming() {
       return priming !== null;
     },
-    /** How far the pre-roll has come, 0..1 (0 when nothing is being primed). */
+    /** How far the pre-roll has come, 0..1 (0 when nothing is being primed): the new plant and, when there is one, the old plant's run. */
     get primeProgress() {
-      return priming ? clamp01(priming.sim.time / priming.target) : 0;
+      const p = priming;
+      if (!p) return 0;
+      const total = p.target + p.extra;
+      return total > 0 ? clamp01((p.sim.time + (p.control ? p.control.sim.time : 0)) / total) : 0;
     },
     /** { preRoll } (simulated seconds run silently before the simulation was shown) of a warm-restarted simulation, else null. */
     get warm() {
       return warmInfo;
     },
-    /** { report, simTime, labels, edits } the impact card compares against, or null. Replaced, never mutated. */
+    /** { report, simTime, labels, edits, layout, control, after } the impact card compares against, or null. Replaced, never mutated. */
     get baseline() {
       return baseline;
     },

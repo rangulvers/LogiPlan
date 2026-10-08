@@ -3,8 +3,9 @@
 // simulation from an empty plant (Results said "Not counted yet" for the first 10 simulated minutes), that nothing showed what an edit
 // had done, and that vehicles nobody needs sat parked unannounced. This script drives the measured scenario end to end:
 // run Two lines, add a goods-in with a flow, a goods-out and a forklift fleet while it runs -> Results show numbers at once, the
-// "Effect of your change" card compares before and after, edits in a row keep the original baseline, Keep and Dismiss work, the
-// fleet status strip says how busy a fleet is, "Keep results warm after edits" off gives the old behaviour, and no frame is long.
+// "Effect of your change" card compares the OLD plant (simulated afresh for the same window and seed) with the new one, edits in a row
+// keep the original baseline, "Compare properly" adds the old plant as a variant, Keep and Dismiss work, the fleet status strip says
+// how busy a fleet is, "Keep results warm after edits" off gives the old behaviour, and no frame is long.
 //
 // Run: node tests/e2e/edit-feedback.mjs [section]       sections: scenario controls unconnected fleet shots perf
 // Screenshots: e2e-output/edit-feedback-*.png (open them and look). Pre-roll and frame times of `perf` are printed and written to
@@ -67,7 +68,11 @@ await withBrowser(async ({ browser, url, errors }) => {
     const r = window.__logiplan.runner;
     return {
       time: r.time, playing: r.playing, priming: r.priming, warm: r.warm, speed: r.speed,
-      baseline: r.baseline ? { labels: r.baseline.labels, edits: r.baseline.edits, simTime: r.baseline.simTime, throughput: r.baseline.report.throughput.perHour, duration: r.baseline.report.window.duration } : null,
+      baseline: r.baseline ? {
+        labels: r.baseline.labels, edits: r.baseline.edits, simTime: r.baseline.simTime, throughput: r.baseline.report.throughput.perHour, duration: r.baseline.report.window.duration,
+        paired: Boolean(r.baseline.control && r.baseline.after), controlWindow: r.baseline.control ? r.baseline.control.window : null, afterWindow: r.baseline.after ? r.baseline.after.window : null,
+        hasLayout: Boolean(r.baseline.layout),
+      } : null,
     };
   });
   const waitSim = (page, seconds) => page.waitForFunction((s) => window.__logiplan.runner.time >= s, seconds, { timeout: 120000 });
@@ -173,6 +178,8 @@ await withBrowser(async ({ browser, url, errors }) => {
     ok(afterFirst.time >= 1200 && afterFirst.warm.preRoll >= 1200, `the clock continues from the pre-roll (${Math.round(afterFirst.time)} s), it did not go back to 0:00`);
     eq(afterFirst.baseline.labels, ['Add Goods in 2'], 'the baseline carries the label of the edit');
     ok(afterFirst.baseline.duration >= 600, `the baseline had ${Math.round(afterFirst.baseline.duration)} s measured`);
+    ok(afterFirst.baseline.paired && afterFirst.baseline.hasLayout, 'the old plant was simulated next to the new one for the comparison, and its plant is kept');
+    ok(Math.abs(afterFirst.baseline.controlWindow - afterFirst.baseline.afterWindow) < 1e-6 && afterFirst.baseline.afterWindow >= 600, `over the same measured window (${afterFirst.baseline.afterWindow} s)`);
     ok(!(await page.locator('#panel-results').innerText()).includes('Not counted yet'), 'Results do not say "Not counted yet"');
     ok(!(await page.locator('#panel-results .dash__notice').isVisible()), 'no warming-up notice');
     await page.waitForFunction(() => /measured since 0:10:00 \(pre-run\)/.test(document.querySelector('#panel-results .dash__status')?.textContent || ''));
@@ -189,16 +196,18 @@ await withBrowser(async ({ browser, url, errors }) => {
     eq(rows.map((r) => r.metric), ['throughput', 'leadTime', 'wip', 'fleet', 'traffic', 'deadlocks'], 'rows in order');
     for (const r of rows) ok(!/NaN|undefined|null|Infinity/.test(r.text) && /\d/.test(r.before) && /\d/.test(r.after), `row ${r.metric} shows real numbers: ${r.text}`);
     const numbers = await page.evaluate(() => {
-      const r = window.__logiplan.runner;
-      return { before: r.baseline.report.throughput.perHour, after: r.kpis().throughput.perHour, leadBefore: r.baseline.report.leadTime.mean, leadAfter: r.kpis().leadTime.mean };
+      const b = window.__logiplan.runner.baseline;
+      return { before: b.control.report.throughput.perHour, after: b.after.report.throughput.perHour, leadBefore: b.control.report.leadTime.mean, leadAfter: b.after.report.leadTime.mean };
     });
     ok(numbers.before > 5 && numbers.before < 80, `throughput before is sane: ${numbers.before.toFixed(1)} /h`);
     ok(numbers.after > 5 && numbers.after < 120, `throughput after is sane: ${numbers.after.toFixed(1)} /h`);
     ok(numbers.leadBefore > 60 && numbers.leadBefore < 7200 && numbers.leadAfter > 60 && numbers.leadAfter < 7200, `lead times are sane: ${Math.round(numbers.leadBefore)} s, ${Math.round(numbers.leadAfter)} s`);
     const status = await card(page).locator('.impact__status').innerText();
-    ok(/^Indicative: only \d+ of 20 minutes measured so far$/.test(status), `honesty line: ${status}`);
-    ok(await card(page).locator('.impact__progress').isVisible(), 'a thin progress bar while the window is short');
-    ok(/^Before: .* measured · After: .* measured$/.test(await card(page).locator('.impact__windows').innerText()), 'both window lengths are named');
+    eq(status, 'Indicative: one run per plant, so small differences are not coloured.', 'honesty line');
+    eq(await card(page).locator('.impact__progress').count(), 0, 'no progress bar: the compared window is fixed, not growing');
+    eq(await card(page).locator('.impact__windows').innerText(), 'Both plants were simulated for the same 10 min after warm-up, with the same random seed.', 'the window and the seed are named');
+    ok(await card(page).locator('.impact__live').getAttribute('aria-live') === 'polite', 'the honesty line and the notes are a polite live region');
+    ok(await card(page).getByRole('button', { name: 'Keep as baseline' }).isEnabled(), 'Keep is available once the updated plant is ready');
     ok(await hint(page).isVisible(), 'the one-line hint shows under the simulation bar');
     ok(/Before → after/.test(await hint(page).innerText()), `hint: ${await hint(page).innerText()}`);
     const toast = page.locator('.toast').filter({ hasText: 'Plant changed: Add Goods in 2.' });
@@ -240,16 +249,35 @@ await withBrowser(async ({ browser, url, errors }) => {
     eq(await card(page).locator('.impact__labels').innerText(), describeLabels(['Add Goods in 2', placed, connected, 'Add Forklift fleet']), 'the card names three and counts the rest');
     ok((await card(page).locator('.impact__labels').innerText()).endsWith('and 1 more'), 'more than three edits: "and 1 more"');
 
-    // the window grows: after 20 minutes the card says "Measured over"
+    // the card is a snapshot of the same window for both plants: it does not drift while the simulation runs on
+    const figuresBefore = await card(page).locator('.impact__rows').innerText();
     await page.locator('.simbar__speed').selectOption('1200');
-    await page.waitForFunction(() => window.__logiplan.runner.kpis().window.duration >= 1200, null, { timeout: 60000 });
-    await page.waitForFunction(() => /^Measured over \d/.test(document.querySelector('#panel-results [data-panel=impact] .impact__status')?.textContent || ''));
-    ok(await card(page).locator('.impact__progress').isHidden(), 'no progress bar once the window is long enough');
-    ok(/^Measured over 2\d(\.\d)? min$|^Measured over \d+(\.\d+)? (min|h)$/.test(await card(page).locator('.impact__status').innerText()), `honesty line: ${await card(page).locator('.impact__status').innerText()}`);
+    await page.waitForFunction(() => window.__logiplan.runner.kpis().window.duration >= 1500, null, { timeout: 60000 });
+    eq(await card(page).locator('.impact__rows').innerText(), figuresBefore, 'the figures of the card stay the same while the simulation runs on (the live numbers are in the sections below)');
     await card(page).scrollIntoViewIfNeeded();
     await snap(page, '02-measured-light');
+
+    // "Compare properly…": the old plant becomes a variant next to the current one, ticked, and the running simulation is not touched
+    const scenariosBefore = await page.evaluate(() => { window.__before = window.__logiplan.runner.sim; return window.__logiplan.store.getState().project.scenarios.length; });
     await card(page).getByRole('button', { name: 'Compare properly…' }).click();
     eq(await page.evaluate(() => window.__logiplan.store.getState().ui.rightTab), 'experiments', '"Compare properly…" opens the Experiments tab');
+    const compare = await page.evaluate(() => {
+      const s = window.__logiplan.store.getState();
+      return { scenarios: s.project.scenarios.map((x) => x.name), active: s.project.scenarios.find((x) => x.id === s.project.activeId).name, same: window.__logiplan.runner.sim === window.__before, playing: window.__logiplan.runner.playing, stations: s.project.scenarios.map((x) => x.layout.stations.length) };
+    });
+    eq(scenariosBefore, 1, 'one plant before');
+    eq(compare.scenarios.length, 2, 'now two variants');
+    ok(/^Before: Add Goods in 2 and \d+ more$/.test(compare.scenarios[1]), `the old plant is named by the edits: "${compare.scenarios[1]}"`);
+    ok(compare.stations[1] < compare.stations[0], `and is the plant without the new stations (${compare.stations[1]} < ${compare.stations[0]} stations)`);
+    eq(compare.active, compare.scenarios[0], 'the planner stays on the current plant');
+    ok(compare.same && compare.playing, 'the running simulation was not restarted by adding the variant');
+    const ticked = await page.locator('#panel-experiments [data-cmp=variants] input[type=checkbox]').evaluateAll((els) => els.map((e) => e.checked));
+    eq(ticked, [true, true], 'both plants are ticked in the Experiments tab');
+    ok(!/Create a variant to compare/.test(await page.locator('#panel-experiments').innerText()), 'and nothing asks for a variant any more');
+    await snap(page, '08-compare-properly');
+    await tab(page, 'results');
+    await card(page).getByRole('button', { name: 'Compare properly…' }).click();
+    eq(await page.evaluate(() => window.__logiplan.store.getState().project.scenarios.length), 2, 'a second click does not add a second copy');
     await tab(page, 'results');
 
     // Keep as baseline: the card goes, the current numbers become the reference of the next edit
@@ -453,13 +481,16 @@ await withBrowser(async ({ browser, url, errors }) => {
     await page.waitForFunction(() => window.__logiplan.runner.warm && !window.__logiplan.runner.priming);
     await page.waitForFunction(() => window.__logiplan.runner.insights().some((i) => i.id.startsWith('fleet-unused:')), null, { timeout: 90000 });
     await page.waitForFunction(() => document.querySelector('#panel-fleet .fleet-status__badge:not([hidden])'), null, { timeout: 10000 });
+    await page.evaluate(() => window.__logiplan.runner.pause()); // the strip is repainted at 4 Hz: compare it with the insights of a simulation that stands still
+    await page.waitForTimeout(700);
     const insightIds = await page.evaluate(() => window.__logiplan.runner.insights().map((i) => i.id));
     const badges = await page.evaluate(() => [...document.querySelectorAll('#panel-fleet [data-fleet-status]')].map((el) => ({ id: el.dataset.fleetStatus, badge: el.querySelector('.fleet-status__badge:not([hidden])')?.textContent || '', title: el.querySelector('.fleet-status__badge:not([hidden])')?.title || '' })));
     eq(badges.length, 2, 'two fleet cards');
+    // the strip says what Results say: the most specific idle verdict of the fleet, in the same order as js/ui/panels/fleet-status.js
     for (const b of badges) {
-      const unused = insightIds.includes(`fleet-unused:${b.id}`);
-      const some = insightIds.includes(`vehicle-idle-some:${b.id}`);
-      ok(unused ? b.badge === 'barely used' && b.title.length > 20 : some ? b.badge === 'some idle' : b.badge === '', `badge of ${b.id} agrees with the insights (${b.badge || 'none'}; insights: ${insightIds.filter((i) => i.endsWith(`:${b.id}`)).join(', ') || 'none'})`);
+      const has = (rule) => insightIds.includes(`${rule}:${b.id}`);
+      const expected = has('fleet-no-jobs') ? 'no jobs' : has('fleet-unused') ? 'barely used' : has('vehicle-idle-some') ? 'some idle' : has('fleet-oversized') ? 'mostly idle' : '';
+      ok(b.badge === expected && (expected === '' || b.title.length > 20), `badge of ${b.id} agrees with the insights (${b.badge || 'none'}; insights: ${insightIds.filter((i) => i.endsWith(`:${b.id}`)).join(', ') || 'none'})`);
     }
     const unusedBadge = badges.find((b) => b.badge === 'barely used');
     ok(unusedBadge && /hardly work/.test(unusedBadge.title) && /Fleet → Jobs this fleet serves/.test(unusedBadge.title), `the badge explains why: ${unusedBadge && unusedBadge.title}`);
@@ -679,6 +710,19 @@ await withBrowser(async ({ browser, url, errors }) => {
     console.log(`   Browser, 160 x 160 plant, 100 vehicles: edit -> swap ${bigSummary.editToSwapMs.join(', ')} ms, priming ${bigSummary.primingMs.join(', ')} ms in ${bigSummary.primingFrames.join(', ')} frames; callback max ${bigSummary.callbackMax} ms (the slowest three: ${sorted.slice(0, 3).map((x) => x.toFixed(0)).join(', ')} ms), p95 ${bigSummary.callbackP95} ms`);
     ok(bigSummary.callbackP95 < 40, `the big plant stays interactive while priming: p95 frame callback ${bigSummary.callbackP95} ms`);
     ok(bigSummary.editToSwapMs.every((ms) => ms < 30000), 'and the pre-roll finishes');
+
+    // a pre-roll that takes longer than 600 ms shows how far it has come, in steps of 20 % (a what-if moved first: the old plant is simulated again too)
+    await page.evaluate(() => {
+      const s = window.__logiplan.store;
+      s.commit('Demand', (l) => { l.settings.demandFactor = 1.25; });
+      s.commit('One more vehicle, again', (l) => { l.fleets[0].count += 1; });
+    });
+    await page.waitForFunction(() => /^Updating… \d+ %$/.test(document.querySelector('.simbar > .chip[role=status]')?.textContent || ''), null, { polling: 'raf', timeout: 15000 });
+    const progress = await page.locator('.simbar > .chip[role=status]').innerText();
+    ok(/^Updating… (20|40|60|80) %$/.test(progress), `the chip of a slow pre-roll shows its progress in steps of 20 %: "${progress}"`);
+    await snap(page, '09-updating-progress', { clip: { x: 0, y: 0, width: 760, height: 160 } });
+    await page.waitForFunction(() => !window.__logiplan.runner.priming, null, { timeout: 30000 });
+    eq(await page.locator('.simbar > .chip[role=status]').innerText(), 'Running', 'and Running again afterwards');
     writeFileSync(path.join(OUT, 'edit-feedback-perf.json'), JSON.stringify(results, null, 2));
     noErrors('perf');
     await context.close();

@@ -387,10 +387,12 @@ sorted by severity. Rules (thresholds as named constants at the top of the file)
 or successors starve), saturated fleet (utilization ≥ 85 % or high pickup wait ⇒ "add a vehicle / speed up / shorten routes"), oversized fleet (utilization < 35 %),
 traffic congestion (waitShare ≥ 12 %; name the hot spot cells), deadlocks, supply exceeds capacity (source yard growing / yardNow large), buffer nearly full,
 starved workstation, high empty-driving share (> 60 %), battery/charger problems, frequent breakdowns; a `good` insight when none of the warnings fire.
-**Resources that are not used** (window ≥ 10 min, thresholds named at the top of the file): `fleet-unused` (a fleet makes < 0.3 trips per vehicle and hour although other vehicles carried ≥ 3
+**Resources that are not used** (window ≥ 20 min, thresholds named at the top of the file; `fleet-no-jobs` needs no window): `fleet-no-jobs` (a fleet that no flow may use: the plant has flows and every one is restricted to
+another fleet, so its vehicles stand idle however much work there is; it replaces `fleet-oversized` for such a fleet, and the fleet strip shows the badge "no jobs"), `fleet-unused` (a fleet makes < 0.3 trips per vehicle and hour although other vehicles carried ≥ 3
 loads on the flows it may serve too and no load waits for a vehicle: "The other vehicles already cover every job. Remove them, or give them their own flows under Fleet → Jobs this fleet
 serves."), `vehicle-idle-some` (some vehicles of a busy fleet make < 20 % of the average trips of their fleet-mates), `source-unconnected-activity` (a goods-in whose yard grows because no flow
-leaves it) and `station-never-used` (a destination that received nothing in 15 min although the supplier produced loads and the vehicles have time: "Nothing reaches X - check the road to it").
+leaves it) and `station-never-used` (a destination that received nothing in 15 min although the supplier produced loads and the vehicles have time: "Nothing reaches X - check the road to it"; a supplier that is a storage
+with a dwell of half the window or more is skipped, nothing could have left it yet).
 They never contradict the older rules: an unused fleet is not also oversized or told to get a spare, a saturated fleet is not told to add vehicles while another fleet that may do the same jobs
 hardly works, and an unconnected goods-in is not also "delivering more than the plant takes".
 Messages are plain language for a factory planner and quote the numbers.
@@ -490,7 +492,7 @@ createRunner({ store, renderer, onFrame? }) → runner
 runner.sim: Simulation|null     runner.playing: boolean     runner.speed: number (sim seconds per real second)     runner.limited: boolean (true when it cannot keep up)
 runner.play(), runner.pause(), runner.toggle(), runner.step(seconds = 1), runner.reset(), runner.setSpeed(x)   // speeds 1,2,5,10,30,60,120,300,600,1200
 runner.on(event, fn) → off     // 'state' (play/pause/reset/speed), 'frame' (every rAF, throttled stats at ~4 Hz as 'kpis'), 'rebuild', 'baseline', 'error'
-runner.priming: boolean   runner.primeProgress: 0..1   runner.warm: { preRoll } | null   runner.baseline: { report, simTime, labels, edits } | null   runner.keepBaseline()   runner.dismissBaseline()
+runner.priming: boolean   runner.primeProgress: 0..1   runner.warm: { preRoll } | null   runner.baseline: { report, simTime, labels, edits, layout, control, after } | null   runner.keepBaseline()   runner.dismissBaseline()
 ```
 Behaviour: the sim is built lazily on first play/step; **structural** layout changes (via `layoutChangeKind`) replace the sim (keeping the playing state) after a 250 ms debounce;
 **runtime** and **cosmetic** changes never replace it (runtime ones call `sim.setRuntime`). Per frame: `target += min(realDt, 0.1) * speed`; `sim.advance(target - sim.time, { maxMillis: 10 })`; `limited` when it falls behind; `alpha` for interpolation.
@@ -499,13 +501,22 @@ Pauses automatically when the tab is hidden. Exposes `runner.kpis()` (cached 250
 Simulation is pre-rolled silently by `primeSeconds(warmup)` = clamp(warm-up + 10 min, 10 min, 40 min), in slices of `sim.advance(…, { maxMillis: 12 })`, one slice per animation frame, and swapped in at once;
 meanwhile the old simulation stays on screen and stands still (`runner.priming`, `primeProgress`; the sim bar chip says "Updating…"). Another edit during priming restarts it from the newest layout;
 a hidden tab does not prime; `destroy()` ends it. The pre-roll depends only on layout and seed (the engine steps whole ticks), so it is deterministic. `reset()`, the first `play()` of a plant, loading another plant
-and switching variants stay **cold** starts from an empty plant at 0:00. `'rebuild'` carries `{ reason: 'create'|'structural'|'reset', sim, warm, label, labels, previous?: { report, simTime }, baseline }`.
+and switching variants stay **cold** starts from an empty plant at 0:00. `'rebuild'` carries `{ reason: 'create'|'structural'|'reset', sim, warm, label, labels, previous?: { report, simTime }, baseline, paired, warmedUp, warmupLeft }`
+(`paired`: the baseline holds the fair old-versus-new figures; `warmedUp: false` with `warmupLeft` seconds when the new simulation is still in its warm-up after the swap, which the toast says).
+**Bounded in wall-clock time:** each pre-roll phase stops after `PRIME_MAX_MS` (4 s) of frames that actually primed (a hidden tab does not count) and swaps in with what is done (`warmedUp: false` if that is still inside the warm-up); a plant that is
+too big for the pre-roll therefore freezes the old simulation for 4 s at most per phase instead of for as long as it takes. `primeProgress` covers both phases; the sim bar chip shows it in steps of 20 % once the pre-roll has taken 600 ms.
 Measured cost of the pre-roll (real headless Chromium on a shared, busy machine; ranges over several runs of tests/e2e/edit-feedback.mjs `perf`, the first priming after loading the page is the slowest): Starter 16–115 ms in 1–3 frames,
 Congestion lab 90–260 ms in 5–10 frames, Two lines 105–340 ms in 5–11 frames (the engine alone needs 70–380 ms in Node for the 1200 s: 90–140 ms once warm), a 160 × 160 plant with 100 vehicles (48 stations, 4031 road cells)
 0.9–1.0 s in 42–47 frames in the page and 0.6–1.2 s in Node (building the Simulation is one synchronous call of 60–90 ms). Edit to swapped-in simulation, debounce included: 0.3–0.6 s on the examples, 1.2–1.4 s on the big plant.
 The slowest animation-frame callback while priming was 16–28 ms on Two lines and 30–38 ms on the big plant (p95 15–19 ms), and no long task over 50 ms was reported; "1–3 frames" holds only for the Starter.
-**Baseline.** When a warm restart replaces a simulation that had measured ≥ 10 minutes, that simulation's last KpiReport becomes `runner.baseline` with the labels of the edits; further warm restarts keep the
-ORIGINAL report and only add labels, until `keepBaseline()` (the current numbers become the reference, no labels) or `dismissBaseline()`. Every cold start clears it.
+**Baseline.** When a warm restart replaces a simulation that had measured ≥ 10 minutes, that simulation's last KpiReport becomes `runner.baseline.report` with the labels of the edits and `layout`, the plant it describes; further warm restarts keep the
+ORIGINAL baseline and only add labels, until `keepBaseline()` (the plant on screen, as it is now, becomes the reference, no labels; it returns false and leaves everything as it was while a replacement is being pre-rolled or the run is not yet reliable) or
+`dismissBaseline()`. Every cold start clears it.
+**The fair comparison** (`baseline.control` = `{ window, report, runtime }` and `baseline.after` = `{ window, report }`). The long cumulative report of the old run cannot be set against the first 10 minutes of a new run (run-to-run noise of 10–35 % in a figure, measured; a rename
+read "worse"). So after the pre-roll of the new plant the runner pre-rolls the OLD plant (`baseline.layout`, i.e. the layout the displayed simulation was built from, with the what-if settings of the new plant so that only the edits differ) to the same measured window, with the same seed:
+`control` is its report, `after` the new plant's, both over the same `window` (600 s with the default warm-up). A change that cannot matter reads exactly ±0. The control depends only on the old plant, the window and the what-if settings (`runtime`), so consecutive edits reuse it unless a what-if was moved in between (one
+extra pre-roll for the first edit, none for the next ones); it costs about as much as the pre-roll of the new plant (Two lines: edit to swapped-in simulation 0.5–0.7 s for the first edit of a baseline, 0.35–0.4 s after; the big plant 1.1 s, 1.7 s with the control). A failure or a timeout of this
+second phase costs the comparison (`paired: false`, no card figures, the card says why), never the restart; a new plant that is still in its warm-up at the swap has no window to compare.
 
 ### 6.5 Panels & dialogs (owner: panels agent) — `js/ui/panels/*.js`, `js/ui/dialogs.js`
 Every panel: `export function createXPanel(ctx) → { el: HTMLElement, update(state): void, destroy(): void }`, where
@@ -525,10 +536,13 @@ ctx = { store, runner, renderer, camera, toast(msg, { kind: 'info'|'success'|'wa
 * `charts.js` — dependency-free chart primitives drawn on `<canvas>`/SVG, theme-aware, hi-dpi, hover tooltips: `lineChart`, `barChart` (horizontal & vertical, grouped), `stackedBar`, `sparkline`, `gauge`/`donut`, with axes, units, legends. Pure render functions + small DOM wrappers.
 * `dashboard.js` — live KPI view (`createDashboard(ctx)`): headline cards (throughput/h, mean & p95 lead time, WIP, fleet utilization, traffic wait share, deadlocks) with sparklines; per-fleet state-share stacked bars; per-station utilization/queue bars (bottleneck highlighted); throughput & WIP time-series; **Insights** list from `generateInsights` (clicking selects/zooms to refs); "warming up" state; "no data yet" empty state with a hint.
   At the top, `panels/impact.js` mounts the **"Effect of your change"** card while `runner.baseline` has edits: six figures (throughput, mean lead time, work in progress, fleet utilization, time waiting in traffic, deadlocks)
-  as before → after with a `.delta--good/--bad` chip (direction from `METRICS[].better`; neutral inside the noise: < 3 % or below a floor such as 1 load/h, and for utilization), an honesty line ("Indicative: only 6 of 20
-  minutes measured so far" with a thin progress bar, "Measured over 20 min" afterwards), the window lengths and the buttons Keep as baseline / Compare properly… (Experiments tab) / Dismiss; the same module's
-  `createImpactHint` puts a one-line "Before → after" under the simulation bar. `panels/fleet-status.js` is the live strip of a fleet card (working / waiting / idle / parked, trips so far, trips per vehicle and hour,
-  lowest battery, a "barely used" badge from the `fleet-unused` insight).
+  as the OLD plant (`baseline.control`) → the UPDATED plant (`baseline.after`) over the same measured window and seed (see 6.4), with a `.delta--good/--bad` chip (direction from `METRICS[].better`; neutral inside a noise band per figure,
+  set just above the noise measured on 450 paired runs: throughput 15 % and at least 2 loads, lead time 8 % and at least 3 loads on each side, work in progress 8 %, waiting in traffic 4 points, any change of the deadlocks; never for utilization),
+  an honesty line ("Indicative: one run per plant, so small differences are not coloured") in a polite live region, the window, a note when nothing changed beyond noise or when the updated plant finished no load (never a green figure for a plant
+  that stands still; no verdict on traffic when nothing drove), and the buttons Keep as baseline (disabled while the next plant is being pre-rolled or the run is not reliable) / Compare properly… (adds `baseline.layout` as the variant "Before: …", ticked next to the
+  current plant, and opens the Experiments tab; the running simulation is not touched) / Dismiss. Without numbers (still warming up, no pair) the card is its status line only. The same module's
+  `createImpactHint` puts a one-line "Before → after" under the simulation bar (full text in its tooltip). `panels/fleet-status.js` is the live strip of a fleet card (working / waiting / idle / parked, trips so far, trips per vehicle and hour,
+  lowest battery, a badge from the insights: "no jobs", "barely used", "some idle" or "mostly idle").
 * `compare.js` — **Experiments tab**: (1) *Compare variants*: pick scenarios, replications, duration → run (progress + cancel) → table of METRICS with best/worst highlighting and deltas vs. the first, plus bar charts; (2) *Parameter sweep*: choose a parameter from `listSweepParameters`, range/step, replications → line chart of chosen metric(s) with min–max band, click a point to apply that value to the current layout; (3) results kept in memory per session.
 * `report.js` — `exportReportHtml(ctx) → string` / download: self-contained HTML (inline CSS, layout PNG as data-URL, assumptions tables for stations/flows/fleets, KPI tables, insights, optional comparison results; print-friendly); `exportLayoutPng`, `exportLayoutJson` helpers.
 

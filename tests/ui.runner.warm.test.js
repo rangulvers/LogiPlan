@@ -1,11 +1,12 @@
 // Warm restart of the runner (js/ui/runner.js): an edit to a plant that has already run does not restart it from an empty plant, the
 // replacement simulation is pre-rolled silently in time slices behind the displayed one and swapped in at once; the baseline
-// of the change-impact card is kept across consecutive edits. Everything runs on a fake clock, fake animation frames and a fake
+// of the change-impact card (the old plant simulated afresh for the same window as the new one, the fair comparison) is kept across
+// consecutive edits; a pre-roll that takes too long in wall-clock time swaps in with what is done. Everything runs on a fake clock, fake animation frames and a fake
 // Simulation (tests/ui.runner.test.js uses the same technique); the last tests use the real engine to prove determinism.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  createRunner, primeSeconds, isMeasured, PRIME_SLICE_MS, PRIME_MIN_SECONDS, PRIME_MAX_SECONDS, BASELINE_MIN_SECONDS, REBUILD_DEBOUNCE_MS,
+  createRunner, primeSeconds, isMeasured, PRIME_SLICE_MS, PRIME_MIN_SECONDS, PRIME_MAX_SECONDS, PRIME_MAX_MS, BASELINE_MIN_SECONDS, REBUILD_DEBOUNCE_MS,
   CONSTRUCT_SLOW_MS, MAX_LABELS,
 } from '../js/ui/runner.js';
 import { createStore } from '../js/store/store.js';
@@ -496,6 +497,10 @@ test('a long warm-up is not pre-rolled to its end: the pre-roll stops at 40 minu
   assert.equal(h.runner.sim.time, PRIME_MAX_SECONDS);
   assert.equal(h.runner.kpis().window.warmingUp, true, 'Results honestly say it is still warming up');
   assert.deepEqual(h.runner.warm, { preRoll: PRIME_MAX_SECONDS });
+  const rebuild = h.of('rebuild').at(-1);
+  assert.equal(rebuild.warmedUp, false, 'the event says so, for the toast');
+  assert.equal(rebuild.warmupLeft, 3600 - PRIME_MAX_SECONDS);
+  assert.equal(rebuild.paired, false);
 });
 
 test('a hidden tab does not prime; priming goes on when the tab is back', async () => {
@@ -783,4 +788,236 @@ test('a warm restart reaches the same state as a straight run of the new layout 
   assert.equal(runner.sim.vehicles.length, direct.vehicles.length);
   assert.ok(runner.kpis().window.duration >= 599 && !runner.kpis().window.warmingUp, 'the statistics window is running at the swap');
   runner.destroy();
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// the fair comparison: the old plant simulated next to the new one
+// ---------------------------------------------------------------------------------------------------------
+
+test('a warm restart also simulates the OLD plant for the same measured window; both are kept with the plant they describe', async () => {
+  const h = makeHarness({ knobs: { capacity: 2400 } });
+  await runFor(h, 1300);
+  const first = h.runner.sim;
+  h.edit('Add fleet');
+  h.until(() => h.runner.sim !== first);
+  assert.equal(h.sims().length, 3, 'the old plant, the new plant, and the old plant again for the comparison');
+  const [, fresh, control] = h.sims();
+  assert.equal(h.runner.sim, fresh);
+  assert.deepEqual(control.layout.stations, first.layout.stations, 'the control is the plant before the edit ...');
+  assert.notDeepEqual(control.layout.stations, fresh.layout.stations, '... not the plant after it');
+  assert.equal(control.time, 1200, 'the same warm-up and the same measured 10 minutes');
+  const b = h.runner.baseline;
+  assert.equal(b.layout.stations.length, first.layout.stations.length, 'the baseline names the plant it was measured on');
+  assert.deepEqual(b.control, { window: 600, report: control.kpis(), runtime: { demandFactor: 1, dispatch: 'nearest', processFactor: 1, routing: 'shortest', speedFactor: 1 } }, 'the figures, and the what-if settings they were simulated under');
+  assert.deepEqual(b.after, { window: 600, report: fresh.kpis() });
+  assert.equal(b.report.sim, 1, 'the long-run report of the old simulation is still the baseline report');
+  const rebuild = h.of('rebuild').at(-1);
+  assert.equal(rebuild.paired, true);
+  assert.equal(rebuild.warmedUp, true);
+  assert.equal(rebuild.warmupLeft, 0);
+});
+
+test('the old plant is simulated with the what-if settings in force now (a demand slider moved before the edit is not an effect of the edit)', async () => {
+  const h = makeHarness({ knobs: { capacity: 2400 } });
+  await runFor(h, 1300);
+  const first = h.runner.sim;
+  h.store.commit('Demand', (l) => { l.settings.demandFactor = 1.5; });
+  h.frames(10);
+  assert.equal(first.layout.settings.demandFactor, 1, 'the running simulation was built with 1');
+  h.edit('Add fleet');
+  h.until(() => h.runner.sim !== first);
+  assert.equal(h.sims()[2].layout.settings.demandFactor, 1.5, 'the control runs with 1.5 like the new plant');
+  assert.equal(h.runner.baseline.layout.settings.demandFactor, 1.5);
+});
+
+test('consecutive edits reuse the old plant\'s figures: one more simulation per edit, the same control, a fresh "after"', async () => {
+  const h = makeHarness({ knobs: { capacity: 2400 } });
+  await runFor(h, 1300);
+  const first = h.runner.sim;
+  h.edit('Add fleet');
+  h.until(() => h.runner.sim !== first);
+  const one = h.runner.baseline;
+  const second = h.runner.sim;
+  h.frames(30);
+  h.edit('Add Goods out');
+  h.until(() => h.runner.sim !== second);
+  assert.equal(h.sims().length, 4, 'only the new plant had to be simulated');
+  const two = h.runner.baseline;
+  assert.equal(two.control, one.control, 'the very same figures of the old plant');
+  assert.equal(two.layout, one.layout);
+  assert.notEqual(two.after, one.after);
+  assert.equal(two.after.report.sim, 4);
+  assert.deepEqual(two.labels, ['Add fleet', 'Add Goods out']);
+});
+
+test('a what-if moved between two edits is not an effect of the second edit: the old plant is simulated again under it', async () => {
+  const h = makeHarness({ knobs: { capacity: 2400 } });
+  await runFor(h, 1300);
+  const first = h.runner.sim;
+  h.edit('Add fleet');
+  h.until(() => h.runner.sim !== first);
+  const one = h.runner.baseline;
+  assert.equal(one.control.runtime.demandFactor, 1);
+  const second = h.runner.sim;
+  h.frames(30);
+  h.store.commit('Demand', (l) => { l.settings.demandFactor = 1.5; });
+  h.frames(10);
+  h.edit('Add Goods out');
+  h.until(() => h.runner.sim !== second);
+  assert.equal(h.sims().length, 5, 'the new plant and, because the what-if changed, the old plant once more');
+  const two = h.runner.baseline;
+  assert.notEqual(two.control, one.control);
+  assert.equal(two.control.runtime.demandFactor, 1.5);
+  assert.equal(h.sims().at(-1).layout.settings.demandFactor, 1.5, 'the old plant runs with the new demand ...');
+  assert.deepEqual(h.sims().at(-1).layout.stations, first.layout.stations, '... but without the edits');
+  assert.equal(two.layout, one.layout, 'the baseline still names the original plant');
+  assert.equal(h.runner.sim.layout.settings.demandFactor, 1.5);
+});
+
+test('while the old plant is simulated the displayed simulation stands still, the progress keeps rising and the clock does not move', async () => {
+  const h = makeHarness({ knobs: { capacity: 300 } });
+  await runFor(h, 1300);
+  const first = h.runner.sim;
+  h.edit('Add fleet');
+  h.until(() => h.runner.priming);
+  const frozen = first.time;
+  const seen = [];
+  let atControl = null;
+  while (h.runner.priming) {
+    seen.push(h.runner.primeProgress);
+    h.frame();
+    if (atControl === null && h.sims().length === 3) atControl = h.runner.primeProgress; // the frame that started the old plant's run
+    if (h.runner.priming) assert.equal(first.time, frozen);
+  }
+  assert.ok(seen.length >= 7, `eight slices of 300 s, ${seen.length} frames seen`);
+  for (let i = 1; i < seen.length; i++) assert.ok(seen[i] >= seen[i - 1], `progress never goes back: ${seen}`);
+  assert.ok(seen.at(-1) > 0.8 && seen.at(-1) < 1, `and ends near the top: ${seen.at(-1)}`);
+  assert.ok(atControl >= 0.5 && atControl <= 0.65, `the new plant is half of the work: ${atControl}`);
+  assert.equal(h.runner.primeProgress, 0);
+  assert.equal(h.sims().length, 3);
+});
+
+test('a pre-roll that takes too long swaps in with what is done: bounded wall-clock time, no comparison, honest about the warm-up', async () => {
+  const h = makeHarness({ knobs: { capacity: 2400 } });
+  await runFor(h, 1300);
+  const first = h.runner.sim;
+  h.knobs.capacity = 0.1; // one tick per slice: a plant a hundred times too big for its pre-roll
+  h.edit('Add fleet');
+  let frames = 0;
+  while (h.runner.sim === first && frames < 600) { h.frame(16); frames++; }
+  assert.notEqual(h.runner.sim, first, 'it swapped');
+  const waited = frames * 16;
+  assert.ok(waited <= REBUILD_DEBOUNCE_MS + PRIME_MAX_MS + 200, `waited ${waited} ms`);
+  assert.ok(waited >= PRIME_MAX_MS - 200, 'and not earlier than the bound');
+  const rebuild = h.of('rebuild').at(-1);
+  assert.equal(rebuild.warm, true);
+  assert.equal(rebuild.warmedUp, false);
+  assert.ok(rebuild.warmupLeft > 500, `still ${rebuild.warmupLeft} s of warm-up to go`);
+  assert.equal(rebuild.paired, false);
+  assert.equal(rebuild.baseline, true, 'the old run was long enough to be a baseline');
+  assert.equal(h.runner.baseline.after, null);
+  assert.equal(h.runner.baseline.control, null);
+  assert.ok(h.runner.sim.time < 100);
+  assert.equal(h.sims().length, 2, 'the old plant was not simulated for a window the new one never reached');
+});
+
+test('the wall-clock bound counts frames that primed: a hidden tab neither primes nor uses it up', async () => {
+  const h = makeHarness({ knobs: { capacity: 300 } });
+  await runFor(h, 1300);
+  editAndStartPriming(h, 'Add fleet');
+  h.document.hidden = true;
+  h.document.fire();
+  h.frames(600, 100); // a minute of hidden frames
+  assert.equal(h.runner.priming, true);
+  h.document.hidden = false;
+  h.until(() => !h.runner.priming);
+  assert.equal(h.of('rebuild').at(-1).warmedUp, true, 'it was not cut short on return');
+  assert.equal(h.of('rebuild').at(-1).paired, true);
+});
+
+test('an old plant that cannot be simulated costs the comparison, not the restart, and is not announced as a simulation error', async () => {
+  const h = makeHarness({ knobs: { capacity: 2400 } });
+  await runFor(h, 1300);
+  const first = h.runner.sim;
+  editAndStartPriming(h, 'Add fleet');
+  h.knobs.failConstruct = 'out of memory';
+  h.until(() => h.runner.sim !== first);
+  h.knobs.failConstruct = null;
+  const rebuild = h.of('rebuild').at(-1);
+  assert.equal(rebuild.warm, true);
+  assert.equal(rebuild.paired, false);
+  assert.deepEqual(h.of('error'), [], 'no "the simulation stopped" toast');
+  assert.equal(h.errors.length, 1);
+  assert.equal(h.errors[0].context.phase, 'compare');
+  assert.ok(h.runner.sim, 'the new plant runs');
+  assert.ok(h.runner.baseline);
+  assert.equal(h.runner.baseline.after, null);
+});
+
+test('dismissing the comparison while the next edit is pre-rolled makes the plant on screen the old plant of that edit (during either phase)', async () => {
+  for (const [phase, whatIf, frames] of [['new plant', false, 1], ['old plant', true, 6]]) {
+    const h = makeHarness({ knobs: { capacity: 300 } });
+    await runFor(h, 1300);
+    const original = h.runner.sim;
+    h.edit('Add fleet');
+    h.until(() => h.runner.baseline !== null && !h.runner.priming);
+    const one = h.runner.baseline;
+    const shown = h.runner.sim;
+    h.frames(30);
+    assert.deepEqual(one.layout.stations, original.layout.stations);
+    if (whatIf) h.store.commit('Demand', (l) => { l.settings.demandFactor = 1.5; }); // the old plant has to be simulated again: its run is under way when the card is dismissed
+    h.edit('Add Goods out');
+    h.until(() => h.runner.priming);
+    h.frames(frames);
+    assert.equal(h.runner.priming, true, `${phase}: still pre-rolling`);
+    assert.equal(h.runner.dismissBaseline(), true);
+    assert.equal(h.runner.baseline, null);
+    h.until(() => h.runner.sim !== shown && !h.runner.priming);
+    const two = h.runner.baseline;
+    assert.ok(two, `${phase}: the edit still gets a comparison`);
+    assert.deepEqual(two.labels, ['Add Goods out']);
+    assert.deepEqual(two.layout.stations, shown.layout.stations, `${phase}: against the plant that was on screen, not the original one`);
+    assert.notDeepEqual(two.layout.stations, original.layout.stations);
+    assert.deepEqual(h.sims().at(-1).layout.stations, shown.layout.stations, `${phase}: and that is the plant the old-plant run used`);
+    assert.equal(two.control.report.sim, h.sims().length);
+    assert.ok(two.after);
+  }
+});
+
+test('keepBaseline() leaves the comparison alone while the next plant is being pre-rolled and when the numbers are not reliable', async () => {
+  const h = makeHarness({ knobs: { capacity: 300 } });
+  await runFor(h, 1300);
+  h.edit('Add fleet');
+  h.until(() => h.runner.baseline !== null && !h.runner.priming);
+  const base = h.runner.baseline;
+  h.frames(30);
+  h.edit('Add Goods out');
+  h.until(() => h.runner.priming);
+  assert.equal(h.runner.keepBaseline(), false, 'nothing reliable to keep while the replacement is being pre-rolled');
+  assert.equal(h.runner.baseline, base, 'and the comparison in progress stays');
+  h.until(() => !h.runner.priming);
+  assert.equal(h.runner.keepBaseline(), true);
+  assert.deepEqual(h.runner.baseline.labels, []);
+  assert.equal(h.runner.baseline.control, null);
+  assert.equal(h.runner.baseline.after, null);
+  assert.ok(h.runner.baseline.layout, 'it names the plant as it is now');
+});
+
+test('a kept baseline names the plant on screen, and the next edit simulates exactly that plant as the old one', async () => {
+  const h = makeHarness({ knobs: { capacity: 2400 } });
+  await runFor(h, 1300);
+  h.edit('Add fleet');
+  h.until(() => h.runner.baseline !== null && !h.runner.priming);
+  h.frames(30);
+  const shown = h.runner.sim;
+  assert.equal(h.runner.keepBaseline(), true);
+  const kept = h.runner.baseline;
+  assert.deepEqual(kept.layout.stations, shown.layout.stations);
+  const before = h.sims().length;
+  h.edit('Add Goods out');
+  h.until(() => h.runner.sim !== shown);
+  assert.equal(h.sims().length, before + 2, 'the new plant and the kept plant again');
+  assert.deepEqual(h.sims().at(-1).layout.stations, shown.layout.stations);
+  assert.equal(h.runner.baseline.layout, kept.layout);
+  assert.equal(h.runner.baseline.control.report.sim, h.sims().length);
 });

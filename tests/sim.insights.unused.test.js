@@ -1,5 +1,5 @@
-// Insights about resources that are not used (js/sim/insights.js): fleet-unused, vehicle-idle-some, source-unconnected-activity and
-// station-never-used. Reports are built by hand (a healthy plant, then one thing is broken); the last tests run the real engine.
+// Insights about resources that are not used (js/sim/insights.js): fleet-no-jobs, fleet-unused, vehicle-idle-some,
+// source-unconnected-activity and station-never-used. Reports are built by hand (a healthy plant, then one thing is broken); the last tests run the real engine.
 // The rules must not contradict the older ones: an unused fleet is never also "oversized", a saturated fleet is never told to add
 // vehicles while another fleet that may do the same jobs stands idle, an unconnected goods-in is not "delivering more than the plant takes".
 import { test } from 'node:test';
@@ -86,7 +86,7 @@ const idsOf = (list) => list.map((i) => i.id);
 // ---- the named thresholds ------------------------------------------------------------------------------
 
 test('the thresholds are exported by name', () => {
-  assert.equal(UNUSED_MIN_WINDOW, 600);
+  assert.equal(UNUSED_MIN_WINDOW, 1200);
   assert.equal(FLEET_BARELY_USED_TRIPS_PER_HOUR, 0.3);
   assert.equal(FLEET_UNUSED_MIN_OTHER_TRIPS, 3);
   assert.equal(VEHICLE_IDLE_SHARE, 0.2);
@@ -96,10 +96,10 @@ test('the thresholds are exported by name', () => {
   assert.equal(STATION_NEVER_USED_MIN_SUPPLY, 3);
 });
 
-test('a healthy plant yields none of the four new insights', () => {
+test('a healthy plant yields none of the five new insights', () => {
   const layout = plant({ flows: [['A', 'B'], ['B', 'D'], ['G', 'D']] });
   const list = insightsOf(layout);
-  for (const rule of ['fleet-unused', 'vehicle-idle-some', 'source-unconnected-activity', 'station-never-used']) {
+  for (const rule of ['fleet-no-jobs', 'fleet-unused', 'vehicle-idle-some', 'source-unconnected-activity', 'station-never-used']) {
     assert.deepEqual(idsOf(list).filter((id) => id.startsWith(rule)), [], rule);
   }
 });
@@ -135,7 +135,7 @@ test('fleet-unused is a warning when the idle vehicles also add to congested tra
   assert.equal(find(congested, 'fleet-unused:v2').severity, 'warning');
 });
 
-test('fleet-unused needs a long window: nothing under ten minutes', () => {
+test('fleet-unused needs a long window: nothing under twenty minutes', () => {
   const layout = plant();
   const short = insightsOf(layout, (r) => quiet(r, 'v2', 0), { duration: UNUSED_MIN_WINDOW - 1 });
   assert.equal(find(short, 'fleet-unused:v2'), undefined);
@@ -162,12 +162,60 @@ test('fleet-unused needs other vehicles that do the jobs: without them the older
   assert.ok(find(list, 'fleet-oversized:v2'), 'the fleet is still reported as mostly idle');
 });
 
-test('fleet-unused does not fire for a fleet that may not serve any flow (restricted flows): that is a restriction matter', () => {
+test('fleet-unused does not fire for a fleet that may not serve any flow (restricted flows): fleet-no-jobs names the restriction', () => {
   const layout = plant();
   for (const flow of layout.flows) flow.fleetId = 'v1';
   const list = insightsOf(layout, (r) => quiet(r, 'v2', 0));
   assert.equal(find(list, 'fleet-unused:v2'), undefined);
-  assert.match(find(list, 'fleet-oversized:v2').suggestion, /fleet restriction/);
+  assert.equal(find(list, 'fleet-oversized:v2'), undefined, 'the more specific verdict replaces "mostly idle"');
+  const hit = find(list, 'fleet-no-jobs:v2');
+  assert.ok(hit, idsOf(list).join(', '));
+  assert.equal(hit.title, 'The 2 vehicles of the Forklifts fleet have no job: every flow is restricted to another fleet.');
+  assert.match(hit.detail, /All flows of this plant are dedicated to AGVs\. A vehicle only takes jobs from flows that allow its fleet/);
+  assert.match(hit.suggestion, /^Allow Forklifts on a flow \(Fleet → Jobs this fleet serves/);
+});
+
+// ---- fleet-no-jobs -------------------------------------------------------------------------------------
+
+test('fleet-no-jobs: one vehicle is worded in the singular, and it needs no long window', () => {
+  const layout = plant({ fleets: [{ count: 3, name: 'AGVs' }, { count: 1, name: 'Truck', preset: 'forklift' }] });
+  for (const flow of layout.flows) flow.fleetId = 'v1';
+  const list = insightsOf(layout, (r) => quiet(r, 'v2', 0), { duration: 400 });
+  const hit = find(list, 'fleet-no-jobs:v2');
+  assert.ok(hit, idsOf(list).join(', '));
+  assert.equal(hit.title, 'The 1 vehicle of the Truck fleet has no job: every flow is restricted to another fleet.');
+  assert.match(hit.detail, /so the Truck vehicle stands idle however much work there is/);
+  assert.match(hit.suggestion, /or remove it \(now 1\)\.$/);
+  assert.deepEqual(hit.refs, { fleetIds: ['v2'] });
+  assert.equal(hit.severity, 'info');
+});
+
+test('fleet-no-jobs: silent when any flow allows the fleet, when there are no flows, and for an empty fleet', () => {
+  const layout = plant();
+  layout.flows[0].fleetId = 'v1'; // the other flows may use any fleet
+  assert.equal(find(insightsOf(layout, (r) => quiet(r, 'v2', 0)), 'fleet-no-jobs:v2'), undefined);
+  const dedicated = plant();
+  dedicated.flows[0].fleetId = 'v1';
+  dedicated.flows[1].fleetId = 'v2'; // v2 has a job of its own
+  assert.equal(find(insightsOf(dedicated, (r) => quiet(r, 'v2', 0)), 'fleet-no-jobs:v2'), undefined);
+  const noFlows = plant({ flows: [] });
+  assert.equal(find(insightsOf(noFlows), 'fleet-no-jobs:v2'), undefined, 'no flows at all: the Checks tab says that');
+  const empty = plant({ fleets: [{ count: 3, name: 'AGVs' }, { count: 0, name: 'Truck', preset: 'forklift' }] });
+  for (const flow of empty.flows) flow.fleetId = 'v1';
+  assert.equal(find(insightsOf(empty), 'fleet-no-jobs:v2'), undefined, 'a fleet without vehicles has nothing to report');
+});
+
+test('fleet-no-jobs: names every dedicated owner and is not accompanied by "oversized", "unused" or "add a spare"', () => {
+  const layout = plant({ fleets: [{ count: 3, name: 'AGVs' }, { count: 2, name: 'Forklifts', preset: 'forklift' }, { count: 2, name: 'Tugger', preset: 'tugger' }] });
+  layout.flows[0].fleetId = 'v1';
+  layout.flows[1].fleetId = 'v2';
+  const list = insightsOf(layout, (r) => { quiet(r, 'v3', 0); r.fleets.v3.shares.broken = 0.08; r.fleets.v3.shares.parked = 0.89; });
+  const hit = find(list, 'fleet-no-jobs:v3');
+  assert.ok(hit);
+  assert.match(hit.detail, /dedicated to AGVs and Forklifts/);
+  assert.equal(find(list, 'fleet-oversized:v3'), undefined);
+  assert.equal(find(list, 'fleet-unused:v3'), undefined);
+  assert.doesNotMatch(find(list, 'breakdowns:v3').suggestion, /Add a spare vehicle/);
 });
 
 test('fleet-unused does not fire for vehicles that make no trips because they stand in a queue all the time (they are busy)', () => {
@@ -235,6 +283,14 @@ test('vehicle-idle-some: two of four vehicles do almost nothing while their flee
   assert.match(idle.detail, /#3 \(1 trip\), #4 \(0 trips\) made far fewer trips than their fleet-mates, who averaged 21 trips each\./);
   assert.match(idle.suggestion, /^Try 2 vehicles instead of 4/);
   assert.deepEqual(idle.refs, { fleetIds: ['v1'] });
+});
+
+test('vehicle-idle-some agrees in number when exactly one vehicle is quiet', () => {
+  const layout = plant({ fleets: [{ count: 4, name: 'AGVs' }, { count: 2, name: 'Forklifts', preset: 'forklift' }] });
+  const idle = find(insightsOf(layout, withTrips('v1', [21, 20, 22, 0])), 'vehicle-idle-some:v1');
+  assert.ok(idle);
+  assert.equal(idle.title, '1 of 4 vehicles in the AGVs fleet hardly works.');
+  assert.match(idle.detail, /#4 \(0 trips\) made far fewer trips than the other vehicles of the fleet, who averaged 21 trips each\./);
 });
 
 test('vehicle-idle-some: names at most three vehicles', () => {
@@ -311,6 +367,8 @@ test('station-never-used: nothing reached the press in 2 h although goods in pro
   assert.equal(hit.severity, 'warning');
   assert.equal(hit.title, 'Nothing reaches Press: no load arrived there in 2 h.');
   assert.match(hit.detail, /Goods in supplies Press and the vehicles have time to spare/);
+  assert.match(hit.detail, /Either no vehicle can drive to its dock, or the flow waits for a batch that never fills\.$/);
+  assert.doesNotMatch(hit.detail, /Most likely/, 'the road is not blamed without knowing');
   assert.match(hit.suggestion, /^Check the road to Press/);
   assert.deepEqual(hit.refs.stationIds, [b]);
   assert.deepEqual(hit.refs.flowIds, [layout.flows[0].id]);
@@ -346,6 +404,28 @@ test('station-never-used stays silent in every case where the cause is clear or 
   const noVehicles = plant({ fleets: [{ count: 0, name: 'AGVs' }] });
   const bn = noVehicles.stations.find((s) => s.name === 'Press').id;
   assert.equal(find(insightsOf(noVehicles, nothingReaches(noVehicles)), `station-never-used:${bn}`), undefined, 'no vehicle at all: other rules and the Checks tab say that');
+});
+
+test('station-never-used does not blame the road for a destination behind a storage that holds its loads for half the window or longer', () => {
+  const layout = plant();
+  const press = layout.stations.find((s) => s.name === 'Press');
+  const store = L.addStation(layout, { type: 'storage', name: 'Curing store', x: 3, y: 5, w: 2, h: 1, params: { dwell: 1800, capacity: 50 } });
+  assert.ok(store);
+  const toStore = layout.flows.find((f) => f.to === press.id);
+  L.removeFlow(layout, toStore.id);
+  const into = L.addFlow(layout, toStore.from, store.id, {});
+  const out = L.addFlow(layout, store.id, press.id, {});
+  assert.ok(into && out);
+  const mutate = (r) => {
+    r.stations[store.id] = { ...r.stations[layout.stations.find((s) => s.name === 'Goods in').id], type: 'storage', name: 'Curing store' };
+    r.flows[into.id] = { from: into.from, to: into.to, delivered: 50, trips: 50, avgPickupWait: 20, avgTransit: 30, backlog: 0, avgBacklog: 0 };
+    r.flows[out.id] = { from: out.from, to: out.to, delivered: 0, trips: 0, avgPickupWait: 0, avgTransit: 0, backlog: 0, avgBacklog: 0 };
+  };
+  const held = insightsOf(layout, mutate, { duration: 3600 });
+  assert.equal(find(held, `station-never-used:${press.id}`), undefined, 'a dwell of 30 min is half the 1 h window: nothing could have left the store yet');
+  store.params.dwell = 60;
+  const quick = insightsOf(layout, mutate, { duration: 3600 });
+  assert.ok(find(quick, `station-never-used:${press.id}`), 'a short dwell explains nothing');
 });
 
 test('station-never-used also names a shipping station nothing reaches', () => {
@@ -400,6 +480,29 @@ test('fuzz: no combination of numbers makes the rules contradict each other', ()
       assert.equal(typeof insight.title, 'string');
       assert.ok(!/NaN|undefined|Infinity/.test(`${insight.title} ${insight.detail} ${insight.suggestion || ''}`), `round ${round}: ${insight.id}: ${insight.title}`);
     }
+  }
+});
+
+test('fuzz: a fleet no flow may use is named by fleet-no-jobs and by no other fleet rule', () => {
+  const rng = createRng(77);
+  const layout = plant({ fleets: [{ count: 4, name: 'AGVs' }, { count: 3, name: 'Forklifts', preset: 'forklift' }, { count: 1, name: 'Tugger', preset: 'tugger' }] });
+  layout.flows.forEach((flow, i) => { flow.fleetId = i % 2 ? 'v2' : 'v1'; });
+  for (let round = 0; round < 200; round++) {
+    const report = healthyReport(layout, { duration: rng.pick([300, 650, 1500, 3600, 7200]) });
+    for (const id of ['v1', 'v2', 'v3']) {
+      const f = report.fleets[id];
+      withTrips(id, Array.from({ length: f.count }, () => rng.pick([0, 0, 1, 5, 25])))(report);
+      f.utilization = id === 'v3' ? rng.pick([0, 0.01]) : rng.pick([0.01, 0.1, 0.5, 0.9, 0.97]); // a fleet without jobs does not work, whatever the others do
+      f.shares.broken = rng.pick([0, 0.08]);
+    }
+    report.traffic.waitShare = rng.pick([0.01, 0.15]);
+    const list = generateInsights(report, layout);
+    const ids = new Set(idsOf(list));
+    assert.ok(ids.has('fleet-no-jobs:v3'), `round ${round}: the tugger fleet has no flow`);
+    for (const rule of ['fleet-oversized', 'fleet-unused', 'vehicle-idle-some', 'fleet-saturated']) assert.ok(!ids.has(`${rule}:v3`), `round ${round}: ${rule} next to fleet-no-jobs`);
+    const spare = list.find((i) => i.id === 'breakdowns:v3');
+    if (spare) assert.doesNotMatch(spare.suggestion, /Add a spare vehicle/, `round ${round}`);
+    for (const id of ['v1', 'v2']) assert.ok(!ids.has(`fleet-no-jobs:${id}`), `round ${round}: ${id} has a flow`);
   }
 });
 
@@ -462,4 +565,18 @@ test('real engine: a destination vehicles cannot reach is named "nothing reaches
   const hit = insights.find((i) => i.id === `station-never-used:${island.id}`);
   assert.ok(hit, insights.map((i) => i.id).join(', '));
   assert.equal(hit.title, 'Nothing reaches Island: no load arrived there in 50 min.');
+});
+
+test('real engine: a forklift fleet next to flows that are all dedicated to other fleets is named "no jobs", for one vehicle as for two', () => {
+  for (const count of [1, 2]) {
+    const layout = EXAMPLES.find((e) => e.id === 'two-lines').build();
+    const depot = layout.stations.find((st) => st.type === 'depot');
+    const added = L.addFleet(layout, 'forklift', { name: 'New forklifts', count, home: depot.id });
+    const { report, insights } = run(layout, 2 * 3600);
+    assert.equal(report.fleets[added.id].trips, 0, 'it never gets a job');
+    const hit = insights.find((i) => i.id === `fleet-no-jobs:${added.id}`);
+    assert.ok(hit, `${count} vehicle(s): ${insights.map((i) => i.id).join(', ')}`);
+    assert.ok(!insights.some((i) => i.id === `fleet-oversized:${added.id}`), 'one statement, not two');
+    assert.match(hit.title, count === 1 ? /^The 1 vehicle of the New forklifts fleet has no job/ : /^The 2 vehicles of the New forklifts fleet have no job/);
+  }
 });

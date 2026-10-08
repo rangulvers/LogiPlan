@@ -1,7 +1,8 @@
 // Live status of one fleet (a strip inside the fleet card, js/ui/panels/fleet.js): how many of its vehicles work, wait in traffic,
 // stand idle or are parked right now, how many trips they made so far and per vehicle and hour, the lowest battery when the fleet has
-// one, and a "barely used" badge with the reason when the insights say that the fleet is not needed (insights fleet-unused /
-// vehicle-idle-some, js/sim/insights.js - the same verdict the Results tab shows, so the two can never disagree).
+// one, and a badge with the reason when the insights say that the fleet is not needed ("no jobs", "barely used", "some idle",
+// "mostly idle": insights fleet-no-jobs / fleet-unused / vehicle-idle-some / fleet-oversized, js/sim/insights.js - the same verdict
+// the Results tab shows, so the two can never disagree).
 //
 //   const status = createFleetStatus(ctx, fleetId);   // status.el, status.update(state)
 //
@@ -51,16 +52,25 @@ export function countVehicles(vehicles, fleetId) {
 const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
 const amount = (v) => formatNumber(v, Math.abs(v) < 10 ? 1 : 0);
 
+/** Insights that mean "this fleet is not (fully) used", most specific first, with the word the badge shows. */
+const USAGE_RULES = Object.freeze([
+  { rule: 'fleet-no-jobs', text: 'no jobs' },
+  { rule: 'fleet-unused', text: 'barely used' },
+  { rule: 'vehicle-idle-some', text: 'some idle' },
+  { rule: 'fleet-oversized', text: 'mostly idle' },
+]);
+
 /**
- * The badge for a fleet the insights call unused: { text, tip } or null. `insights` is runner.insights().
- * fleet-unused wins over vehicle-idle-some (the rules never fire for the same fleet, but the order documents the precedence).
+ * The badge for a fleet the insights call unused: { text, tip } or null. `insights` is runner.insights() - the same verdicts the Results
+ * tab shows, so the strip can never stay silent about a fleet that Results call idle. The rules never fire together for one fleet; the
+ * order of USAGE_RULES documents the precedence.
  */
 export function usageBadge(insights, fleetId) {
   const list = Array.isArray(insights) ? insights : [];
-  const unused = list.find((i) => i && i.id === `fleet-unused:${fleetId}`);
-  if (unused) return { text: 'barely used', tip: [unused.title, unused.suggestion].filter(Boolean).join(' ') };
-  const some = list.find((i) => i && i.id === `vehicle-idle-some:${fleetId}`);
-  if (some) return { text: 'some idle', tip: [some.title, some.suggestion].filter(Boolean).join(' ') };
+  for (const { rule, text } of USAGE_RULES) {
+    const found = list.find((i) => i && i.id === `${rule}:${fleetId}`);
+    if (found) return { text, tip: [found.title, found.suggestion].filter(Boolean).join(' ') };
+  }
   return null;
 }
 

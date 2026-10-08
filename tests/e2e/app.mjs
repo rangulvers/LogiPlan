@@ -118,6 +118,8 @@ await withBrowser(async ({ browser, url, errors }) => {
     eq(runChip({ playing: true, time: 700, warmup: 600, started: true }).label, 'Running', 'chip: running');
     eq(runChip({ playing: false, time: 700, warmup: 600, started: true }).label, 'Paused', 'chip: paused');
     eq(runChip({ playing: true, time: 0, warmup: 0, started: true }).label, 'Running', 'chip: no warm-up');
+    eq(runChip({ playing: true, time: 700, warmup: 600, started: true, priming: true }).label, 'Updating…', 'chip: an edit is being pre-rolled');
+    eq(runChip({ playing: true, time: 700, warmup: 600, started: true, priming: true, primeProgress: 0.4 }).label, 'Updating… 40 %', 'chip: a slow pre-roll shows its progress');
     eq([stepSpeed(10, 1), stepSpeed(10, -1), stepSpeed(1200, 1), stepSpeed(1, -1)], [30, 5, 1200, 1], 'speed steps stop at the ends');
     eq(shortcutFor({ key: 's', ctrlKey: true }), 'save', 'Ctrl+S');
     eq(shortcutFor({ key: 'S', metaKey: true }), 'save', 'Cmd+S');
