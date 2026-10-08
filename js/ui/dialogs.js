@@ -5,7 +5,7 @@
 //   dialogs.confirm({ title, text, confirmLabel, danger })      -> Promise<boolean>
 //   dialogs.prompt({ title, label, value, placeholder, ... })   -> Promise<string | null>
 //   dialogs.openWelcome({ auto })  welcome screen: examples with previews, empty plant, continue; `auto: true` honours "Don't show again"
-//   dialogs.openHelp({ tab })      quick start, tools and shortcuts, how the simulation works, tips
+//   dialogs.openHelp({ tab })      quick start, tools and shortcuts, how vehicles find work ('vehicles'), how the simulation works, tips
 //   dialogs.openShare()            share link with copy button, or the project file when the link would be too long
 //   dialogs.openImportExport()     download the project file; open one from a file, drag and drop, pasted text or a share link
 //
@@ -26,6 +26,7 @@ import { GRID_LIMITS } from '../model/defaults.js';
 import { exportProject, importProject, shareUrl, decodeShare } from '../model/serialize.js';
 import { formatNumber } from '../util/format.js';
 import { numberField, textField, segmentedField, callout, uid } from './panels/fields.js';
+import { createVehiclesHelp } from './panels/jobs-view.js';
 
 const plural = (n, one, many = `${one}s`) => `${formatNumber(n)} ${n === 1 ? one : many}`;
 const quoted = (name) => `“${name}”`;
@@ -66,6 +67,36 @@ export function setWelcomeHidden(hidden) {
   } catch {
     // private mode or blocked storage: the choice just does not persist
   }
+}
+
+/** localStorage key of the tip the welcome screen showed last. */
+export const WELCOME_TIP_KEY = 'logiplan:welcome-tip';
+
+/** The tips the welcome screen rotates through, one per visit: how loads, flows and vehicles belong together. */
+export const WELCOME_TIPS = Object.freeze([
+  { id: 'second-goods-in', title: 'Adding a second Goods in?', text: 'Give it a flow of its own: select it and pick a destination under “Where do loads go?”. The vehicles you already have serve it automatically.' },
+  { id: 'vehicles-not-tied', title: 'Vehicles are not tied to stations', text: 'Every free vehicle serves every flow. To dedicate a fleet to one flow, open the Fleet tab and switch on “Only this fleet” under Jobs this fleet serves.' },
+  { id: 'dock', title: 'Every station needs a dock', text: 'A dock is a road cell that touches the station. A station that touches no road is never served, so place it right next to one.' },
+]);
+
+/** The tip after the one shown last time (index `last`; any junk starts at the first), wrapping around. */
+export const nextTipIndex = (last) => (Number.isInteger(last) && last >= 0 ? last + 1 : 0) % WELCOME_TIPS.length;
+
+/** The tip for the welcome screen of this visit: the next one after the last visit, remembered in localStorage (the first one when storage is unavailable). */
+function pickWelcomeTip() {
+  let last = null;
+  try {
+    last = Number.parseInt(globalThis.localStorage.getItem(WELCOME_TIP_KEY), 10);
+  } catch {
+    last = null;
+  }
+  const index = nextTipIndex(last);
+  try {
+    globalThis.localStorage.setItem(WELCOME_TIP_KEY, String(index));
+  } catch {
+    // not remembered: the next visit shows the first tip again
+  }
+  return index;
 }
 
 /** Sizes offered for a new empty plant (grid cells). */
@@ -454,6 +485,24 @@ function emptyPlantForm(onCreate) {
 const WELCOME_PITCH = 'Plan a factory layout and its in-plant logistics: draw roads and stations on a baseplate, say where loads go and which vehicles carry them, '
   + 'then run the simulation to see where loads wait, vehicles queue and the bottleneck sits. Compare variants on screen before you build anything.';
 
+/** A calm one-tip card with a "Next tip" button (the tips rotate: one per visit, and one per press). */
+function tipCard(startIndex) {
+  let index = startIndex;
+  const title = h('div', { class: 'callout__title' });
+  const text = h('div', { class: 'callout__text' });
+  const next = h('button', { class: 'btn btn--sm', type: 'button', onclick: () => { index = (index + 1) % WELCOME_TIPS.length; show(); } }, 'Next tip');
+  const body = h('div', { class: 'callout__body', style: { flex: '1 1 auto' }, 'aria-live': 'polite', 'aria-atomic': 'true' }, title, text);
+  const el = h('div', { class: 'callout callout--info', role: 'group', 'aria-label': 'Tip', dataset: { tip: '' } }, icon('info', { size: 16, class: 'callout__icon' }), body, next);
+  function show() {
+    const tip = WELCOME_TIPS[index];
+    el.dataset.tip = tip.id;
+    title.textContent = `Tip: ${tip.title}`;
+    text.textContent = tip.text;
+  }
+  show();
+  return el;
+}
+
 function openWelcome(ctx, dlg, { auto = false } = {}) {
   if (auto && isWelcomeHidden()) return null;
   const { store } = ctx;
@@ -465,7 +514,7 @@ function openWelcome(ctx, dlg, { auto = false } = {}) {
     const layout = example.build();
     return { example, layout, card: exampleCard(example, layout, () => pickExample(example)) };
   });
-  const sections = [paragraph(WELCOME_PITCH)];
+  const sections = [paragraph(WELCOME_PITCH), tipCard(pickWelcomeTip())];
   if (hasWork(state)) {
     sections.push(h('div', { class: 'card card--flat', style: { background: 'var(--accent-soft)', borderColor: 'var(--accent-line)' } },
       h('div', { class: 'card__body row row--wrap' },
@@ -487,6 +536,8 @@ function openWelcome(ctx, dlg, { auto = false } = {}) {
     actions: [{ label: 'Close' }],
     onClose: () => { if (replaced) focusPlan(ctx); },
   });
+  // The tip's button comes first in the dialog, but the first thing to reach for is the way into the plant.
+  (handle.el.querySelector('.card .btn--primary') || handle.el.querySelector('[data-example]'))?.focus();
   drawPreviews();
 
   /** Draw the previews one by one, so the dialog is on screen at once and the pictures appear as they get ready. */
@@ -530,7 +581,7 @@ function openWelcome(ctx, dlg, { auto = false } = {}) {
 const QUICK_START = [
   ['Draw the roads', 'Choose the Road tool (R) and drag across the plan. Vehicles only drive on roads. Use the One-way tool (O) for aisles that run in one direction.'],
   ['Place stations', 'Goods in (1) creates loads, Workstation (2) works on them, Storage (3) holds them, Goods out (4) takes finished loads out of the plant and Parking (5) is where idle vehicles wait and charge. Every station needs a road cell that touches it: that cell is its dock.'],
-  ['Say where the loads go', 'Choose the Flow tool (F), click the station that sends loads and then the station that receives them. You can also add flows in the Flows tab.'],
+  ['Say where the loads go', 'Select a station that sends loads and drag the round arrow button beside it onto the station that receives them. Or choose the Flow tool (F), click the sending station and then the receiving one. You can also add flows in the Flows tab. Vehicles are not assigned to stations: every free vehicle serves every flow.'],
   ['Add vehicles', 'Open the Fleet tab and add AGVs, forklifts or a tugger train. Set how many there are, how fast they drive and how many loads they carry.'],
   ['Run it', 'Press Space to play. Vehicles drive, queue and deliver. The Results tab shows throughput, lead time and the bottleneck; the Checks tab lists problems with your plan.'],
   ['Improve and compare', 'Change one thing at a time. Duplicate the scenario tab to keep variants side by side, and use the Experiments tab to compare them or to sweep a value such as the number of vehicles.'],
@@ -551,7 +602,7 @@ const TOOL_HELP = [
   ['depot', 'Parking and charging', 'Click to place, drag to size. Idle vehicles park here and charge.'],
   ['obstacle', 'Obstacle', 'Walls, racks and columns that block roads and stations. Press W again for the next type.'],
   ['label', 'Label', 'Click where a text should go.'],
-  ['flow', 'Flow', 'Click the sending station, then the receiving one.'],
+  ['flow', 'Flow', 'Click the sending station, then the receiving one. With Select, drag the round arrow button of a selected station instead.'],
 ];
 
 const KEY_TABLE = [
@@ -624,6 +675,10 @@ const HOW_IT_WORKS = [
     'Throughput is the number of loads that leave through Goods out per hour. Lead time is how long a load needs from its arrival to leaving the plant (mean and 95th percentile). Work in process is the number of loads in the plant right now. '
     + 'Utilization is the share of time a workstation or vehicle is working. The waiting share is the part of the driving time vehicles spend stuck in traffic. Empty driving is the share of the distance driven without a load. '
     + 'The bottleneck is the workstation that is busy almost all the time while loads queue in front of it or the stations behind it wait for material: it sets the limit for the whole plant. Results only count after the warm-up time.'],
+  ['After you change the plant',
+    'When you change the plant while the simulation has been running, the changed plant is first simulated silently for about 20 minutes and then replaces the old one, so Results show numbers at once instead of starting from an empty plant. '
+    + 'The card "Effect of your change" at the top of Results puts the figures before and after side by side; it is only indicative until 20 minutes are measured, and "Compare properly" runs several replications in the Experiments tab. '
+    + 'Vehicles that hardly get a job are marked "barely used" in the Fleet tab. Switch "Keep results warm after edits" off in the Simulate tab to start from an empty plant after every change; the reset button always does.'],
   ['Repeatable results',
     'The simulation uses a random seed. The same plant with the same seed always gives identical results. Change the seed in the Simulate tab to see how much the results vary, or run several replications in the Experiments tab and look at the average.'],
 ];
@@ -633,10 +688,12 @@ function simulationTab() {
 }
 
 const TIPS = [
+  'Adding a second Goods in? Select it and pick a destination under "Where do loads go?". Every Goods in needs a flow of its own; the vehicles you already have serve it automatically.',
   'Give every busy station its own short side road (a bay), so a vehicle loading there does not block the aisle.',
   'Start with one or two vehicles and add more only while the Results tab shows loads waiting for transport. In narrow aisles more vehicles can even lower the output.',
   'One-way loops calm narrow aisles, but keep every station reachable and make sure vehicles can find their way back.',
   'Switch the heat map to "waiting" to see where queues form, or to "traffic" to see the busiest roads.',
+  'While the simulation runs, the Jobs display option draws a line from each vehicle to the station it is heading for (amber to pick up, blue to deliver) and a badge "n waiting" on stations whose loads no vehicle has claimed yet.',
   'Open the Checks tab before you run: it finds stations without a dock, unreachable stations and fleets that cannot charge.',
   'Duplicate the scenario tab before a big change, then compare the variants in the Experiments tab.',
   'Use slow zones (Z) for corners, crossings and areas where people walk.',
@@ -653,6 +710,7 @@ function openHelp(dlg, { tab } = {}) {
   const tabs = createTabs([
     { id: 'quick', label: 'Quick start', content: quickStartTab() },
     { id: 'tools', label: 'Tools & shortcuts', content: toolsTab() },
+    { id: 'vehicles', label: 'How vehicles find work', content: createVehiclesHelp() },
     { id: 'simulation', label: 'How the simulation works', content: simulationTab() },
     { id: 'tips', label: 'Tips', content: tipsTab() },
   ], tab, 'Help topics');

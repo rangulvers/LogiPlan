@@ -1,0 +1,420 @@
+/* Guidance surfaces (docs/ARCHITECTURE.md 6.9): the Next steps card, the Getting started list and the guide chip over the plan.
+ * Built from the kit (tokens, .card, .btn, .input, .badge, .progress); this file only places and tones them. Loaded after layout.css. */
+
+/* ==========================================================================
+   Block at the top of a tab
+   ========================================================================== */
+
+.guide-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-3) 0;
+}
+
+/* ==========================================================================
+   Card
+   ========================================================================== */
+
+.guide {
+  overflow: clip;
+}
+
+.guide[hidden] {
+  display: none;
+}
+
+.guide__head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: 40px;
+  padding: 6px var(--sp-2) 6px var(--sp-3);
+  border-bottom: 1px solid var(--border);
+}
+
+.guide__icon {
+  display: inline-flex;
+  flex: none;
+  color: var(--accent-text);
+}
+
+.guide__icon--good {
+  color: var(--good-text);
+}
+
+.guide__title {
+  margin: 0;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-tight);
+}
+
+.guide__title:focus-visible {
+  outline-offset: 2px;
+}
+
+.guide__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.guide__foot {
+  display: flex;
+}
+
+.guide__more {
+  margin: 0 0 var(--sp-1) var(--sp-2);
+}
+
+.guide__more[hidden] {
+  display: none;
+}
+
+.guide__foot:has(.guide__more[hidden]) {
+  display: none;
+}
+
+/* ---- one step ----------------------------------------------------------- */
+
+.guide-step {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-3);
+  padding: var(--sp-3);
+}
+
+.guide-step + .guide-step,
+.guide__allset + .guide__list .guide-step:first-child {
+  border-top: 1px solid var(--border);
+}
+
+.guide-step__icon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-pill);
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+
+.guide-step--warn .guide-step__icon {
+  background: var(--warn-soft);
+  color: var(--warn-text);
+}
+
+.guide-step--info .guide-step__icon {
+  background: var(--info-soft);
+  color: var(--info-text);
+}
+
+.guide-step--good .guide-step__icon {
+  background: var(--good-soft);
+  color: var(--good-text);
+}
+
+.guide-step__body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.guide-step__head {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+}
+
+.guide-step__show {
+  flex: none;
+  margin: -3px -6px -3px 0; /* tucked into the corner: the title keeps the width */
+  color: var(--text-dim);
+}
+
+.guide-step__title {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-tight);
+  overflow-wrap: anywhere;
+}
+
+.guide-step__text {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+  line-height: var(--lh);
+}
+
+.guide-step__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-top: var(--sp-2);
+}
+
+.guide-step__actions:not(:has(> :not([hidden]))) {
+  display: none; /* nothing to press: no empty row */
+}
+
+.guide-connect {
+  display: flex;
+  flex: 1 1 100%;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.guide-connect + .guide-step__dismiss {
+  margin-left: calc(-1 * var(--sp-2)); /* its own row under the choice: the word lines up with the select */
+}
+
+.guide-connect[hidden] {
+  display: none;
+}
+
+.guide-connect__select {
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
+}
+
+.guide-connect .btn {
+  flex: none;
+}
+
+.guide--compact .guide-step {
+  padding: var(--sp-2) var(--sp-3);
+}
+
+/* ==========================================================================
+   Getting started list
+   ========================================================================== */
+
+.guide-check__count {
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+}
+
+.guide-check__toggle .icon {
+  transition: transform var(--t-base) var(--ease);
+}
+
+.guide-check__toggle.is-collapsed .icon {
+  transform: rotate(-90deg);
+}
+
+.guide-check__progress {
+  padding: var(--sp-2) var(--sp-3) var(--sp-1);
+}
+
+.guide-check__track {
+  --c: var(--good);
+}
+
+.guide-check__list {
+  padding: var(--sp-1) 0 var(--sp-2);
+}
+
+.guide-check__row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  width: 100%;
+  min-height: 32px;
+  padding: 6px var(--sp-3);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-md);
+  text-align: left;
+  cursor: pointer;
+}
+
+.guide-check__row:hover {
+  background: var(--hover);
+}
+
+.guide-check__row:active {
+  background: var(--pressed);
+}
+
+.guide-check__row:focus-visible {
+  outline-offset: -2px;
+}
+
+.guide-check__box {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+  border: 1.5px solid var(--control-border);
+  border-radius: var(--radius-pill);
+}
+
+.guide-check__row.is-done .guide-check__box {
+  border-color: var(--good);
+  background: var(--good-soft);
+  color: var(--good-text);
+}
+
+.guide-check__row.is-current .guide-check__box {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.guide-check__main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.guide-check__row.is-done .guide-check__title {
+  color: var(--text-dim);
+}
+
+.guide-check__row.is-current .guide-check__title {
+  font-weight: var(--fw-semibold);
+}
+
+.guide-check__hint {
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+  line-height: var(--lh);
+}
+
+/* ==========================================================================
+   Chip over the plan
+   ========================================================================== */
+
+/* Above the scale bar (which the canvas draws at the bottom-left) and, while a heatmap is on, above its legend. The tool strip of a
+   narrow screen is outside the stage, so the chip is above it as well. The box spans the stage so the popover can use its width;
+   only the chip and the popover take the pointer. */
+.guide-chip {
+  position: absolute;
+  z-index: var(--z-float);
+  top: var(--sp-2); /* a definite height, so the popover can be capped to the room there is */
+  right: var(--sp-2);
+  bottom: 44px;
+  left: var(--sp-2);
+  display: flex;
+  flex-direction: column-reverse; /* the chip is first in the DOM (Tab order) and lowest on screen; the popover opens above it */
+  align-items: flex-start;
+  gap: var(--sp-2);
+  pointer-events: none;
+}
+
+.guide-chip > * {
+  pointer-events: auto;
+}
+
+.guide-chip.is-lifted {
+  bottom: 98px;
+}
+
+.guide-chip__button {
+  gap: 6px;
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  box-shadow: var(--shadow-2);
+  color: var(--accent-text);
+  font-weight: var(--fw-semibold);
+}
+
+.guide-chip__button--warn {
+  border-color: var(--warn);
+  background: var(--warn-soft);
+  color: var(--warn-text);
+}
+
+.guide-chip__glyph {
+  display: inline-flex;
+}
+
+.guide-chip__caret {
+  transition: transform var(--t-base) var(--ease);
+}
+
+.guide-chip__button[aria-expanded='true'] .guide-chip__caret {
+  transform: rotate(180deg);
+}
+
+.guide-pop {
+  width: min(360px, 100%);
+  max-height: min(440px, calc(100% - 34px - 84px)); /* chip, gap, and the simulation bar at the top */
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  box-shadow: var(--shadow-2);
+}
+
+.guide-pop .guide {
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.guide-pop__note {
+  margin: 0;
+  padding: var(--sp-2) var(--sp-3) var(--sp-3);
+  border-top: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+  line-height: var(--lh);
+}
+
+@media (pointer: coarse) {
+  .guide-check__row {
+    align-items: center;
+    min-height: var(--control-h); /* 40 px on a touch screen */
+  }
+
+  .guide-check__box {
+    margin-top: 0;
+  }
+}
+
+@media (forced-colors: active) {
+  .guide-check__row.is-done .guide-check__box {
+    border-color: Highlight;
+    background: Highlight;
+    color: HighlightText;
+  }
+
+  .guide-chip__button--warn {
+    border-color: CanvasText;
+  }
+}
+
+@media print {
+  .guide-chip,
+  .guide-stack {
+    display: none !important;
+  }
+}
+
+/* Canvas guidance (js/ui/render/jobs.js, js/ui/editor/connector.js): the display options gained the "Jobs" toggle. On a narrow
+   stage the toggles wrap onto a second line instead of running out of the bar. */
+.overlays__group:not(.overlays__group--heat) {
+  flex-wrap: wrap;
+}
+
+/* Walkthrough: a tap on the chip, the cards or the popover must not flash the browser's blue tap rectangle over the control. */
+.guide button,
+.guide select,
+.guide-chip button,
+.guide-pop button {
+  -webkit-tap-highlight-color: transparent;
+}

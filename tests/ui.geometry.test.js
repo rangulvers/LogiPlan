@@ -263,3 +263,25 @@ test('scene: tolerates layouts with missing collections and junk values', () => 
   assert.equal(odd.limit[2 * 4 + 2], 1);
   assert.equal(odd.occ[3 * 4 + 3], OCC_STATION, 'a station overhanging the grid is clipped');
 });
+
+test('shortNameAlternatives: default station names shorten to distinguishable forms', async () => {
+  const { shortNameAlternatives, fitText } = await import('../js/ui/render/geometry.js');
+  assert.deepEqual(shortNameAlternatives('Goods in 1'), ['In 1']);
+  assert.deepEqual(shortNameAlternatives('Goods out 12'), ['Out 12']);
+  assert.deepEqual(shortNameAlternatives('Workstation 2'), ['Work 2', 'WS 2']);
+  assert.deepEqual(shortNameAlternatives('Storage 1'), ['Stor 1', 'St 1']);
+  assert.deepEqual(shortNameAlternatives('Parking 3'), ['Park 3', 'P 3']);
+  assert.deepEqual(shortNameAlternatives('Press line'), [], 'custom names have no shortening');
+  assert.deepEqual(shortNameAlternatives('Goods inbound'), [], 'a word boundary is required');
+  assert.deepEqual(shortNameAlternatives(''), []);
+
+  const measure = (s) => s.length * 6;
+  // too narrow for "Goods in 1" (60 px) but "In 1" (24 px) fits: the number survives, so In/Out stay apart
+  assert.equal(fitText(measure, 'Goods in 1', 40, shortNameAlternatives('Goods in 1')), 'In 1');
+  assert.equal(fitText(measure, 'Goods out 1', 40, shortNameAlternatives('Goods out 1')), 'Out 1');
+  // fits fully: unchanged; alternatives are only a fallback
+  assert.equal(fitText(measure, 'Goods in 1', 80, shortNameAlternatives('Goods in 1')), 'Goods in 1');
+  // nothing fits: still falls back to the ellipsis path
+  assert.equal(fitText(measure, 'Press line', 30, []), 'Pres…');
+  assert.equal(fitText(measure, 'Press line', 30), 'Pres…');
+});

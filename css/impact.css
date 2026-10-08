@@ -1,0 +1,347 @@
+/* Edit feedback (docs/ARCHITECTURE.md 6.4, 6.6): the "Effect of your change" card at the top of the Results tab, the one-line
+ * "Before -> after" hint under the simulation bar and the live status of a fleet card. Built from the kit (tokens, .card, .btn, .chip,
+ * .delta, .badge, .progress, .dot); this file only places and tones them. Loaded after layout.css. */
+
+/* ==========================================================================
+   Effect of your change (js/ui/panels/impact.js)
+   ========================================================================== */
+
+.impact {
+  overflow: clip;
+  border-color: var(--accent-line);
+}
+
+.impact[hidden] {
+  display: none;
+}
+
+.impact__head {
+  align-items: flex-start;
+  background: var(--accent-soft);
+}
+
+.impact__icon {
+  flex: none;
+  margin-top: 2px;
+  color: var(--accent-text);
+}
+
+.impact__titles {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.impact__title {
+  margin: 0;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-tight);
+}
+
+.impact__labels {
+  display: -webkit-box;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  color: var(--text);
+}
+
+.impact__updating {
+  flex: none;
+  margin-top: 1px;
+}
+
+.impact__dismiss {
+  flex: none;
+  margin: -2px -4px -2px 0;
+}
+
+.impact__body {
+  container-type: inline-size;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  padding: var(--sp-1) var(--sp-3) var(--sp-3);
+}
+
+.impact__rows {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.impact__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: var(--sp-1) var(--sp-3);
+  min-height: 36px;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: var(--fs-md);
+}
+
+.impact__row:last-child {
+  border-bottom: 0;
+}
+
+.impact__label {
+  min-width: 0;
+  color: var(--text);
+  line-height: var(--lh-tight);
+}
+
+.impact__vals {
+  display: inline-flex;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: 5px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.impact__before {
+  color: var(--text-dim);
+}
+
+.impact__arrow {
+  color: var(--text-faint);
+}
+
+.impact__after {
+  font-weight: var(--fw-semibold);
+}
+
+.impact__unit {
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+}
+
+.impact__delta {
+  justify-content: center;
+  min-width: 64px;
+  padding: 1px var(--sp-2);
+  border-radius: var(--radius-pill);
+  background: var(--surface-3);
+}
+
+.impact__delta.delta--good {
+  background: var(--good-soft);
+}
+
+.impact__delta.delta--bad {
+  background: var(--bad-soft);
+}
+
+.impact__note {
+  margin: 0;
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: var(--fs-sm);
+  line-height: var(--lh);
+}
+
+.impact__note[hidden] {
+  display: none;
+}
+
+.impact__foot {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.impact__status,
+.impact__windows {
+  margin: 0;
+  font-size: var(--fs-sm);
+  line-height: var(--lh);
+}
+
+.impact__status {
+  color: var(--text);
+  font-weight: var(--fw-medium);
+}
+
+.impact__status[data-state='solid'] {
+  color: var(--good-text);
+}
+
+.impact__windows {
+  color: var(--text-dim);
+}
+
+.impact__actions {
+  flex-wrap: wrap;
+  justify-content: flex-start;
+}
+
+/* A narrow panel (a phone): the figures get a line of their own under the name. */
+@container (max-width: 340px) {
+  .impact__row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas: 'label chip' 'vals vals';
+  }
+
+  .impact__label {
+    grid-area: label;
+  }
+
+  .impact__delta {
+    grid-area: chip;
+  }
+
+  .impact__vals {
+    grid-area: vals;
+    justify-content: flex-start;
+  }
+}
+
+/* ==========================================================================
+   Before -> after hint under the simulation bar
+   ========================================================================== */
+
+.simcol {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--sp-1);
+  min-width: 0;
+  max-width: 100%;
+}
+
+.impact-hint {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  max-width: 100%;
+  min-height: 28px;
+  padding: 0 4px 0 2px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-1);
+  font-size: var(--fs-sm);
+}
+
+.impact-hint[hidden] {
+  display: none;
+}
+
+.impact-hint__main {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  height: 26px;
+  padding: 0 var(--sp-2);
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.impact-hint__main:hover {
+  background: var(--hover);
+}
+
+.impact-hint__main .icon {
+  flex: none;
+  color: var(--accent-text);
+}
+
+.impact-hint__tag {
+  flex: none;
+  color: var(--accent-text);
+  font-weight: var(--fw-semibold);
+}
+
+.impact-hint__text {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-dim);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.impact-hint__close {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+
+.impact-hint__close:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+/* ==========================================================================
+   Live status of a fleet (js/ui/panels/fleet-status.js)
+   ========================================================================== */
+
+.fleet-status {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0 var(--sp-3) var(--sp-3);
+  font-size: var(--fs-sm);
+}
+
+.fleet-status[hidden] {
+  display: none;
+}
+
+.fleet-status__chips,
+.fleet-status__facts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.fleet-status__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.fleet-status__chip.is-zero {
+  color: var(--text-dim);
+}
+
+.fleet-status__facts {
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.fleet-status__facts strong {
+  color: var(--text);
+  font-weight: var(--fw-semibold);
+}
+
+.fleet-status__badge {
+  cursor: help;
+}

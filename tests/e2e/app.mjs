@@ -250,7 +250,7 @@ await withBrowser(async ({ browser, url, errors }) => {
     eq(await page.evaluate(() => ['description', 'theme-color', 'viewport'].map((n) => document.querySelectorAll(`meta[name="${n}"]`).length > 0)), [true, true, true], 'meta tags');
     ok(await page.evaluate(() => document.querySelector('meta[property="og:title"]')?.content.includes('LogiPlan')), 'open graph');
     ok(await page.evaluate(() => document.querySelector('link[rel=icon]')?.getAttribute('href') === 'favicon.svg'), 'favicon, relative');
-    eq(await page.evaluate(() => [...document.querySelectorAll('link[rel=stylesheet]')].map((l) => l.getAttribute('href'))), ['css/tokens.css', 'css/components.css', 'css/layout.css'], 'stylesheets, relative');
+    eq(await page.evaluate(() => [...document.querySelectorAll('link[rel=stylesheet]')].map((l) => l.getAttribute('href'))), ['css/tokens.css', 'css/components.css', 'css/layout.css', 'css/guidance.css', 'css/impact.css'], 'stylesheets, relative');
     eq(await page.evaluate(() => [...document.querySelectorAll('script[src]')].map((l) => l.getAttribute('src'))), ['js/main.js'], 'one module script');
     ok(requests.every((r) => r.startsWith('http://127.0.0.1')), `no external requests: ${requests.filter((r) => !r.startsWith('http://127.0.0.1')).join(', ')}`);
     // the empty plant behind the dialog

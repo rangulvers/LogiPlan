@@ -395,8 +395,9 @@ test('limited is cleared by pause and by a rebuild', async () => {
 // layout changes
 // ---------------------------------------------------------------------------------------------------------
 
-test('a structural change rebuilds the simulation after 250 ms, keeps playing and restarts the clock', async () => {
+test('a structural change rebuilds the simulation after 250 ms, keeps playing and restarts the clock (cold restart: warm restart off)', async () => {
   const h = makeHarness();
+  h.store.setUi({ warmRestart: false }); // the warm restart (pre-rolled replacement) is tested in tests/ui.runner.warm.test.js
   await startPlaying(h);
   h.frames(10);
   const first = h.runner.sim;
@@ -431,8 +432,9 @@ test('further structural edits restart the debounce, and only one rebuild happen
   assert.equal(h.runner.sim.layout.stations.length, 2, 'built from the latest layout');
 });
 
-test('a paused simulation is rebuilt too (fresh at time 0) and stays paused', async () => {
+test('a paused simulation is rebuilt too (fresh at time 0) and stays paused (cold restart: warm restart off)', async () => {
   const h = makeHarness();
+  h.store.setUi({ warmRestart: false });
   await startPlaying(h);
   h.frames(10);
   h.runner.pause();
@@ -1071,6 +1073,7 @@ try {
 
 test('integration: the default engine loader runs a real example; structural edits rebuild, runtime edits apply live', { skip: engineModule === null }, async () => {
   const h = makeHarness({ SimulationClass: null });
+  h.store.setUi({ warmRestart: false }); // cold restarts: the clock goes back to 0 (the warm restart has its own tests)
   h.store.replaceLayout(EXAMPLES[0].build(), { label: 'Load example' });
   h.runner.setSpeed(60);
   h.frame(16);

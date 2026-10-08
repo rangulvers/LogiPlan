@@ -15,6 +15,9 @@ import { plannerName, obstacleName, newStationName } from './tools.js';
 export function createPlaceTool(ed, tool) {
   const isObstacle = tool === 'obstacle';
   let press = null;
+  // The cell of the last placement: while the pointer rests there the ghost stays away. Otherwise the new brick would sit under a red
+  // "blocked" ghost of itself and look as if the placement had failed.
+  let settled = null;
 
   const defaultSize = () => (isObstacle ? { w: 1, h: 1 } : STATION_TYPES[tool].size);
   const noun = () => (isObstacle ? obstacleName(ed.ui().toolOptions.kind) : plannerName(tool));
@@ -41,8 +44,9 @@ export function createPlaceTool(ed, tool) {
   }
 
   /** Create the brick as one undo step, select it and apply the Shift rule. Returns true if something was placed. */
-  function place(rect, shift) {
+  function place(rect, shift, cell) {
     let id = null;
+    settled = cell; // before the commit: the store change refreshes the hover at once
     const ok = ed.commit(`Add ${noun().toLowerCase()}`, (draft) => {
       const item = isObstacle
         ? addObstacle(draft, { ...rect, kind: ed.ui().toolOptions.kind })
@@ -51,6 +55,8 @@ export function createPlaceTool(ed, tool) {
       return id !== null;
     });
     if (ok) ed.setSelection({ kind: isObstacle ? 'obstacle' : 'station', ids: [id] });
+    if (ok && !isObstacle) ed.connector.afterPlace(id); // toast: "Goods in placed. Next: where do its loads go?" + Connect
+    if (!ok) settled = null;
     if (ok && shift) ed.setTool('select');
     return ok;
   }
@@ -58,9 +64,17 @@ export function createPlaceTool(ed, tool) {
   return {
     busy: () => press !== null,
     hover(p) {
+      if (settled && p.cell[0] === settled[0] && p.cell[1] === settled[1]) {
+        ed.view.ghost = null;
+        ed.status(`${noun()} placed. Click elsewhere to place another, or press Esc to stop.`);
+        ed.redraw();
+        return;
+      }
+      settled = null;
       showGhost(p);
     },
     down(p) {
+      settled = null;
       press = { x: p.x, y: p.y, cell: p.cell, sized: false, shift: p.shift };
       showGhost(p);
       return true;
@@ -76,11 +90,12 @@ export function createPlaceTool(ed, tool) {
       const shift = press.shift || p.shift;
       press = null;
       ed.view.ghost = null;
-      if (reason) ed.toast(`Cannot place ${noun()} here: ${reason}.`, { kind: 'warn' });
-      else place(rect, shift);
+      if (reason) ed.toast(`Cannot place ${noun()} here: ${reason}.${isObstacle ? '' : /road/.test(reason) ? ' Put it beside the road, not on it.' : /station/.test(reason) ? ' To select or move a station, choose the Select tool (V).' : ''}`, { kind: 'warn' });
+      else place(rect, shift, p.cell);
     },
     cancel() {
       press = null;
+      settled = null;
       ed.view.ghost = null;
     },
   };

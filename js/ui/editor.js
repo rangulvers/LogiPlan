@@ -19,7 +19,11 @@
 // so the app shell must not bind them again. A shell that wants Space = play/pause can act on the keyup of a Space press
 // when `editor.spacePanned` is false.
 //
-// What the editor owns on `renderer.view`: hover, ghost, paintPreview, flowPreview, marquee and resizeHandles. It also
+// Connecting stations: a selected sender shows a flow handle (view.connectHandle); dragging it, or `editor.startConnect({ fromId })` /
+// `({ toId })` followed by a click, adds a flow ('Connect A → B', one undo step). The state machine is editor/connector.js (editor.connector),
+// the rules are editor/connect.js. Placing a station shows a toast with a 'Connect' action that calls startConnect.
+//
+// What the editor owns on `renderer.view`: hover, ghost, paintPreview, flowPreview, marquee, resizeHandles, connectHandle and connect. It also
 // mirrors selection, tool and overlays from the store into the view and keeps renderer.layout equal to the store's layout,
 // so hit tests are never a frame behind a commit. Rendering is left to the app's runner loop; without a `ctx.runner` the
 // editor draws a frame itself after every change (harnesses, tests).
@@ -30,7 +34,8 @@
 // moves.js, marquee.js, erase.js, keys.js and tools.js is unit-tested in Node (tests/ui.editor.*.test.js).
 //
 // The tool modules talk to the editor through this host surface: layout(), ui(), view, store, camera, renderer, hit(p),
-// commit(), setSelection(), toast(), status(), hoverStatus(), cursor(), redraw(), syncView(), setTool(), editText().
+// commit(), setSelection(), toast(), status(), hoverStatus(), cursor(), redraw(), syncView(), setTool(), editText(), clearTransient(),
+// hint(), startConnect(), connector (the select, flow and place tools call into it).
 // A pointer `p` handed to a tool has: x, y (canvas CSS px), clientX/Y, wx, wy (world metres), ux, uy (fractional cells),
 // cx, cy (cell under the pointer, possibly outside the grid), cell and path (grid-clamped cell / cells visited since the
 // last event), shift, alt, type ('mouse' | 'pen' | 'touch').
@@ -46,6 +51,7 @@ import { createSelectTool } from './editor/select.js';
 import { createFlowTool } from './editor/flow.js';
 import { createLabelTool, openTextBox } from './editor/label.js';
 import { createPanTool } from './editor/pan.js';
+import { createConnector } from './editor/connector.js';
 import { deleteSelection, nudgeSelection, duplicateSelection, selectAllStations } from './editor/commands.js';
 
 const DOUBLE_CLICK_MS = 400;
@@ -89,6 +95,7 @@ export class Editor {
     this.textBox = null;
     this.tools = new Map();
     this.panTool = createPanTool(this);
+    this.connector = createConnector(this); // flow handle, connect mode, valid-target highlighting (editor/connector.js)
     this.off = [];
     const initial = store.getState().ui.tool;
     this.tool = TOOL_NAMES.includes(initial) ? initial : 'select';
@@ -155,8 +162,17 @@ export class Editor {
     else this.store.clearSelection();
   }
 
+  /** Show a toast through the app. Returns the app's handle ({ close() }) or null when there is no toast function. */
   toast(message, opts) {
-    if (this.ctx.toast) this.ctx.toast(message, opts);
+    return this.ctx.toast ? this.ctx.toast(message, opts) || null : null;
+  }
+
+  /**
+   * Public: start connecting from a station. `{ fromId }` asks where its loads go (click the receiving station), `{ toId }` what
+   * feeds it (click the sending station). Switches to Select; Esc cancels; the flow is one undo step. False when it cannot start.
+   */
+  startConnect(opts) {
+    return this.connector.startConnect(opts);
   }
 
   status(text) {
@@ -241,6 +257,7 @@ export class Editor {
   applyTool(name) {
     if (name === this.tool) return;
     this.cancelGesture();
+    this.connector.cancel();
     this.closeTextBox();
     this.tool = name;
     this.clearTransient();
@@ -258,8 +275,13 @@ export class Editor {
     return true;
   }
 
+  /** The tool that gets the pointer: connect mode (editor.startConnect) takes over from whatever tool is active. */
+  get pointerTool() {
+    return this.connector.handler || this.currentTool;
+  }
+
   hint() {
-    return toolHint(this.tool, { ...this.ui().toolOptions, pending: this.currentTool.busy() });
+    return this.connector.hint() || toolHint(this.tool, { ...this.ui().toolOptions, pending: this.currentTool.busy() });
   }
 
   // ---- view state ----
@@ -271,6 +293,7 @@ export class Editor {
     view.paintPreview = null;
     view.flowPreview = null;
     view.marquee = null;
+    view.connect = null;
   }
 
   /** Mirror the store into renderer.view and renderer.layout. */
@@ -281,7 +304,9 @@ export class Editor {
     view.selection = ui.selection;
     view.tool = this.tool;
     view.overlays = ui.overlays;
-    view.resizeHandles = this.tool === 'select' && !this.active && isResizableSelection(ui.selection);
+    view.resizeHandles = this.tool === 'select' && !this.active && !this.connector.mode && isResizableSelection(ui.selection);
+    this.connector.sync();
+    view.connectHandle = this.connector.handleView();
   }
 
   updateCursor() {
@@ -292,7 +317,10 @@ export class Editor {
   onStore(state, info) {
     if (this.destroyed) return;
     if (state.ui.tool !== this.tool && TOOL_NAMES.includes(state.ui.tool)) this.applyTool(state.ui.tool);
-    if (REPLACING_EVENTS.has(info.type)) this.cancelGesture();
+    if (REPLACING_EVENTS.has(info.type)) {
+      this.cancelGesture();
+      this.connector.cancel();
+    }
     this.syncView();
     if (!this.active) this.refreshHover();
     this.redraw();
@@ -345,7 +373,7 @@ export class Editor {
 
   /** The handler a new press goes to: panning for the middle button, Space or the pan tool, else the current tool. */
   handlerFor(e) {
-    return e.button === 1 || this.space || this.tool === 'pan' ? this.panTool : this.currentTool;
+    return e.button === 1 || this.space || this.tool === 'pan' ? this.panTool : this.pointerTool;
   }
 
   onPointerDown(e) {
@@ -430,6 +458,7 @@ export class Editor {
     const view = this.view;
     view.hover = null;
     view.ghost = null;
+    this.connector.pointerLeft();
     this.status('');
     this.redraw();
   }
@@ -453,8 +482,9 @@ export class Editor {
   hover(p) {
     this.view.hover = null;
     this.cursor(this.space ? 'grab' : toolCursor(this.tool));
+    const tool = this.pointerTool;
     if (this.space) this.hoverStatus(p, 'Drag to pan the view.');
-    else if (this.currentTool.hover) this.currentTool.hover(p);
+    else if (tool.hover) tool.hover(p);
     this.redraw();
   }
 
@@ -486,6 +516,7 @@ export class Editor {
   cancel() {
     this.closeTextBox();
     this.cancelGesture();
+    this.connector.cancel();
     this.clearTransient();
   }
 
@@ -629,8 +660,13 @@ export class Editor {
     }
   }
 
-  /** Esc: cancel the gesture, else leave the tool, else clear the selection. */
+  /** Esc: cancel connecting or the gesture, else leave the tool, else clear the selection. */
   escape() {
+    if (this.connector.mode) {
+      this.cancelGesture();
+      this.connector.cancel();
+      return true;
+    }
     if (this.active || this.currentTool.busy()) {
       this.cancelGesture();
       return true;
@@ -648,9 +684,11 @@ export class Editor {
   destroy() {
     if (this.destroyed) return;
     this.cancelGesture();
+    this.connector.destroy();
     this.closeTextBox();
     this.clearTransient();
     this.view.resizeHandles = false;
+    this.view.connectHandle = null;
     this.destroyed = true;
     for (const off of this.off.splice(0)) off();
     Object.assign(this.canvas.style, this.saved);

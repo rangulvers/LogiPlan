@@ -25,6 +25,13 @@
 //    lose unsaved work. fitView({ animate }) takes an optional argument; a view that is still the latest whole-plant fit follows
 //    the size of the stage, a view the planner moved does not.
 //  * index.html has no dialog root: dialogs.js appends its own backdrop to <body>.
+//  * Space plays and pauses unless the planner is typing or has put the keyboard focus on a control (Tab). A button, tab or select
+//    the mouse just clicked does not count: Space then plays, instead of pressing that control a second time.
+//  * The plan shows a focus frame only after Tab moved the focus there (data-tabbed), not after a shortcut key or when a dialog
+//    hands the keyboard back to the plan (which it does after loading a plant).
+//  * On compact screens (narrow, or a phone held sideways) the display options sit behind a "Display" button and the plan is fitted
+//    into the part of the stage the floating controls leave free.
+//  * The plant name is one name: the project name of the top bar. The Properties tab edits it, the file, window and report use it.
 
 import { h } from '../util/dom.js';
 import { clamp, formatClock } from '../util/format.js';
@@ -50,6 +57,8 @@ import { createFleetPanel } from './panels/fleet.js';
 import { createFlowsPanel } from './panels/flows.js';
 import { createSimulatePanel } from './panels/simulate.js';
 import { createChecksPanel } from './panels/checks.js';
+import { createGuideChip } from './panels/nextsteps.js';
+import { createImpactHint } from './panels/impact.js';
 import { createDashboard } from './dashboard.js';
 import { createCompare } from './compare.js';
 
@@ -82,6 +91,7 @@ const OVERLAY_FLAGS = Object.freeze([
   ['studs', 'Studs', 'Show the studs of the baseplate'],
   ['flows', 'Flows', 'Show the material flows between stations'],
   ['docks', 'Docks', 'Mark the road cells where vehicles load and unload'],
+  ['jobs', 'Jobs', 'While the simulation runs: show where each vehicle is heading and where loads wait for pickup'],
   ['labels', 'Labels', 'Show station names and text labels'],
   ['ids', 'Vehicle IDs', 'Write a number on every vehicle'],
 ]);
@@ -103,6 +113,8 @@ const SIDE_MIN = 300;
 const SIDE_MAX = 720;
 const SIDE_KEY_STEP = 16;
 const NARROW_QUERY = '(max-width: 899.98px)';
+/** Screens where the floating controls sit over the plan: a narrow one (the panel is a drawer) or a short one (a phone held sideways). */
+const COMPACT_QUERY = '(max-width: 899.98px), (max-height: 520px)';
 
 const FIT_PADDING = 56;
 const FIT_PADDING_MIN = 16;
@@ -185,7 +197,8 @@ function unionOf(boxes) {
 }
 
 /** The run state chip: Ready (never started), Warming up, Running or Paused. */
-export function runChip({ playing, time, warmup, started }) {
+export function runChip({ playing, time, warmup, started, priming = false }) {
+  if (priming) return { key: 'warming', label: 'Updating…' }; // an edit: the new plant is pre-rolled behind the one on screen
   if (playing) return time < warmup ? { key: 'warming', label: 'Warming up' } : { key: 'running', label: 'Running' };
   return started && time > 0 ? { key: 'paused', label: 'Paused' } : { key: 'ready', label: 'Ready' };
 }
@@ -493,7 +506,7 @@ function createAnalysis(store, onSettled) {
 // Camera control: fit, zoom, glide to a target
 // ---------------------------------------------------------------------------------------------------------
 
-function createCameraControl({ camera, canvas, store }) {
+function createCameraControl({ camera, canvas, store, coveredAtTop }) {
   let frame = 0;
   let pendingFit = false;
   let lastFit = null; // the view of the latest fit: while the camera still shows it, a resized stage re-fits
@@ -535,7 +548,9 @@ function createCameraControl({ camera, canvas, store }) {
     if (!(w > 0 && hgt > 0)) { pendingFit = true; return; }
     pendingFit = false;
     const margin = clamp(Math.round(Math.min(w, hgt) * FIT_MARGIN_SHARE), FIT_PADDING_MIN, FIT_PADDING); // less on a phone
-    const target = camera.clone().fit(store.getState().layout, w, hgt, margin);
+    const top = Math.min(coveredAtTop(), hgt / 2); // the plan goes into the free part below the floating controls
+    const target = camera.clone().fit(store.getState().layout, w, hgt - top, margin);
+    target.y -= top / 2 / target.zoom; // fitted into the free part, whose centre lies top / 2 below the centre of the canvas
     camera.setViewport(w, hgt);
     lastFit = { x: target.x, y: target.y, zoom: target.zoom };
     if (animate) glide(target); else jump(target);
@@ -713,7 +728,7 @@ function createSimBar({ runner, store }) {
     });
     changed(cache, 'speed', runner.speed, (s) => { if (document.activeElement !== speed) speed.value = String(s); });
     changed(cache, 'clock', formatClock(runner.time), (t) => { clock.textContent = t; });
-    const run = runChip({ playing: runner.playing, time: runner.time, warmup, started: Boolean(runner.sim) });
+    const run = runChip({ playing: runner.playing, time: runner.time, warmup, started: Boolean(runner.sim), priming: runner.priming });
     changed(cache, 'chip', run.key, (key) => { chip.className = CHIP_CLASS[key]; });
     changed(cache, 'chipText', run.label, (t) => { chip.textContent = t; });
     changed(cache, 'limited', runner.limited && runner.playing, (on) => { limited.hidden = !on; });
@@ -732,19 +747,26 @@ function createOverlayBar(store) {
     class: 'segmented__item', type: 'button', title, dataset: { heat: mode }, 'aria-pressed': 'false',
     onclick: () => store.setUi({ overlays: { heat: mode } }),
   }, text));
-  const el = h('div', { class: 'toolbar toolbar--panel stagebar overlays', role: 'toolbar', 'aria-label': 'Plan display options' },
+  // On a phone the nine display buttons would cover a third of the plan: there they sit behind one "Display" button (CSS shows
+  // the toggle and hides the body of a closed bar only on compact screens; on a desktop screen the bar is always open).
+  const body = h('div', { class: 'overlays__body', id: 'overlays-body' },
     h('div', { class: 'overlays__group' }, flagButtons),
     h('div', { class: 'overlays__group overlays__group--heat' },
       h('span', { class: 'overlays__label', id: 'heat-label' }, 'Heatmap'),
       h('div', { class: 'segmented segmented--sm', role: 'group', 'aria-labelledby': 'heat-label' }, heatButtons)));
-  enableRoving(el, 'button');
+  const toggle = h('button', {
+    class: 'btn btn--sm overlays__toggle', type: 'button', 'aria-controls': 'overlays-body', 'aria-expanded': 'false', title: 'Show or hide the display options of the plan',
+    onclick: () => { const open = el.dataset.open !== 'true'; el.dataset.open = String(open); toggle.setAttribute('aria-expanded', String(open)); },
+  }, icon('layers', { size: 16 }), 'Display');
+  const el = h('div', { class: 'toolbar toolbar--panel stagebar overlays', role: 'toolbar', 'aria-label': 'Plan display options', dataset: { open: 'false' } }, toggle, body);
+  enableRoving(body, 'button');
   return {
     el,
     update(state) {
       const { overlays } = state.ui;
       for (const b of flagButtons) b.setAttribute('aria-pressed', String(Boolean(overlays[b.dataset.overlay])));
       for (const b of heatButtons) b.setAttribute('aria-pressed', String(b.dataset.heat === overlays.heat));
-      setRoving(el, 'button', flagButtons[0]);
+      setRoving(body, 'button', flagButtons[0]);
     },
   };
 }
@@ -1281,6 +1303,12 @@ function createActions(ctx, parts) {
       parts.drawer.close(false);
     },
     setTool: (name) => parts.editor.setTool(name),
+    /** Start connecting on the plan: { fromId } asks where a station's loads go, { toId } what feeds it (editor.startConnect). */
+    startConnect(opts) {
+      const started = parts.editor.startConnect(opts);
+      if (started) parts.drawer.close(false); // on a narrow screen the panel must not cover the plan
+      return started;
+    },
     setRightTab(name) {
       if (!RIGHT_TABS.some((tab) => tab.id === name)) return;
       store.setUi({ rightTab: name });
@@ -1324,7 +1352,9 @@ function createCore(region, signal) {
   const renderer = new Renderer(canvas, { camera, theme: 'auto' });
   const runner = createRunner({ store, renderer });
   const status = createStatusLine({ textEl: region['status-text'], metaEl: region['status-meta'], store });
-  const parts = { cameraControl: createCameraControl({ camera, canvas, store }), editor: null, host: null, refresh: () => {} };
+  const compact = globalThis.matchMedia(COMPACT_QUERY);
+  const coveredAtTop = () => (compact.matches ? Math.max(0, region.floating.getBoundingClientRect().bottom - canvas.getBoundingClientRect().top) : 0);
+  const parts = { cameraControl: createCameraControl({ camera, canvas, store, coveredAtTop }), editor: null, host: null, refresh: () => {} };
   const analysis = createAnalysis(store, () => parts.refresh());
   const drawerClose = iconButton('close', 'Close the details panel', { className: 'btn--ghost side__close', tip: 'Close' });
   region.tabbar.append(drawerClose);
@@ -1348,10 +1378,13 @@ function createChrome(region, core, signal) {
   const simBar = createSimBar({ runner, store });
   const overlayBar = createOverlayBar(store);
   const emptyHint = createEmptyHint(region.empty, ctx);
+  const guideChip = createGuideChip(ctx); // "2 steps to finish" over the plan, bottom-left
+  region.stage.append(guideChip.el);
   const topBar = createTopBar(region.topbar, { ctx, store, drawer, themeControl });
   const host = createPanelHost({ ctx, tabbar: region.tabbar, body: region.panels, onSelect: (id) => { store.setUi({ rightTab: id }); } });
   parts.host = host;
-  region.floating.append(simBar.el, overlayBar.el);
+  const impactHint = createImpactHint(ctx); // "Before → after" under the simulation bar while an edit is being compared
+  region.floating.append(h('div', { class: 'simcol' }, simBar.el, impactHint.el), overlayBar.el);
   region.zoom.append(createZoomBar({ zoomBy: cameraControl.zoomBy, fit: cameraControl.fit }));
   createPanelResizer({ handle: region.resize, app: region.app, signal });
   installShortcuts({ ctx, editor, drawer, signal });
@@ -1367,7 +1400,7 @@ function createChrome(region, core, signal) {
     update(state) {
       analysis.whileUpdating(() => {
         try {
-          for (const part of [palette, toolOptions, overlayBar, emptyHint, topBar, status]) part.update(state);
+          for (const part of [palette, toolOptions, overlayBar, emptyHint, topBar, status, guideChip, impactHint]) part.update(state);
           simBar.sync();
           updateBadge();
         } catch (err) {
@@ -1405,11 +1438,30 @@ function startUpdateLoop(core, chrome) {
     if (info.type === 'load') parts.cameraControl.fit();
     refresh();
   });
+  // A change of the plant itself (a station moved, a road drawn) replaces the simulation. A warm restart (the runner pre-rolls the new
+  // plant behind the old one) says what changed and where to see the effect; a cold one (warm restart switched off) and the Reset
+  // button say that the plant starts empty at 0:00 - the planner must be told why the clock jumped back. Edits that follow each
+  // other merge into one message when the text is the same.
+  let clockBeforeRebuild = 0;
   const offRunner = [
     runner.on('state', () => { chrome.simBar.sync(); refresh(); }),
-    runner.on('frame', () => chrome.simBar.sync()),
+    runner.on('frame', ({ time }) => { clockBeforeRebuild = time; chrome.simBar.sync(); }),
     runner.on('kpis', refresh),
-    runner.on('rebuild', refresh),
+    runner.on('rebuild', ({ reason, sim, warm, label, baseline }) => {
+      if (sim && warm) {
+        const what = label ? `Plant changed: ${label}. ` : 'Plant changed. ';
+        if (baseline) ctx.toast(`${what}Updated simulation is warmed up – see Results for the effect.`, { action: { label: 'See effect', onClick: () => ctx.actions.setRightTab('results') } });
+        else ctx.toast(`${what}Updated simulation is warmed up.`);
+      } else if (sim && reason === 'reset') {
+        ctx.toast('Simulation reset to an empty plant at 0:00.');
+      } else if (sim && reason === 'structural' && sim.time < clockBeforeRebuild) {
+        ctx.toast(`${label ? `Plant changed: ${label}. ` : ''}Simulation reset to an empty plant at 0:00.`);
+      }
+      clockBeforeRebuild = 0;
+      refresh();
+    }),
+    runner.on('baseline', refresh),
+    runner.on('priming', refresh), // the impact card says "Updating…" while the replacement is being pre-rolled
     runner.on('error', ({ error, phase }) => {
       reportOnce(`simulation (${phase})`, error);
       ctx.toast(`The simulation stopped because of an error (${error.message}). Your plant is not changed.`, { kind: 'error' });
@@ -1434,7 +1486,9 @@ export function createApp(root) {
   trackTabbing(root, signal);
   const loop = startUpdateLoop(core, chrome);
 
-  const resizeObserver = new ResizeObserver(() => { ctx.renderer.resize(); parts.cameraControl.resized(); });
+  // Resizing a canvas clears it, and the browser paints right after this callback: without an immediate redraw every step of a
+  // window or panel resize would flash a blank plan for one frame.
+  const resizeObserver = new ResizeObserver(() => { ctx.renderer.resize(); parts.cameraControl.resized(); ctx.renderer.render(1); });
   resizeObserver.observe(region.stage);
   installLifecycle(ctx.store, signal);
   themeControl.apply(ctx.store.getState().ui.theme);

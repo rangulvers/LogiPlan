@@ -407,8 +407,13 @@ export function layoutPicture(ctx, { scale = 1, theme } = {}) {
   }
 }
 
+/** The picture in the report is at most this many pixels wide or high: a 320 m plant at 20 px/m would add a 16 MB picture to the file. */
+const REPORT_PICTURE_MAX_PX = 2400;
+const PIXELS_PER_METRE_AT_SCALE_1 = 20; // renderer.toDataURL
+
 function pictureSection(ctx, layout) {
-  const url = layoutPicture(ctx, { scale: 1, theme: 'light' });
+  const longestSide = Math.max(layout.grid.cols, layout.grid.rows) * layout.grid.cellSize * PIXELS_PER_METRE_AT_SCALE_1;
+  const url = layoutPicture(ctx, { scale: Math.min(1, REPORT_PICTURE_MAX_PX / longestSide), theme: 'light' });
   if (!pngBytes(url)) return null;
   const { ui } = ctx.store.getState();
   const heat = ui?.overlays?.heat;

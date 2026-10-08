@@ -14,7 +14,8 @@ import { icon } from '../icons.js';
 import { DISPATCH_STRATEGIES, ROUTING_MODES } from '../../model/defaults.js';
 import { updateSettings } from '../../model/layout.js';
 import { round, formatDuration } from '../../util/format.js';
-import { numberField, selectField, rangeField, segmentedField, section } from './fields.js';
+import { numberField, selectField, rangeField, segmentedField, switchField, section } from './fields.js';
+import { primeSeconds } from '../runner.js';
 
 /** The three what-if factors: settings key, label, slider range, wording (`short` continues a sentence, `hint` explains the factor). */
 export const FACTORS = Object.freeze([
@@ -64,6 +65,9 @@ function diceIcon(size = 14) {
 }
 
 const hintLine = (text) => h('p', { class: 'field__hint' }, text);
+
+/** The sentence under the "keep results warm" switch: how long the silent run before the swap is for this warm-up. */
+const warmHint = (warmup) => `After you change the plant, the updated simulation first runs silently for ${formatDuration(primeSeconds(warmup))}, so Results show numbers at once instead of starting from an empty plant.`;
 
 /** Select with a line under it that explains the chosen option. `options`: [{ value, label, description }]. */
 function describedSelect({ label, options, value, onChange }) {
@@ -131,6 +135,13 @@ export function createSimulatePanel(ctx) {
   const warmup = numberField({ label: 'Warm-up', unit: 'min', min: 0, max: 10080, value: start.warmup / 60, onChange: (v) => setting('warm-up time', { warmup: Math.round(v * 60) }, 'settings:warmup') });
   const measured = hintLine('');
 
+  // ---- after an edit (a view preference, not part of the plant: it is not undoable and not saved in the project)
+  const warm = switchField({
+    label: 'Keep results warm after edits', checked: store.getState().ui.warmRestart !== false,
+    hint: warmHint(start.warmup),
+    onChange: (on) => store.setUi({ warmRestart: on }),
+  });
+
   const el = h('div', { class: 'stack', style: { '--gap': '0' }, 'data-panel': 'simulate' },
     h('div', { class: 'stack', style: { padding: '12px', '--gap': '8px' } },
       h('span', { class: 'eyebrow' }, 'What-if'),
@@ -144,7 +155,8 @@ export function createSimulatePanel(ctx) {
       hintLine('The same plant with the same seed always gives the same result. Try other seeds to see how much chance matters.')).el,
     section({ title: 'Experiment length' },
       h('div', { class: 'field-grid' }, duration.el, warmup.el), measured,
-      hintLine('Used by experiments and reports. Changing the warm-up restarts the running simulation.')).el);
+      hintLine('Used by experiments and reports. Changing the warm-up restarts the running simulation.')).el,
+    section({ title: 'After you edit the plant' }, warm.el).el);
 
   function update(state) {
     const s = state.layout.settings;
@@ -165,6 +177,10 @@ export function createSimulatePanel(ctx) {
     const result = measuredWindow(s.warmup, s.duration);
     measured.textContent = result.text;
     measured.style.color = result.warn ? 'var(--warn-text)' : '';
+    if (document.activeElement !== warm.input) warm.set(state.ui.warmRestart !== false);
+    const hint = warmHint(s.warmup);
+    const hintEl = warm.el.querySelector('.field__hint');
+    if (hintEl.textContent !== hint) hintEl.textContent = hint;
   }
 
   update(store.getState());

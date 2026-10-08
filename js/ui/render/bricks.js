@@ -12,7 +12,7 @@
 
 import { STATION_TYPES } from '../../model/defaults.js';
 import { STATUS_COLORS, STATUS_INK } from '../theme.js';
-import { fitText } from './geometry.js';
+import { fitText, shortNameAlternatives } from './geometry.js';
 import { TAU, roundRectPath, fontOf, measure, fillPill } from './draw.js';
 import { drawStationIcon, drawStatusMark, drawBolt, drawBox } from './glyphs.js';
 import { drawVehicleIcon } from './vehicles.js';
@@ -188,7 +188,8 @@ export function planContent(ctx, fr, g, type, st, rt) {
   const pad = clamp(g.cell * 0.1, 3, 9);
   const fpx = clamp(g.cell * 0.27, 10, 19);
   const innerW = g.w - 2 * pad;
-  const name = st ? st.name : (STATION_TYPES[type] || STATION_TYPES.process).short;
+  // a placement ghost has no station yet: it carries the planner's word ("Goods in"), as the toolbar does, not the model's ("Source")
+  const name = st ? st.name : (STATION_TYPES[type] || STATION_TYPES.process).label.replace(/\s*\(.*\)$/, '');
   const dot = planDot(g, rt, pad);
   const badge = planBadge(ctx, fr, g, type, rt, dot, innerW);
   const reserve = (dot ? dot.d + ROW_GAP : 0) + (badge ? badge.w + ROW_GAP : 0);
@@ -299,7 +300,7 @@ function fitName(ctx, st, name, avail, slot) {
   let c = st ? fitCache.get(st) : null;
   if (c && (c.font !== ctx.font || c.name !== name)) c = null;
   if (c && c.keys[slot] === key) return c.texts[slot];
-  const text = fitText((s) => measure(ctx, s), name, avail);
+  const text = fitText((s) => measure(ctx, s), name, avail, shortNameAlternatives(name));
   if (st) {
     if (!c) {
       c = { font: ctx.font, name, keys: [-1, -1], texts: ['', ''] };

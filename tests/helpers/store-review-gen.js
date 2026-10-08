@@ -542,6 +542,7 @@ export function makeRunnerRig({ knobs: initialKnobs = {}, SimulationClass, runne
     scheduled.delete(h);
   };
   const store = createStore({ storage: undefined, onError: () => {} });
+  store.setUi({ warmRestart: false }); // these runner tests describe the cold restart; the warm one is tested in tests/ui.runner.warm.test.js
   const renderer = {
     sim: null,
     layout: null,

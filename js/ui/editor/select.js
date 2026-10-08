@@ -6,6 +6,7 @@
 // What a press on a thing does:
 //   station / obstacle / label   select it (Shift toggles); dragging moves the whole selection of that kind
 //   resize handle                resize the single selected station or obstacle
+//   flow handle                  drag to another station to connect them with a flow; a click starts connect mode (connector.js)
 //   flow curve / vehicle         click selects the flow / the vehicle's fleet; dragging draws a marquee
 //   road cell or empty space     click selects the road cell (or clears the selection); dragging draws a marquee
 
@@ -16,6 +17,7 @@ import { checkMove, applyMove, isMovable, itemsText, selectionBounds, selectedIt
 import { rectFromPoints, marqueeHits, pickMarquee, addToSelection, toggleInSelection, isSelected } from './marquee.js';
 import { blockReason, sizeText, dragThreshold } from './snapping.js';
 import { plannerName, obstacleName, HANDLE_CURSORS } from './tools.js';
+import { HANDLE_HINT } from './connect.js';
 
 const NONE = Object.freeze({ kind: null, ids: Object.freeze([]) });
 
@@ -110,6 +112,14 @@ export function createSelectTool(ed) {
     const sim = ed.renderer.sim;
     const vehicle = sim && sim.vehicles && sim.vehicles.find((v) => v.id === vehicleId);
     return vehicle && vehicle.fleetId ? vehicle.fleetId : String(vehicleId).split('#')[0];
+  }
+
+  /** The flow handle of the selected station: a drag connects, a click starts connect mode. */
+  function armConnect(hit) {
+    g.arm = 'connect';
+    g.fromId = hit.id;
+    g.onClick = () => ed.startConnect({ fromId: hit.id });
+    ed.connector.press(hit.id);
   }
 
   function armArea(p, hit) {
@@ -240,6 +250,7 @@ export function createSelectTool(ed) {
   function clearTransient() {
     ed.view.ghost = null;
     ed.view.marquee = null;
+    ed.connector.endDrag();
   }
 
   return {
@@ -247,7 +258,8 @@ export function createSelectTool(ed) {
     down(p) {
       const hit = ed.hit(p);
       g = { mode: 'press', p0: p, arm: null, onClick: null };
-      if (isHandle(hit.handle) && isResizable(selection())) armResize(p, hit);
+      if (hit.kind === 'connect-handle') armConnect(hit);
+      else if (isHandle(hit.handle) && isResizable(selection())) armResize(p, hit);
       else if (MOVABLE_KINDS.includes(hit.kind)) armMove(p, hit);
       else if (hit.kind === 'flow' || hit.kind === 'vehicle') armPick(p, hit);
       else armArea(p, hit);
@@ -260,12 +272,14 @@ export function createSelectTool(ed) {
       if (g.mode === 'move') updateMove(p);
       else if (g.mode === 'resize') updateResize(p);
       else if (g.mode === 'marquee') updateMarquee(p);
+      else if (g.mode === 'connect') ed.connector.dragMove(g.fromId, p);
     },
     up(p) {
       if (g.mode === 'press') g.onClick?.();
       else if (g.mode === 'move') finishMove(p);
       else if (g.mode === 'resize') finishResize(p);
       else if (g.mode === 'marquee') finishMarquee(p);
+      else if (g.mode === 'connect') ed.connector.dragDrop(g.fromId, p);
       g = null;
       clearTransient();
     },
@@ -276,6 +290,14 @@ export function createSelectTool(ed) {
     hover(p) {
       const layout = ed.layout();
       const hit = ed.hit(p);
+      const onHandle = hit.kind === 'connect-handle';
+      ed.connector.hoverHandle(onHandle);
+      if (onHandle) {
+        ed.view.hover = null;
+        ed.cursor('crosshair');
+        ed.hoverStatus(p, HANDLE_HINT);
+        return;
+      }
       ed.view.hover = hoverOf(layout, hit);
       if (isHandle(hit.handle) && isResizable(selection())) ed.cursor(HANDLE_CURSORS[hit.handle]);
       else if (hit.handle === 'move') ed.cursor('move');

@@ -174,7 +174,7 @@ test('backlog counts loads that are ready now, not loads still in dwell', () => 
   assert.equal(sim.stats.report().flows.f1.backlog, 2);
 });
 
-test('the report has exactly the fields of docs/ARCHITECTURE.md 5.4 (plus traffic.brokenWait, flows[].avgBacklog, fleets[].unplaced)', () => {
+test('the report has exactly the fields of docs/ARCHITECTURE.md 5.4 (plus traffic.brokenWait, flows[].avgBacklog, fleets[].unplaced, fleets[].vehicleTrips)', () => {
   const sim = lineSim({ fleets: [{ count: 1, battery: { enabled: true } }] });
   sim.veh('v1#1').state = 'toPickup';
   sim.complete('D', 90);
@@ -195,7 +195,7 @@ test('the report has exactly the fields of docs/ARCHITECTURE.md 5.4 (plus traffi
   ]);
   assert.deepEqual(keys(r.fleets.v1), [
     'avgPickupWait', 'avgTransit', 'count', 'distance', 'distancePerVehicle', 'emptyShare', 'minBattery', 'name', 'shares', 'trips',
-    'tripsPerVehicleHour', 'unplaced', 'utilization',
+    'tripsPerVehicleHour', 'unplaced', 'utilization', 'vehicleTrips',
   ]);
   assert.deepEqual(keys(r.fleets.v1.shares), ['broken', 'charging', 'driving', 'idle', 'loading', 'parked', 'unloading', 'waiting']);
   assert.deepEqual(keys(r.flows.f1), ['avgBacklog', 'avgPickupWait', 'avgTransit', 'backlog', 'delivered', 'from', 'to', 'trips']);

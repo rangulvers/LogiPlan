@@ -113,7 +113,7 @@ test('a new store holds one valid empty scenario "A" and nothing to undo', () =>
   assert.deepEqual(s.lastCommit, { label: '', kind: 'none' });
   assert.deepEqual(s.ui.selection, { kind: null, ids: [] });
   assert.equal(s.ui.theme, 'auto');
-  assert.deepEqual(s.ui.overlays, { grid: true, studs: true, flows: true, docks: false, heat: 'off', ids: false, labels: true });
+  assert.deepEqual(s.ui.overlays, { grid: true, studs: true, flows: true, docks: false, jobs: true, heat: 'off', ids: false, labels: true });
 });
 
 test('state objects are frozen so identity-based change detection can be trusted', () => {
@@ -693,7 +693,7 @@ test('a layout commit leaves ui parts untouched and other scenarios identical', 
 test('setUi merges overlays per flag and validates heat, theme and flags', () => {
   const { store } = makeStore();
   store.setUi({ overlays: { grid: false, heat: 'traffic', docks: 'yes', nonsense: true } });
-  assert.deepEqual(store.getState().ui.overlays, { grid: false, studs: true, flows: true, docks: false, heat: 'traffic', ids: false, labels: true });
+  assert.deepEqual(store.getState().ui.overlays, { grid: false, studs: true, flows: true, docks: false, jobs: true, heat: 'traffic', ids: false, labels: true });
   store.setUi({ overlays: { heat: 'lava' }, theme: 'neon', followSim: 'maybe', tool: '', rightTab: 42 });
   const ui = store.getState().ui;
   assert.equal(ui.overlays.heat, 'traffic');
@@ -1303,13 +1303,13 @@ test('persist and restore round-trip: scenarios, active scenario, names, ui pref
   assert.deepEqual(L.checkInvariants(b.layout), []);
 });
 
-test('only theme, overlays and rightTab are saved as ui preferences, next to a normal project export', () => {
+test('only theme, overlays, rightTab and warmRestart are saved as ui preferences, next to a normal project export', () => {
   const { store, storage } = makeStore();
   store.setUi({ tool: 'oneway', theme: 'light' });
   store.select('cell', ['1,1']);
   store.persist();
   const saved = JSON.parse(storage.data.get('logiplan:v1'));
-  assert.deepEqual(Object.keys(saved.session.ui).sort(), ['overlays', 'rightTab', 'theme']);
+  assert.deepEqual(Object.keys(saved.session.ui).sort(), ['overlays', 'rightTab', 'theme', 'warmRestart']);
   assert.equal(saved.session.dirty, false);
   assert.equal(saved.app, 'logiplan');
   assert.equal(JSON.parse(exportProject(store.getState().project)).scenarios.length, saved.scenarios.length);

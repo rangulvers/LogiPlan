@@ -38,6 +38,7 @@ import {
 import { createLineChart, createSparkline, STATE_LABELS } from './charts.js';
 import { icon } from './icons.js';
 import { emptyState, kvList, segmentedField, SEVERITY, uid } from './panels/fields.js';
+import { createImpactCard } from './panels/impact.js';
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Constants
@@ -430,6 +431,7 @@ const KPI_DEFS = Object.freeze([
 ]);
 
 const PLAY_HINT = 'Throughput, lead times, vehicle use and bottlenecks appear here while the simulation runs.';
+const MEASURED_TITLE = 'The figures below cover the time since the warm-up ended.';
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Scoped styles: only what the kit has no class for, tokens only (see the header comment).
@@ -619,7 +621,7 @@ function buildStatus() {
   let iconEl = icon('info', { size: 14 });
   const chip = h('span', { class: 'chip' }, iconEl, label);
   const clock = h('strong');
-  const measured = h('span', { title: 'The figures below cover the time since the warm-up ended.' });
+  const measured = h('span', { title: MEASURED_TITLE });
   const el = h('div', { class: 'dash__status', role: 'group', 'aria-label': 'Simulation status' },
     chip,
     h('span', { class: 'dash__meta', title: 'Simulated time' }, icon('clock', { size: 14 }), clock),
@@ -637,6 +639,7 @@ function buildStatus() {
       setText(label, status.label);
       setText(clock, status.clock);
       setText(measured, status.windowText);
+      setAttr(measured, 'title', status.windowTitle || MEASURED_TITLE);
     },
   };
 }
@@ -1150,13 +1153,14 @@ export function createDashboard(ctx) {
     buildStations(ctx, sections.stations);
     buildFlows(sections.flows);
     buildTraffic(ctx, sections.traffic);
-    const el = h('div', { class: 'stack', style: { '--gap': 'var(--sp-4)' }, hidden: true }, notice.el, kpis.el, Object.values(sections).map((s) => s.el));
+    const impact = createImpactCard(ctx); // "Effect of your change": at the top, only while there is something to compare
+    const el = h('div', { class: 'stack', style: { '--gap': 'var(--sp-4)' }, hidden: true }, impact.el, notice.el, kpis.el, Object.values(sections).map((s) => s.el));
     for (const section of Object.values(sections)) {
       // A section that was collapsed while the data moved on catches up as soon as it is opened.
       section.el.addEventListener('toggle', () => { if (section.el.open && lastModel) section.paint(lastModel); });
     }
     root.append(el);
-    content = { el, notice, kpis, sections, charts };
+    content = { el, notice, kpis, sections, charts, impact };
     return content;
   }
 
@@ -1213,11 +1217,17 @@ export function createDashboard(ctx) {
     const insights = report ? (runner?.insights?.() ?? []) : [];
     const dstate = dataState(report);
     const runState = runStatus({ report, playing: Boolean(runner?.playing), time: readTime(report), warmup: readWarmup(state) });
+    if (runner?.warm && runState.windowText && runState.key !== 'warming') { // a warm restart ran the first minutes silently
+      const since = formatClock(fin(rec(rec(report).window).start) ?? 0);
+      runState.windowText = `${runState.windowText} since ${since} (pre-run)`;
+      runState.windowTitle = `After your change the updated plant was simulated silently up to ${formatClock(fin(runner.warm.preRoll) ?? 0)} (the pre-run), so the figures already cover the time since ${since}.`;
+    }
     status.paint(runState);
     if (force || report !== shown.report || insights !== shown.insights) {
       shown = { report, insights };
       paintReport(report, insights, dstate, runState);
     }
+    content?.impact.update(report);
     paintStore(state);
     stale = false;
   }
@@ -1241,6 +1251,7 @@ export function createDashboard(ctx) {
       destroyed = true;
       content?.kpis.destroy();
       content?.charts.destroy();
+      content?.impact.destroy();
       root.remove();
     },
   };

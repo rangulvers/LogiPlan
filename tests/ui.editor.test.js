@@ -543,7 +543,7 @@ test('editor: flow tool connects by drag and by two clicks; invalid pairs say wh
   assert.deepEqual(t.renderer.view.hover, { kind: 'station', id: 's3' });
   t.mouse.up([27, 5]);
   assert.deepEqual(t.state().layout.flows.map((f) => [f.from, f.to]), [['s1', 's2'], ['s2', 's3']]);
-  assert.equal(t.state().undoLabel, 'Add flow');
+  assert.match(t.state().undoLabel, /^Connect .+ → .+$/);
   assert.deepEqual(t.state().ui.selection, { kind: 'flow', ids: ['f2'] });
   assert.equal(t.renderer.view.flowPreview, null);
   t.mouse.click([5, 4]);

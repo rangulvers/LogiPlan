@@ -3,7 +3,7 @@
 //   click     click the sending station, move, click the receiving station (Esc or a click on empty ground cancels)
 // A pair that already has a flow selects that flow instead of adding a second one.
 
-import { getStation, addFlow } from '../../model/layout.js';
+import { getStation } from '../../model/layout.js';
 import { dragThreshold } from './snapping.js';
 import { flowProblem, FLOW_FROM } from './tools.js';
 
@@ -28,6 +28,7 @@ export function createFlowTool(ed) {
     press = null;
     ed.view.flowPreview = null;
     ed.view.hover = null;
+    ed.connector.clearTargets();
   }
 
   function begin(station) {
@@ -53,6 +54,8 @@ export function createFlowTool(ed) {
     const cs = layout.grid.cellSize;
     ed.view.hover = target ? { kind: 'station', id: target.id } : null;
     ed.view.flowPreview = { fromId: from, toPoint: target ? [(target.x + target.w / 2) * cs, (target.y + target.h / 2) * cs] : [p.wx, p.wy] };
+    const dragging = press !== null && Math.hypot(p.x - press.p0.x, p.y - press.p0.y) >= dragThreshold(p.type);
+    ed.connector.showTargets({ fromId: from }, over ? over.id : null, dragging ? 'Drop' : 'Click'); // valid receivers glow, the rest recede
     ed.status(followText(start, over));
     ed.redraw();
   }
@@ -74,14 +77,7 @@ export function createFlowTool(ed) {
       ed.toast(`${start.name} already sends loads to ${target.name}.`, { kind: 'info' });
       return true;
     }
-    let id = null;
-    const ok = ed.commit('Add flow', (draft) => {
-      const flow = addFlow(draft, start.id, target.id);
-      id = flow ? flow.id : null;
-      return id !== null;
-    });
-    if (ok) ed.setSelection({ kind: 'flow', ids: [id] });
-    return ok;
+    return ed.connector.connectStations(start.id, target.id); // the same undo label, selection and toast as the flow handle
   }
 
   return {
@@ -118,6 +114,8 @@ export function createFlowTool(ed) {
       }
       const station = stationAt(p);
       const valid = station && FLOW_FROM.includes(station.type);
+      if (valid) ed.connector.previewTargets({ fromId: station.id }); // where could it send its loads?
+      else ed.connector.clearTargets();
       ed.view.hover = valid ? { kind: 'station', id: station.id } : null;
       ed.cursor(valid ? 'pointer' : 'crosshair');
       ed.hoverStatus(p, station && !valid ? flowProblem(station, null) : '');
