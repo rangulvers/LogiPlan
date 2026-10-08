@@ -97,3 +97,9 @@ The simulation modules (`js/model`, `js/sim`) have no DOM dependency and run ide
 * Very large plants (hundreds of stations, 100+ vehicles) run live at 10×–300×; beyond that "speed limited" is shown.
 * Verified in Chromium; Firefox and Safari should work (no browser-specific APIs without fallbacks) but have not been tested yet.
 * Vehicles are point-to-point on a grid road network; shift calendars, pedestrians and traffic lights are not modelled.
+
+## License
+
+[MIT](LICENSE): free to use, copy, modify and share, for any purpose, no strings attached.
+
+LogiPlan is an experiment, provided as is. Its simulation is a planning aid with simplified models (see *Known limits*); verify important decisions with real data before building anything.
