@@ -1,9 +1,16 @@
 name: CI
 
+# Runs on pull requests only: a branch push that has an open PR would otherwise start the same suite twice
+# (once for `push`, once for `pull_request`). Pushes to main are tested by pages.yml before it deploys.
+# `workflow_dispatch` allows a manual run on any branch.
 on:
   pull_request:
-  push:
-    branches-ignore: [main]
+  workflow_dispatch:
+
+# A newer push to the same PR supersedes the run that is still going.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -11,14 +18,15 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Unit & integration tests
-        run: npm run test:quiet
       - name: Import / export consistency
         run: npm run check
+      - name: Unit & integration tests
+        run: npm run test:quiet
       - name: Site assembles
         run: node scripts/build-site.mjs _site-ci
