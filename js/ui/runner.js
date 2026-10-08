@@ -403,8 +403,9 @@ export function createRunner(options = {}) {
 
   /**
    * Start pre-rolling a new simulation for `layout` behind the displayed one. `priming` is
-   *   { sim, layout, target, fresh, constructMs, elapsed /* ms of frames spent in this phase */, phase: 'main' | 'control',
-   *     pair /* the old plant to simulate for the fair comparison, or null */, window, extra /* simulated s the comparison still needs */, control }
+   *   { sim, layout, target, fresh, constructMs, elapsed, phase, pair, window, extra, control }
+   * with `elapsed` the milliseconds of frames spent in the current phase, `phase` 'main' or 'control', `pair` the old plant to simulate
+   * for the fair comparison ({ before } or null) and `extra` the simulated seconds that comparison still needs (for the progress).
    * Phase 'main' pre-rolls the new plant; phase 'control' (only when there is a baseline or the old run was long enough to become one, and
    * the new plant got past its warm-up) then simulates the OLD plant for the same measured window. Both end in swapIn.
    */
