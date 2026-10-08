@@ -21,11 +21,17 @@
 //  * Workstations without incoming flows run on their own; without outgoing flows their outputs complete at once.
 //    `yard` is the number of waiting loads of a source (the loads are in `yardQ`); `fill` of a workstation is its
 //    input-buffer fill.
-//  * Vehicles: machine breakdowns run on calendar time, vehicle breakdowns on operating time (parked or charging
-//    vehicles do not fail). A dead vehicle gives its order back at once, a broken one after REASSIGN_AFTER seconds
-//    if it has not picked the loads up (event 'orderCancelled'). A vehicle below lowPct takes no new orders as long
-//    as it can reach a charger. 'park' goes to the home depot if it has a free slot, else the nearest depot, after
-//    IDLE_GRACE seconds without work; an idle vehicle that holds others up makes room (idle.js).
+//  * Vehicles: machine breakdowns run on calendar time (at their exact time inside a tick), vehicle breakdowns on
+//    operating time (parked or charging vehicles do not fail). A dead vehicle gives its order back at once, a broken
+//    one after REASSIGN_AFTER seconds if it has not picked the loads up (event 'orderCancelled'; loads already on a
+//    dead vehicle stay there as WIP). A vehicle below lowPct takes no new orders as long as it can reach a charger.
+//    'park' goes to the home depot if it has a free slot, else the nearest depot, after IDLE_GRACE seconds without
+//    work - and never to a depot without chargers if it would arrive below lowPct. An idle vehicle that holds others
+//    up makes room (idle.js): state 'toPark' without a depot, driving to a waiting cell. Distance driven to depots,
+//    chargers and waiting cells is `parkDistance`, neither loaded nor empty: loaded + empty + park = odometer.
+//  * Dispatch: priority ages by one level per PRIORITY_AGING seconds the oldest ready load has waited, so no flow
+//    starves for ever; the dispatcher also wakes up when a load becomes ready or a maxWait runs out, not only
+//    every 0.5 s. A pickup dock must lead on to the drop, and docks a vehicle cannot return from come last.
 //  * Orders carry station ids in `from`/`to`; the FlowRT is the (non-enumerable) `order.flow`. Events carry both
 //    the object and its id (`station`/`stationId`, `vehicle`/`vehicleId`) and the tick time `t`.
 

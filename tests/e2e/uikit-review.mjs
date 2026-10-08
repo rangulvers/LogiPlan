@@ -206,6 +206,8 @@ async function reviewKeyboard() {
       await page.emulateMedia({ colorScheme: scheme });
       await openDemo(page, url, scheme);
       await page.locator('#c-line .chart-legend__item').nth(1).click();
+      await page.mouse.move(0, 0); // the rebuilt entry sits under the pointer; measure it without the hover colour
+      await page.waitForTimeout(80);
       const ratio = await page.evaluate(() => {
         const el = document.querySelector('#c-line .chart-legend__item[aria-pressed="false"]');
         const parse = (c) => { const m = c.match(/rgba?\(([^)]+)\)/); const p = m[1].split(/[\s,/]+/).map(Number); return { r: p[0], g: p[1], b: p[2], a: p.length > 3 ? p[3] : 1 }; };

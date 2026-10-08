@@ -380,18 +380,19 @@ test('saturated fleet: a long pickup wait is not blamed on the fleet when the de
     r.flows.f1.avgPickupWait = 60;
   };
   assert.ok(find(insightsAfter(layout, slow), 'fleet-saturated:v1'), 'guard: nothing is wrong at the destinations, the fleet is the limit');
-  const loaded = find(insightsAfter(layout, (r) => { slow(r); Object.assign(r.stations.C, { utilization: 0.97, avgIn: 6 }); }), 'bottleneck:C');
-  assert.ok(loaded, 'precondition: Final assembly is the bottleneck');
   const withBottleneck = insightsAfter(layout, (r) => { slow(r); Object.assign(r.stations.C, { utilization: 0.97, avgIn: 6 }); });
+  assert.ok(find(withBottleneck, 'bottleneck:C'), 'precondition: Final assembly is the bottleneck');
   assert.equal(find(withBottleneck, 'fleet-saturated:v1'), undefined, 'the loads wait for room at Final assembly (the other flows wait 20-60 s)');
   const fullBuffer = insightsAfter(layout, (r) => { slow(r); r.flows.f3.avgPickupWait = 60; r.flows.f1.avgPickupWait = 400; Object.assign(r.stations.S, { avgFill: 0.9, blocked: 0.2 }); });
   assert.equal(find(fullBuffer, 'fleet-saturated:v1'), undefined, 'a full buffer is a destination without room, too');
   const mixed = insightsAfter(layout, (r) => {
     slow(r);
-    r.flows.f2.avgPickupWait = 300; // Supermarket -> Press: a destination with room
+    r.flows.f1.avgPickupWait = 40;
+    r.flows.f2.avgPickupWait = 380; // Supermarket -> Press: a destination with room
     Object.assign(r.stations.C, { utilization: 0.97, avgIn: 6 });
   });
-  assert.match(find(mixed, 'fleet-saturated:v1').title, /loads wait 3\.3 min for a pickup/, 'the wait that remains comes from flows with free destinations only');
+  // f3 (400 s) is left out; the other flows have 40, 380 and 20 s: 146.7 s on average
+  assert.match(find(mixed, 'fleet-saturated:v1').title, /loads wait 2\.4 min for a pickup/, 'the wait that remains comes from flows with free destinations only');
   const everything = standardPlant({ fleets: [{ count: 3 }] });
   const blockedAll = insightsAfter(everything, (r) => {
     Object.assign(r.fleets.v1, { utilization: 0.75, avgPickupWait: 300 });
@@ -545,6 +546,7 @@ test('no rule tells the planner to add vehicles while another tells them to use 
   const add = /\badd (?:a |an |[\d.]+ )?(?:spare )?vehicles?\b/i;
   const cut = /reduce the number of vehicles|fewer vehicles|try [\d.]+ vehicles? instead/i;
   const layout = standardPlant();
+  for (const flow of layout.flows) flow.fleetId = 'v1'; // one fleet decides everything; the forklifts stay healthy
   let reports = 0;
   for (const utilization of [0.15, 0.3, 0.6, 0.9]) for (const charging of [0, 0.3]) for (const waiting of [0.02, 0.15]) {
     for (const plantWait of [0.02, 0.2]) for (const avgBacklog of [0, 3]) for (const broken of [0, 0.08]) for (const wait of [30, 200]) {
@@ -552,14 +554,13 @@ test('no rule tells the planner to add vehicles while another tells them to use 
       const list = insightsAfter(layout, (r) => {
         const idle = Math.max(0, 1 - utilization - charging - broken);
         Object.assign(r.fleets.v1, { utilization, avgPickupWait: wait });
-        Object.assign(r.fleets.v1.shares, { driving: utilization * 0.7, waiting: waiting * utilization, loading: utilization * 0.15, unloading: utilization * 0.15 - waiting * utilization + 0.0, idle, parked: 0, charging, broken });
+        Object.assign(r.fleets.v1.shares, { driving: utilization * 0.7, waiting: waiting * utilization, loading: utilization * 0.15, unloading: utilization * 0.15, idle, parked: 0, charging, broken });
         Object.assign(r.stations.A, { blocked: 0.5, utilization: 0.5, yardNow: 8, yardMax: 8 });
         Object.assign(r.stations.B, { blocked: 0.3, starved: 0.3 });
         Object.assign(r.stations.C, { starved: 0.6 });
         r.traffic.waitShare = plantWait;
         r.flows.f1.avgBacklog = avgBacklog;
         r.flows.f3.avgBacklog = avgBacklog;
-        r.fleets.v2.utilization = utilization;
       });
       const adds = list.filter((i) => add.test(i.suggestion || '')).map((i) => i.id);
       const cuts = list.filter((i) => cut.test(i.suggestion || '')).map((i) => i.id);

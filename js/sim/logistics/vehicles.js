@@ -183,7 +183,7 @@ export function needsCharge(vr) {
 }
 
 /** Can the vehicle get to any charger at all? (One that cannot keeps working: waiting would only waste it.) */
-export function canCharge(lg, vr) {
+function canCharge(lg, vr) {
   const depots = lg.chargerDepots;
   if (depots.length === 0) return false;
   if (vr.state === 'parked') {

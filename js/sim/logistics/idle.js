@@ -153,7 +153,7 @@ function makeRoom(lg, t, blockedDepots) {
   for (const vr of blockers) {
     if (t < vr.roomRetryAt - EPS || goIdle(lg, vr, t, true)) continue;
     const spot = pickSpot(lg, vr, lg.routes.get(vr.tv.node, arrivalEdgeOf(lg, vr), t), busy, taken);
-    if (spot < 0) continue;
+    if (spot < 0) { vr.roomRetryAt = t + YIELD_RETRY; continue; }
     taken.add(spot);
     if (!startLeg(lg, vr, 'toPark', null, t, spot)) {
       vr.spot = -1;
