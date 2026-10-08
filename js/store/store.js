@@ -58,7 +58,7 @@
 //    silently is worse than a button that does nothing (use newProject to start over).
 //  * dirty: true after any change to project content, false after loadProject / newProject / markClean(). It is saved with
 //    the autosave, so a restored session that had unsaved work still counts as dirty.
-//  * Persistence writes exportProject(project) plus a "session" member { ui: { theme, overlays, rightTab }, dirty } under one
+//  * Persistence writes exportProject(project) plus a "session" member { ui: { theme, overlays, rightTab, warmRestart }, dirty } under one
 //    key, 400 ms (trailing) after the last change that matters but at the latest PERSIST_MAX_WAIT_MS after the first unsaved
 //    change (continuous editing still saves); selection, tool and ephemeral flags are never saved. Call persist() on
 //    pagehide to flush. Storage may be missing or throw (quota, privacy mode): the store keeps working and exposes the
@@ -98,8 +98,8 @@ export const SELECTION_KINDS = Object.freeze(['station', 'flow', 'fleet', 'obsta
 const NAME_MAX = 80;
 const HEAT_MODES = ['off', 'traffic', 'waiting'];
 const THEMES = ['auto', 'light', 'dark'];
-const OVERLAY_FLAGS = ['grid', 'studs', 'flows', 'docks', 'ids', 'labels'];
-const PREF_KEYS = ['theme', 'overlays', 'rightTab'];
+const OVERLAY_FLAGS = ['grid', 'studs', 'flows', 'docks', 'jobs', 'ids', 'labels'];
+const PREF_KEYS = ['theme', 'overlays', 'rightTab', 'warmRestart'];
 const UNSAFE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 const CELL_KEY_RE = /^\d+,\d+$/;
 const SCENARIO_ID_RE = /^sc(\d+)$/;
@@ -142,10 +142,11 @@ function defaultUi() {
     tool: 'select',
     toolOptions: frozen({ factor: 0.5, kind: 'wall' }),
     selection: NO_SELECTION,
-    overlays: frozen({ grid: true, studs: true, flows: true, docks: false, heat: 'off', ids: false, labels: true }),
+    overlays: frozen({ grid: true, studs: true, flows: true, docks: false, jobs: true, heat: 'off', ids: false, labels: true }),
     rightTab: 'properties',
     theme: 'auto',
     followSim: false,
+    warmRestart: true,
   });
 }
 
@@ -207,6 +208,7 @@ function mergeUi(current, patch, layout) {
         if (THEMES.includes(value)) set(key, value);
         break;
       case 'followSim':
+      case 'warmRestart':
         if (typeof value === 'boolean') set(key, value);
         break;
       case 'toolOptions':

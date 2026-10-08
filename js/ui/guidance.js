@@ -7,21 +7,23 @@
 // Goods in needs a flow of its own, and the same vehicles then serve it. A station must also touch a road (its dock) to be served.
 //
 //   computeNextSteps(layout, { issues, simRunning, simulatedSeconds, hasRun, resultsSeen, dismissed }) -> NextStep[]
-//   NextStep = { id, severity: 'todo'|'warn'|'info', scopes, icon, title, text, refs, fix, dismissible }
+//   NextStep = { id, severity: 'todo'|'warn'|'info', scopes, icon, title, text, refs, fix, alt?, dismissible }   (alt: a second way out)
 //   fix      = { type: 'connect-flow', fromId, toId, pick: 'to'|'from', label }   one flow (the planner may pick the other end)
 //            | { type: 'add-fleet', preset, count, fleetId?, label }              add a fleet, or raise the count of fleetId
 //            | { type: 'set-tool', tool, label } | { type: 'focus', refs, hint?, label }
-//            | { type: 'run', label } | { type: 'set-tab', tab, label }
+//            | { type: 'run', label } | { type: 'set-tab', tab, label } | { type: 'release-flow', flowId, label }   (any fleet may carry it)
 //   computeChecklist(layout, { ran, resultsSeen }) -> { items, done, total, complete }
-//   validDestinations / validOrigins / suggestDestination / suggestOrigin, fixForIssue(layout, issue), applyFix(ctx, fix)
+//   validDestinations / validOrigins (station objects, closest first), suggestDestination / suggestOrigin (a station or null),
+//   connectFixFor(layout, stationId) (the ready-made "connect to the suggestion" fix), fixForIssue(layout, issue), applyFix(ctx, fix)
 //   guidanceFor(ctx) -> shared per-app state (dismissals, session progress) and a memoised read(state) for every surface.
 //
 // Step ids are stable (kind + station/flow/fleet id), so a dismissal survives edits and reloads (localStorage
 // 'logiplan:guidance-dismissed', guarded by try/catch; in memory when storage is missing).
 
 import { FLEET_PRESETS, DISPATCH_STRATEGIES } from '../model/defaults.js';
+import { flowCreatedText } from './editor/connect.js';
 import { validateLayout } from '../model/validate.js';
-import { getStation, getFleet, docksOf, flowsFrom, flowsTo, addFlow, addFleet, updateFleet } from '../model/layout.js';
+import { getStation, getFleet, docksOf, flowsFrom, flowsTo, addFlow, addFleet, updateFleet, updateFlow } from '../model/layout.js';
 
 /** Station types that may send loads / receive loads (docs/ARCHITECTURE.md 4.3). */
 export const SENDER_TYPES = Object.freeze(['source', 'process', 'storage']);
@@ -29,8 +31,10 @@ export const RECEIVER_TYPES = Object.freeze(['process', 'storage', 'sink']);
 
 /** The fleet "Add vehicles" creates. */
 export const DEFAULT_FLEET = Object.freeze({ preset: 'agv', count: 2 });
-/** Simulated seconds after which "Open Results" is suggested. */
+/** Simulated seconds of measured time (after the warm-up) after which "Open Results" is suggested: the dashboard has its insights by then. */
 export const RESULTS_AFTER_SECONDS = 300;
+/** Simulated time at which the Results tab has something to say: the warm-up (not counted) plus RESULTS_AFTER_SECONDS. */
+export const resultsAfter = (layout) => (Number(layout?.settings?.warmup) || 0) + RESULTS_AFTER_SECONDS;
 export const DISMISS_KEY = 'logiplan:guidance-dismissed';
 const MAX_DISMISSED = 300;
 
@@ -129,6 +133,15 @@ export function suggestDestination(layout, stationId) {
   return null;
 }
 
+/**
+ * The ready-made fix "send this station's loads to the suggested destination" (what the Connect button of a toast applies), or null
+ * when nothing fits. Hand it to applyFix.
+ */
+export function connectFixFor(layout, stationId) {
+  const to = suggestDestination(layout, stationId);
+  return to ? { type: 'connect-flow', fromId: stationId, toId: to.id, pick: 'to', label: 'Connect' } : null;
+}
+
 const ORIGIN_PREFERENCE = { process: ['source', 'storage', 'process'], storage: ['source', 'process'], sink: ['process', 'storage', 'source'] };
 
 /**
@@ -150,15 +163,17 @@ export function suggestOrigin(layout, stationId) {
 /** Issue codes the steps below already cover, so "open Checks" does not repeat them. */
 const COVERED_CODES = new Set([
   'no-roads', 'no-stations', 'no-flows', 'no-fleets', 'station-no-dock', 'station-dock-isolated', 'source-no-outflow', 'process-no-inflow',
-  'sink-no-inflow', 'flow-unreachable', 'flow-no-return',
+  'sink-no-inflow', 'flow-unreachable', 'flow-no-return', 'flow-fleet-missing',
 ]);
 
 const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 const vehicleCount = (layout) => layout.fleets.reduce((sum, f) => sum + (f.count > 0 ? f.count : 0), 0);
 const fleetNoun = (preset) => ((FLEET_PRESETS[preset] || FLEET_PRESETS.custom).label.split(' (')[0]);
 
-function makeStep(id, severity, scopes, icon, title, text, fix, { refs = {}, dismissible = false } = {}) {
-  return { id, severity, scopes: [].concat(scopes), icon, title, text, refs, fix, dismissible };
+function makeStep(id, severity, scopes, icon, title, text, fix, { refs = {}, dismissible = false, alt = null } = {}) {
+  const step = { id, severity, scopes: [].concat(scopes), icon, title, text, refs, fix, dismissible };
+  if (alt) step.alt = alt;
+  return step;
 }
 
 /** What to do when a station has nowhere to send its loads: place something to receive them. */
@@ -251,6 +266,26 @@ function routeSteps(layout, issues) {
   return steps;
 }
 
+/** A flow dedicated to a fleet without vehicles (or without a fleet): nothing will ever carry it. */
+function carrierSteps(layout, issues) {
+  const steps = [];
+  for (const issue of issues) {
+    const flow = issue.code === 'flow-fleet-missing' && issue.refs?.flowId ? layout.flows.find((f) => f.id === issue.refs.flowId) : null;
+    if (!flow) continue;
+    const name = `${getStation(layout, flow.from)?.name ?? 'a station'} → ${getStation(layout, flow.to)?.name ?? 'a station'}`;
+    const fleet = getFleet(layout, flow.fleetId);
+    const any = { type: 'release-flow', flowId: flow.id, label: 'Any fleet' };
+    steps.push(fleet
+      ? makeStep(`no-carrier:${flow.id}`, 'warn', ['flows', 'fleet'], 'truck', `Nothing carries ${name}`,
+        `It is dedicated to ${fleet.name}, which has no vehicles. Add vehicles, or let any fleet carry this flow.`,
+        { type: 'add-fleet', preset: fleet.preset, fleetId: fleet.id, count: DEFAULT_FLEET.count, label: `Add ${DEFAULT_FLEET.count} vehicles` },
+        { refs: { flowIds: [flow.id], fleetIds: [fleet.id] }, alt: any })
+      : makeStep(`no-carrier:${flow.id}`, 'warn', ['flows', 'fleet'], 'truck', `Nothing carries ${name}`,
+        'It is dedicated to a fleet that no longer exists. Let any fleet carry this flow.', any, { refs: { flowIds: [flow.id] } }));
+  }
+  return steps;
+}
+
 function fleetStep(layout) {
   if (!layout.flows.length || vehicleCount(layout) > 0) return null;
   const empty = layout.fleets[0];
@@ -300,22 +335,29 @@ export function computeNextSteps(layout, opts = {}) {
   if (roads) push(...dockSteps(layout, issues)); // without any road the first step already says it
   push(...connectionSteps(layout));
   push(...routeSteps(layout, issues));
-  push(fleetStep(layout));
+  const carriers = carrierSteps(layout, issues);
+  push(...carriers);
+  const noVehicles = fleetStep(layout);
+  push(noVehicles);
 
   const structural = steps.length;
-  const leftover = issues.filter((i) => (i.severity === 'error' || i.severity === 'warning') && !COVERED_CODES.has(i.code));
+  // an empty fleet is already said by the step that names it (a flow dedicated to it, or no vehicles at all)
+  const named = new Set([...carriers.flatMap((c) => c.refs.fleetIds || []), ...(noVehicles ? noVehicles.refs.fleetIds || [] : [])]);
+  const leftover = issues.filter((i) => (i.severity === 'error' || i.severity === 'warning') && !COVERED_CODES.has(i.code)
+    && !(i.code === 'fleet-count-zero' && named.has(i.refs?.fleetId)));
   if (leftover.length) {
     push(makeStep('open-checks', 'warn', 'run', 'warning', `${plural(leftover.length, 'thing')} to check`,
       'The Checks tab explains each one and how to fix it.', { type: 'set-tab', tab: 'checks', label: 'Open Checks' }));
   }
-  const ready = structural === 0 && layout.flows.length > 0 && vehicleCount(layout) > 0;
+  // an error the steps above do not name (a workstation that can never start, a missing depot) is not a plant to press play on
+  const ready = structural === 0 && layout.flows.length > 0 && vehicleCount(layout) > 0 && !leftover.some((i) => i.severity === 'error');
   if (ready && !ran) {
     push(makeStep('run:press-play', 'todo', 'run', 'play', 'Press play to watch it run',
       'Vehicles pick up loads and deliver them along your flows.', { type: 'run', label: 'Run' }));
   }
-  if (ran && simulatedSeconds >= RESULTS_AFTER_SECONDS && !resultsSeen) {
+  if (ran && simulatedSeconds >= resultsAfter(layout) && !resultsSeen) {
     push(makeStep('run:open-results', 'todo', 'run', 'chart', 'Open Results to find the bottleneck',
-      `The simulation ran for ${Math.floor(simulatedSeconds / 60)} minutes. Results show where loads wait and how busy the vehicles are.`,
+      'The first results are in. They show where loads wait and how busy the vehicles are.',
       { type: 'set-tab', tab: 'results', label: 'Open Results' }, { dismissible: true }));
   }
 
@@ -327,9 +369,9 @@ export function computeNextSteps(layout, opts = {}) {
   const sources = stations.filter((s) => s.type === 'source');
   if (sources.length >= 2 && sources.every((s) => flowsFrom(layout, s.id).length > 0)) {
     const phrase = STRATEGY_PHRASE[layout.settings?.dispatch] || STRATEGY_PHRASE.nearest;
-    const word = layout.fleets.length && layout.fleets.every((f) => f.preset === 'agv') ? 'AGV' : 'vehicle';
-    push(makeStep('info:vehicles-serve-all', 'info', ['flows', 'fleet'], 'info', 'Vehicles serve every Goods in automatically',
-      `Every free ${word} takes ${phrase}, whichever Goods in it comes from. Change this in Simulate › Dispatch strategy.`,
+    const agvs = layout.fleets.length > 0 && layout.fleets.every((f) => f.preset === 'agv');
+    push(makeStep('info:vehicles-serve-all', 'info', ['flows', 'fleet'], 'info', `Your ${agvs ? 'AGVs' : 'vehicles'} serve every Goods in automatically`,
+      `Every free ${agvs ? 'AGV' : 'vehicle'} takes ${phrase}, whichever Goods in it comes from. Change this in Simulate › Dispatch strategy.`,
       { type: 'set-tab', tab: 'simulate', label: 'Open Simulate' }, { dismissible: true }));
   }
   return steps;
@@ -346,8 +388,9 @@ export const strategyLabel = (key) => (DISPATCH_STRATEGIES[key] || DISPATCH_STRA
 // ---------------------------------------------------------------------------------------------------------
 
 /**
- * The one-click fix guidance can offer for a validateLayout issue, or null. connect-flow fixes carry `pick` ('to' | 'from'): the
- * end the planner may choose; `toId`/`fromId` hold the suggestion (null when nothing fits, then `fallback` says what to place).
+ * The one-click fix guidance can offer for a validateLayout issue, or null. A connect-flow fix carries `pick` ('to' | 'from'), the end
+ * the planner may choose; `toId`/`fromId` hold the suggestion. When no station could receive (send) the loads, the fix is a set-tool
+ * fix that says what to place instead.
  */
 export function fixForIssue(layout, issue) {
   const station = issue.refs?.stationId ? getStation(layout, issue.refs.stationId) : null;
@@ -363,6 +406,7 @@ export function fixForIssue(layout, issue) {
       const from = suggestOrigin(layout, station.id);
       return from ? { type: 'connect-flow', fromId: from.id, toId: station.id, pick: 'from', label: 'Connect' } : { type: 'set-tool', tool: 'source', label: 'Goods in' };
     }
+    case 'flow-fleet-missing': return carrierSteps(layout, [issue])[0]?.fix || null;
     case 'no-fleets': return fleetStep(layout)?.fix || { ...DEFAULT_FLEET, type: 'add-fleet', label: 'Add vehicles' };
     case 'fleet-count-zero': {
       const fleet = issue.refs?.fleetId ? getFleet(layout, issue.refs.fleetId) : null;
@@ -507,6 +551,15 @@ function undoToast(ctx, message, kind = 'success') {
   ctx.toast(message, { kind, action: { label: 'Undo', onClick: () => { if (ctx.store.getState().layout === after) ctx.store.undo(); } } });
 }
 
+/**
+ * Wiring things up is not placing things: a placement tool left over from building the plant (Goods out, Road ...) would turn the
+ * planner's next click on a station into "Cannot place Goods out here". Called after a Connect or Add vehicles button did its work.
+ */
+export function backToSelect(ctx) {
+  const tool = ctx.store.getState().ui?.tool;
+  if (tool && tool !== 'select' && tool !== 'pan') ctx.actions?.setTool?.('select');
+}
+
 function connectFlow(ctx, fix) {
   const { store } = ctx;
   const layout = store.getState().layout;
@@ -527,7 +580,8 @@ function connectFlow(ctx, fix) {
     return false;
   }
   store.select('flow', [created.id]);
-  undoToast(ctx, 'Flow created. Vehicles will serve it automatically.');
+  backToSelect(ctx);
+  undoToast(ctx, flowCreatedText(store.getState().layout, created));
   return true;
 }
 
@@ -548,7 +602,21 @@ function addVehicles(ctx, fix) {
     fleetId = created.id;
   }
   store.select('fleet', [fleetId]);
+  backToSelect(ctx);
   undoToast(ctx, `Added ${count} ${count === 1 ? noun : `${noun}s`}. They serve every flow automatically.`);
+  return true;
+}
+
+/** Let any fleet carry a flow that was dedicated to one fleet. */
+function releaseFlow(ctx, fix) {
+  const { store } = ctx;
+  const layout = store.getState().layout;
+  const flow = layout.flows.find((f) => f.id === fix.flowId);
+  if (!flow) return false;
+  const name = `${getStation(layout, flow.from)?.name ?? 'a station'} → ${getStation(layout, flow.to)?.name ?? 'a station'}`;
+  if (!store.commit(`Let any fleet carry ${name}`, (d) => { if (!updateFlow(d, flow.id, { fleetId: null })) return false; })) return false;
+  store.select('flow', [flow.id]);
+  undoToast(ctx, `Any fleet carries ${name} now.`);
   return true;
 }
 
@@ -563,6 +631,7 @@ export function applyFix(ctx, fix) {
   switch (fix.type) {
     case 'connect-flow': return connectFlow(ctx, fix);
     case 'add-fleet': return addVehicles(ctx, fix);
+    case 'release-flow': return releaseFlow(ctx, fix);
     case 'set-tool': ctx.actions.setTool(fix.tool); return true;
     case 'focus':
       ctx.actions.focus(fix.refs || {});
@@ -598,8 +667,15 @@ export function createGuidance(ctx, { storage } = {}) {
     const runner = ctx.runner;
     const playing = Boolean(runner && runner.playing);
     const seen = progress.observe(key, { simRunning: playing, simulatedSeconds: Number(runner?.time) || 0, rightTab: state.ui?.rightTab });
-    const issues = typeof ctx.issues === 'function' ? ctx.issues() : null;
-    const stamp = [state.layout, issues, dismissals.version, seen.ran, seen.maxSeconds >= RESULTS_AFTER_SECONDS, seen.resultsSeen, playing];
+    let issues = null; // a failing issue check must not take the coaching down: the steps then check the plant themselves
+    try {
+      issues = typeof ctx.issues === 'function' ? ctx.issues() : null;
+    } catch {
+      issues = null;
+    }
+    // The issue list is compared by content: a ctx that recomputes it on every call must not defeat the memo.
+    const issueKey = issues ? issues.map((i) => `${i.id}:${i.severity}`).join('|') : '';
+    const stamp = [state.layout, issueKey, dismissals.version, seen.ran, seen.maxSeconds >= resultsAfter(state.layout), seen.resultsSeen, playing];
     if (memo && stamp.every((v, i) => v === memo.stamp[i])) return memo.value;
     const opts = { issues: issues || undefined, simRunning: playing, simulatedSeconds: seen.maxSeconds, hasRun: seen.ran, resultsSeen: seen.resultsSeen, dismissed: dismissals };
     const steps = computeNextSteps(state.layout, opts);

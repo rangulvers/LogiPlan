@@ -75,6 +75,26 @@ await withBrowser(async ({ page, url, errors }) => {
   eq(await name.inputValue(), 'Changed elsewhere', 'the field shows it again');
   await page.evaluate((n) => window.harness.store.renameProject(n), original.name);
 
+  // the Stations list: a button per station selects it and brings it into view (the keyboard way to pick a station)
+  const stationButtons = P().locator('button[data-station]');
+  const typeWord = { source: 'Goods in', process: 'Workstation', storage: 'Storage', sink: 'Goods out', depot: 'Depot' };
+  eq(await stationButtons.count(), original.stations.length, 'every station of a small plant is listed');
+  eq(await P().locator('button[data-role=more]').count(), 0, 'with no "Show all" button');
+  const first = original.stations[0];
+  await P().getByRole('button', { name: `Select ${first.name} (${typeWord[first.type]})` }).click();
+  eq((await calls()).at(-1), ['focus', { stationIds: [first.id] }], 'a press on a station asks the shell to select and show it');
+  await page.evaluate(() => window.harness.store.clearSelection()); // the harness's focus() selects, which swaps the form
+  for (let i = 0; i < 6; i++) await edit("L.addStation(d, { type: 'storage', x: a.x, y: a.y, w: 2, h: 2 })", await freeSpot(2, 2));
+  eq(await stationButtons.count(), 12, 'a big plant lists the first twelve stations');
+  eq(await P().locator('button[data-role=more]').innerText(), `Show all ${original.stations.length + 6} stations`, 'with a button for the rest');
+  await P().locator('button[data-role=more]').click();
+  eq(await stationButtons.count(), original.stations.length + 6, 'Show all lists every station');
+  ok(await P().locator('button[data-role=more]').evaluate((el) => el === document.activeElement), 'and the button keeps the keyboard focus');
+  await P().locator('button[data-role=more]').click();
+  eq(await stationButtons.count(), 12, 'Show fewer folds the list again');
+  for (let i = 0; i < 6; i++) await undo();
+  eq(await stationButtons.count(), original.stations.length, 'undo takes the new stations out of the list');
+
   // notes
   await type(label('Notes'), 'Check crane capacity.');
   ok((await lay()).notes === 'Check crane capacity.', 'notes edit');
@@ -274,9 +294,8 @@ await withBrowser(async ({ page, url, errors }) => {
   // docks and connected flows of a lone station
   ok((await text()).includes('No road touches this station'), 'warning when no dock');
   ok((await P().locator('.chip--warn').count()) === 1);
-  ok((await text()).includes('No flows yet'), 'empty flows list');
-  await button('Add a flow').click();
-  eq((await calls()).at(-1), ['setTool', 'flow']);
+  ok((await text()).includes('Nothing is sent here yet'), 'a Goods out nobody feeds says so');
+  ok(await P().locator('[data-loads=in] select').isVisible(), 'with a picker for the origin');
   await shot('station-no-dock-no-flows');
 
   // delete with undo toast; duplicate selects the copy
@@ -293,16 +312,18 @@ await withBrowser(async ({ page, url, errors }) => {
   eq((await lay()).stations.length, original.stations.length + 2, 'toast undo brings it back');
   await reset();
 
-  // connected flows of the warehouse (3 outgoing + 1 incoming), weights, click selects the flow
+  // flows of the warehouse (2 outgoing + 1 incoming): where loads go and come from, shares, the flow settings button selects the flow
   await select('station', ['s4']);
-  const rows = P().locator('details:has(summary:has-text("Connected flows")) button');
-  eq(await rows.count(), 3, 'warehouse has three flows');
-  ok((await rows.first().innerText()).includes('Goods receiving → Central warehouse'), 'row shows from → to');
-  ok((await P().innerText()).includes('weight 2'), 'weight chip');
+  const outRows = P().locator('[data-loads=out] li[data-flow]');
+  const inRows = P().locator('[data-loads=in] li[data-flow]');
+  eq(await outRows.count(), 2, 'two flows leave the warehouse');
+  eq(await inRows.count(), 1, 'one arrives');
+  ok((await inRows.first().innerText()).includes('Goods receiving'), 'the row shows the origin');
+  ok((await outRows.first().innerText()).includes('Press line') && (await outRows.first().innerText()).includes('67 %'), 'and the destination with its share');
   await shot('station-flows');
-  await rows.first().click();
-  eq((await state()).selection, { kind: 'flow', ids: ['f1'] }, 'clicking a flow selects it');
-  ok((await text()).includes('Goods receiving → Central warehouse'), 'flow summary');
+  await outRows.first().getByRole('button', { name: /^Flow settings/ }).click();
+  eq((await state()).selection, { kind: 'flow', ids: ['f2'] }, 'the flow settings button selects the flow');
+  ok((await text()).includes('Central warehouse → Press line'), 'flow summary');
   await shot('flow-summary');
   await button('Edit in Flows tab').click();
   eq((await calls()).at(-1), ['setRightTab', 'flows']);
@@ -555,8 +576,18 @@ await withBrowser(async ({ page, url, errors }) => {
     panel.onCount = shellCallback;
     return log;
   }), [expected.error + expected.warning], 'assigning onCount delivers the current count at once');
-  eq(await P().locator('.callout--error').count(), expected.error);
+  // a kind of problem that repeats more than three times keeps its first three callouts; the rest sits behind a button
+  const fold = P().locator('button[data-role=fold]');
+  eq(await fold.count(), 1, 'one folded kind of error');
+  const kept = await P().locator('.callout--error').count();
+  ok(kept < expected.error && /^Show \d+ more similar errors$/.test(await fold.innerText()), `the repeats are folded: ${kept} of ${expected.error} shown, "${await fold.innerText()}"`);
   await shot('checks-problems');
+  await fold.click();
+  eq(await P().locator('.callout--error').count(), expected.error, 'the button shows every error');
+  eq(await fold.innerText(), 'Show fewer', 'and turns into "Show fewer"');
+  ok(await fold.evaluate((el) => el === document.activeElement), 'keyboard focus stays on the button after the redraw');
+  await fold.click();
+  eq(await P().locator('.callout--error').count(), kept, 'folded again');
 
   // Show navigates
   const firstShow = P().locator('.callout--warn button', { hasText: 'Show' }).first();

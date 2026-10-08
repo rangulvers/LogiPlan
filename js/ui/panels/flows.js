@@ -16,6 +16,8 @@ import { getStation, getFleet, getFlow, flowsFrom, addFlow, updateFlow, removeFl
 import { formatNumber } from '../../util/format.js';
 import { numberField, selectField, segmentedField, section, emptyState, humanSeconds } from './fields.js';
 import { createGuidanceHeader, forFlows } from './nextsteps.js';
+import { createServedBy, createVehiclesExplainer } from './jobs-view.js';
+import { percentages } from './jobs-info.js';
 
 const INLINE_W = '120px';
 const quoted = (name) => `“${name}”`;
@@ -64,21 +66,8 @@ export function missingStations(layout) {
   return null;
 }
 
-/** Whole percentages of the weights that add up to exactly 100 (largest remainder), all 0 when there is no weight. */
-export function percentages(weights) {
-  const total = weights.reduce((sum, w) => sum + w, 0);
-  if (!(total > 0)) return weights.map(() => 0);
-  const raw = weights.map((w) => (w / total) * 100);
-  const whole = raw.map(Math.floor);
-  let left = 100 - whole.reduce((sum, w) => sum + w, 0);
-  const byRemainder = raw.map((r, i) => [r - whole[i], i]).sort((a, b) => b[0] - a[0] || a[1] - b[1]);
-  for (const [, i] of byRemainder) {
-    if (left <= 0) break;
-    whole[i] += 1;
-    left -= 1;
-  }
-  return whole;
-}
+/** Whole percentages of the weights that add up to exactly 100 (largest remainder), all 0 when there is no weight (lives in jobs-info.js, shared with the Properties tab). */
+export { percentages };
 
 /** Stations with several outgoing flows and each flow's share of their output: [{ station, shares: [{ flow, to, percent }] }]. */
 export function outputSplits(layout) {
@@ -98,14 +87,14 @@ export function outputShare(layout, flow) {
   return percentages(siblings.map((f) => f.weight))[siblings.findIndex((f) => f.id === flow.id)] ?? 100;
 }
 
-/** One line for a collapsed flow card: "67 % of output · 2 per cycle · Urgent · Forklifts". */
-export function flowSummary(layout, flow) {
+/** One line for a collapsed flow card: "67 % of output · 2 per cycle · Urgent · Forklifts" (`withFleet: false` leaves the vehicles out: the card's "Served by" line says it). */
+export function flowSummary(layout, flow, { withFleet = true } = {}) {
   const parts = [flowsFrom(layout, flow.from).length > 1 ? `${outputShare(layout, flow)} % of output` : 'All output'];
   const to = getStation(layout, flow.to);
   if (to && to.type === 'process' && flow.perCycle > 1) parts.push(`${flow.perCycle} per cycle`);
   if (flow.priority > 1) parts.push(PRIORITY_TEXT[flow.priority] || 'High priority');
   const fleet = flow.fleetId ? getFleet(layout, flow.fleetId) : null;
-  parts.push(fleet ? fleet.name : 'any fleet');
+  if (withFleet) parts.push(fleet ? fleet.name : 'any fleet');
   return parts.join(' · ');
 }
 
@@ -397,7 +386,8 @@ function createFlowCard(ctx, initial, layout, open) {
   const syncs = [];
   const from = stationChip(getStation(layout, initial.from));
   const to = stationChip(getStation(layout, initial.to));
-  const summary = h('div', { class: 'text-dim', style: { padding: '0 12px 10px 32px', fontSize: 'var(--fs-sm)' } });
+  const summary = h('div', { class: 'text-dim', style: { padding: '0 12px 4px 32px', fontSize: 'var(--fs-sm)' } });
+  const served = createServedBy(ctx, id); // "Served by: any fleet (AGV ×2)" and, while a simulation runs, the loads waiting and delivered
   const body = h('div', { class: 'stack', style: { padding: '4px 12px 14px', borderTop: '1px solid var(--border)', paddingTop: '12px' }, id: `flow-body-${id}` },
     ...flowFields(ctx, initial, syncs, getStation(layout, initial.to).type));
   let expanded = open;
@@ -409,7 +399,7 @@ function createFlowCard(ctx, initial, layout, open) {
     h('span', { class: 'stack', style: { '--gap': '4px', minWidth: 0, alignItems: 'flex-start' } },
       from.el, h('span', { class: 'row', style: { '--gap': '6px', minWidth: 0, maxWidth: '100%' } }, h('span', { class: 'text-faint', 'aria-hidden': 'true' }, '→'), to.el)));
   const remove = h('button', { class: 'btn btn--icon btn--sm btn--danger-ghost', type: 'button', onclick: removeNow, title: 'Delete flow' }, icon('trash', { size: 16 }));
-  const el = h('div', { class: 'card', role: 'group', dataset: { flow: id } }, h('div', { class: 'row', style: { '--gap': '2px', paddingRight: '8px' } }, toggle, remove), summary, body);
+  const el = h('div', { class: 'card', role: 'group', dataset: { flow: id } }, h('div', { class: 'row', style: { '--gap': '2px', paddingRight: '8px' } }, toggle, remove), summary, served.el, body);
 
   function setExpanded(value) {
     expanded = value;
@@ -439,14 +429,15 @@ function createFlowCard(ctx, initial, layout, open) {
 
   return {
     el,
-    update(flow, state) {
+    update(flow, state, report = null) {
       from.setName(getStation(state.layout, flow.from).name);
       to.setName(getStation(state.layout, flow.to).name);
       const title = flowTitle(state.layout, flow);
       el.setAttribute('aria-label', `Flow ${title}`);
       toggle.setAttribute('aria-label', `Flow ${title}`);
       remove.setAttribute('aria-label', `Delete flow ${title}`);
-      summary.textContent = flowSummary(state.layout, flow);
+      summary.textContent = flowSummary(state.layout, flow, { withFleet: false });
+      served.update(state.layout, report);
       for (const sync of syncs) sync(flow, state);
     },
     setSelected(on) { el.classList.toggle('card--selected', on); },
@@ -491,7 +482,8 @@ export function createFlowsPanel(ctx) {
     actions: [h('button', { class: 'btn btn--primary btn--sm', type: 'button', onclick: () => ctx.actions.setTool('flow') }, icon('flow', { size: 14 }), 'Use the Flow tool')],
   });
   const guide = createGuidanceHeader(ctx, { filter: forFlows }); // what is still unconnected, and how vehicles find these flows
-  const el = h('div', { 'data-panel': 'flows' }, guide.el, top, form, splits.el, list, empty);
+  const explainer = createVehiclesExplainer(ctx); // "How vehicles find work": four sentences, collapsible
+  const el = h('div', { 'data-panel': 'flows' }, guide.el, explainer.el, top, form, splits.el, list, empty);
 
   /** Create cards for new flows, drop cards of removed ones and put the rest in layout order. */
   function syncCards(layout) {
@@ -512,7 +504,10 @@ export function createFlowsPanel(ctx) {
     chain.update(state);
     splits.update(layout);
     syncCards(layout);
-    for (const flow of layout.flows) cards.get(cardKey(layout, flow)).update(flow, state);
+    explainer.update(layout);
+    // the runner caches its KpiReport (250 ms): the loads waiting and delivered of every flow come from there, never from the simulation itself
+    const report = ctx.runner && ctx.runner.sim && typeof ctx.runner.kpis === 'function' ? ctx.runner.kpis() : null;
+    for (const flow of layout.flows) cards.get(cardKey(layout, flow)).update(flow, state, report);
     summary.textContent = layout.flows.length ? plural(layout.flows.length, 'flow') : '';
     empty.hidden = layout.flows.length > 0;
     list.hidden = layout.flows.length === 0;

@@ -14,14 +14,16 @@ import { h } from '../../util/dom.js';
 import { icon } from '../icons.js';
 import { STATION_TYPES, STATION_TYPE_ORDER, OBSTACLE_KINDS, FLEET_PRESETS, GRID_LIMITS } from '../../model/defaults.js';
 import {
-  getStation, getFlow, getFleet, flowsFrom, flowsTo, docksOf, roadAt, hasLink, cloneLayout, roadLengthMeters,
+  getStation, getFlow, getFleet, flowsFrom, docksOf, roadAt, hasLink, cloneLayout, roadLengthMeters,
   updateStation, resizeStation, duplicateStation, removeStation, updateObstacle, removeObstacle, updateLabel, removeLabel,
   eraseRoadCell, eraseLink, paintRoadPath, setRoadLimit, setNotes, updateSettings, resizeGrid, setCellSize,
 } from '../../model/layout.js';
 import { DX, DY, opposite, parseKey } from '../../util/grid.js';
 import { formatNumber, formatPercent, formatDistance, round } from '../../util/format.js';
 import { numberField, selectField, textField, rangeField, segmentedField, stepperField, distField, section, humanSeconds } from './fields.js';
-import { createGuidanceHeader } from './nextsteps.js';
+import { createGuidanceHeader, hiddenInProperties } from './nextsteps.js';
+import { createLoadsSections } from './jobs-view.js';
+import { describeServedBy, fleetJobsSummary } from './jobs-info.js';
 
 const plural = (n, one, many = `${one}s`) => `${formatNumber(n)} ${n === 1 ? one : many}`;
 const quoted = (name) => `“${name}”`;
@@ -409,36 +411,6 @@ function sizeSection(env, ctx) {
   return rememberedSection(memory, 'Size and position', '', bind(width, (st) => st.w), bind(height, (st) => st.h), note, where.el);
 }
 
-function flowsSection(env, ctx) {
-  const { memory, syncs, id } = env;
-  const list = h('div', { class: 'stack', style: { '--gap': '4px' } });
-  const render = keyedRender(list);
-  const sec = rememberedSection(memory, 'Connected flows', '', list);
-  const addButton = actionButton('Add a flow', 'flow', () => ctx.actions.setTool('flow'));
-
-  const row = (f, layout) => {
-    const a = getStation(layout, f.from);
-    const b = getStation(layout, f.to);
-    return h('button', {
-      class: 'btn btn--ghost btn--sm', type: 'button', style: { justifyContent: 'flex-start', width: '100%' },
-      title: 'Select this flow', onclick: () => ctx.store.select('flow', [f.id]),
-    }, icon('flow', { size: 14 }),
-    h('span', { class: 'truncate', style: { minWidth: 0 } }, `${a.name} → ${b.name}`),
-    h('span', { class: 'spacer' }),
-    h('span', { class: 'chip chip--outline', title: 'Relative share of the origin’s output' }, `weight ${formatNumber(f.weight, 2)}`));
-  };
-
-  syncs.push((st, state) => {
-    const flows = [...flowsTo(state.layout, id), ...flowsFrom(state.layout, id)];
-    sec.setAside(flows.length ? String(flows.length) : '');
-    const signature = JSON.stringify(flows.map((f) => [f.id, getStation(state.layout, f.from).name, getStation(state.layout, f.to).name, f.weight]));
-    render(signature, () => (flows.length
-      ? flows.map((f) => row(f, state.layout))
-      : [hintLine('No flows yet. A flow says where this station’s loads come from or go to.'), h('div', null, addButton)]));
-  });
-  return sec;
-}
-
 function docksLine(env) {
   const host = h('div', { class: 'row row--wrap' });
   const render = keyedRender(host);
@@ -475,8 +447,10 @@ function stationView(ctx, initial, memory) {
       actionButton('Delete', 'trash', () => deleteSelected(ctx, 'station', [id]), 'btn btn--sm btn--danger-ghost', 'Delete (Del)')),
     name.el, strip.el, docksLine(env));
   const sections = SECTION_BUILDERS[initial.type](env).map((s) => s.el);
-  const flows = initial.type === 'depot' ? null : flowsSection(env, ctx).el; // depots take part in no flows
-  const el = flush(header, ...sections, sizeSection(env, ctx).el, flows);
+  // right under the header: where this station's loads go and where they come from (a note for depots, which take part in no flow)
+  const loads = createLoadsSections(ctx, initial);
+  syncs.push((st, state) => loads.update(st, state));
+  const el = flush(header, ...loads.el, ...sections, sizeSection(env, ctx).el);
   return { el, update(state) { const st = getStation(state.layout, id); if (st) for (const sync of syncs) sync(st, state); } };
 }
 
@@ -603,19 +577,20 @@ function summaryView(ctx, { describe, tab, buttonLabel }) {
   };
 }
 
+const capitalised = (text) => text.charAt(0).toUpperCase() + text.slice(1);
+
 function describeFlow(id) {
   return (layout) => {
     const flow = getFlow(layout, id);
     const a = getStation(layout, flow.from);
     const b = getStation(layout, flow.to);
-    const fleet = flow.fleetId ? getFleet(layout, flow.fleetId) : null;
     const siblings = flowsFrom(layout, flow.from);
     const share = flow.weight / siblings.reduce((sum, f) => sum + f.weight, 0);
     const batch = flow.batchMax > 0 ? `${flow.batchMin} to ${flow.batchMax} loads` : `${flow.batchMin}+ loads (up to a full vehicle)`;
     const rows = [
       [`Share of ${a.name}\u2019s output`, `${formatPercent(share)} (weight ${formatNumber(flow.weight, 2)})`],
       ['Loads per cycle', formatNumber(flow.perCycle)], ['Loads per trip', batch], ['Priority', PRIORITY_TEXT[flow.priority] || 'Normal'],
-      ['Vehicles', fleet ? fleet.name : 'Any fleet'],
+      ['Served by', capitalised(describeServedBy(layout, id).value)],
     ];
     if (flow.maxWait > 0) rows.splice(3, 0, ['Longest wait for a batch', humanSeconds(flow.maxWait)]);
     return { kind: 'Flow', icon: 'flow', title: `${a.name} \u2192 ${b.name}`, rows };
@@ -630,6 +605,7 @@ function describeFleet(id) {
       kind: 'Fleet', icon: f.preset === 'forklift' ? 'forklift' : 'truck', title: f.name,
       rows: [
         ['Vehicles', `${f.count} \u00d7 ${(FLEET_PRESETS[f.preset] || FLEET_PRESETS.custom).label.split(' (')[0]}`],
+        ['Flows it serves', String(fleetJobsSummary(layout, id).flows)],
         ['Top speed', `${formatNumber(f.speed, 1)} m/s (${formatNumber(f.speed * 3.6, 1)} km/h)`], ['Carries', plural(f.capacity, 'load')],
         ['Home depot', home ? home.name : 'None'], ['When idle', f.idle === 'park' ? 'Park in a depot' : 'Wait on the road'],
         ['Battery', f.battery.enabled ? `${humanSeconds(f.battery.runtimeMin * 60)} per charge` : 'Not modelled'],
@@ -701,6 +677,47 @@ function summaryBlock() {
   };
 }
 
+const STATION_LIST_LIMIT = 12;
+
+/**
+ * Every station of the plant as a button. The plan itself can only be pointed at, so this is the way to pick a station with the
+ * keyboard, and the quickest way to find one on a big plant: a press selects the station and brings it into view.
+ */
+function stationsSection(ctx, memory) {
+  const list = h('div', { class: 'stack', style: { '--gap': '2px' } });
+  const draw = keyedRender(list);
+  const group = rememberedSection(memory, 'Stations', '', list);
+  let showAll = false;
+  let latest = null;
+
+  const row = (st) => h('button', {
+    class: 'btn btn--ghost btn--sm', type: 'button', style: { width: '100%', justifyContent: 'flex-start' }, dataset: { station: st.id },
+    'aria-label': `Select ${st.name} (${typeName(st.type)})`, onclick: () => ctx.actions.focus({ stationIds: [st.id] }),
+  }, h('span', { class: `swatch tone-${st.type}` }), h('span', { class: 'truncate' }, st.name), h('span', { class: 'spacer' }), h('span', { class: 'text-dim' }, typeName(st.type)));
+
+  function build() {
+    const stations = latest.stations;
+    if (!stations.length) return [hintLine('No stations yet.')];
+    const shown = showAll ? stations : stations.slice(0, STATION_LIST_LIMIT);
+    const more = stations.length > STATION_LIST_LIMIT
+      ? [h('button', { class: 'btn btn--ghost btn--sm', type: 'button', dataset: { role: 'more' }, onclick: () => { showAll = !showAll; redraw(); list.querySelector('[data-role=more]').focus(); } },
+        showAll ? 'Show fewer' : `Show all ${stations.length} stations`)]
+      : [];
+    return [...shown.map(row), ...more];
+  }
+  const signature = () => JSON.stringify([showAll, latest.stations.map((st) => [st.id, st.name, st.type])]);
+  const redraw = () => draw(signature(), build);
+
+  return {
+    el: group.el,
+    update(layout) {
+      latest = layout;
+      group.setAside(String(layout.stations.length));
+      redraw();
+    },
+  };
+}
+
 function plantView(ctx, memory) {
   const { store } = ctx;
   const start = store.getState().layout;
@@ -733,10 +750,12 @@ function plantView(ctx, memory) {
   });
   handedness.el.append(hintLine('Which side of a two-way road vehicles drive on.'));
   const summary = summaryBlock();
+  const stations = stationsSection(ctx, memory);
 
   const el = flush(
     pad(h('div', { class: 'row' }, h('span', { class: 'eyebrow' }, 'Plant settings'), h('span', { class: 'spacer' }),
       actionButton('Fit view', 'fit', () => ctx.actions.fitView())), summary.el),
+    stations.el,
     rememberedSection(memory, 'Plant', '', name.el, notes.el).el,
     rememberedSection(memory, 'Grid and scale', '', h('div', { class: 'field-grid' }, cols.el, rows.el), cell.el, handedness.el).el);
 
@@ -750,6 +769,7 @@ function plantView(ctx, memory) {
       cell.set(layout.grid.cellSize);
       handedness.set(layout.settings.handedness);
       summary.update(layout);
+      stations.update(layout);
     },
   };
 }
@@ -792,7 +812,7 @@ function planFor(ctx, state, memory) {
  */
 export function createInspectorPanel(ctx) {
   const memory = new Map();
-  const guide = createGuidanceHeader(ctx, { checklist: true, follow: true }); // Next steps (and, with nothing selected, Getting started)
+  const guide = createGuidanceHeader(ctx, { checklist: true, follow: true, hide: hiddenInProperties }); // Next steps (and, with nothing selected, Getting started)
   const form = h('div');
   const el = h('div', { 'data-panel': 'inspector' }, guide.el, form);
   let view = null;

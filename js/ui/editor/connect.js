@@ -15,10 +15,23 @@
 import { getStation, stationAt } from '../../model/layout.js';
 import { FLOW_FROM, FLOW_TO, plannerName, flowProblem } from './tools.js';
 
+/** The short planner name of a station type in a sentence (plannerName keeps "Storage / buffer"). */
+const TYPE_NOUN = Object.freeze({ source: 'Goods in', process: 'Workstation', storage: 'Storage', sink: 'Goods out' });
+const nounOf = (type) => TYPE_NOUN[type] || plannerName(type);
+
 /** What the flow handle says on hover (status line and tooltip). */
 export const HANDLE_HINT = 'Drag to another station to send loads there';
 /** Toast after a flow was created by the handle, the connect mode or the toast action. */
 export const FLOW_CREATED = 'Flow created. Vehicles will serve it automatically.';
+/**
+ * The toast after flow `flow` was added to `layout` (the layout that already holds it). A workstation that now has several inputs starts
+ * a cycle only when every one of them has delivered: say so right here, where a planner who just added a second Goods in is surprised.
+ */
+export function flowCreatedText(layout, flow) {
+  const to = flow && getStation(layout, flow.to);
+  const inputs = to && to.type === 'process' ? layout.flows.filter((f) => f.to === to.id).length : 0;
+  return inputs < 2 ? FLOW_CREATED : `${FLOW_CREATED} ${to.name} now needs a load from ${inputs === 2 ? 'both' : `all ${inputs}`} of its inputs before every cycle.`;
+}
 /** Said when a connect action starts in a plant that has no possible partner yet (role: 'from' | 'to'). */
 export const noPartnerText = (role) => (role === 'to'
   ? 'Nothing can feed it yet. Add a Goods in, Workstation or Storage first.'
@@ -148,18 +161,18 @@ export const hasHandle = (station) => canSend(station);
 // ---- dropping on a station ------------------------------------------------------------------------------------
 
 /**
- * What releasing (or clicking) on grid cell [cx, cy] does when connecting from `anchor`:
+ * What releasing (or clicking) on grid cell [cx, cy] does when connecting from `anchor` (`verb` is 'Drop' or 'Click', for the message):
  *   { outcome: 'connect', fromId, toId, label }    add the flow (`label` is the undo step name)
  *   { outcome: 'exists', flowId, message }         select that flow, tell the planner it is there already
  *   { outcome: 'invalid' | 'self', message }       a station that cannot be the other end
  *   { outcome: 'none', message }                   no station there (empty ground, road, wall)
  * `message` is a sentence for a toast; it says what to do next.
  */
-export function dropTarget(layout, anchor, cell) {
+export function dropTarget(layout, anchor, cell, verb = 'Drop') {
   const a = anchorOf(anchor);
   const here = cell ? stationAt(layout, cell[0], cell[1]) : null;
   if (!a || !getStation(layout, a.anchorId)) return { outcome: 'none', message: 'That station is gone.' };
-  if (!here) return { outcome: 'none', message: noDropText(a.role) };
+  if (!here) return { outcome: 'none', message: noDropText(a.role, verb) };
   const c = classifyTarget(layout, anchor, here.id);
   if (c.status === 'valid') {
     const fromId = a.role === 'from' ? a.anchorId : here.id;
@@ -167,7 +180,7 @@ export function dropTarget(layout, anchor, cell) {
     return { outcome: 'connect', fromId, toId, label: connectLabel(layout, fromId, toId) };
   }
   if (c.status === 'exists') return { outcome: 'exists', flowId: c.flowId, message: c.reason };
-  if (c.status === 'self') return { outcome: 'self', message: noDropText(a.role) };
+  if (c.status === 'self') return { outcome: 'self', message: noDropText(a.role, verb) };
   return { outcome: 'invalid', message: `${c.reason} ${tryInstead(a.role)}` };
 }
 
@@ -179,10 +192,11 @@ export function connectLabel(layout, fromId, toId) {
 }
 
 /** Gentle hint after a release that did not connect anything. */
-function noDropText(role) {
+function noDropText(role, verb) {
+  const on = verb === 'Click' ? 'Click' : 'Drop';
   return role === 'from'
-    ? 'Nothing connected. Drop on a Workstation, Storage or Goods out to send loads there.'
-    : 'Nothing connected. Choose a Goods in, Workstation or Storage that should feed it.';
+    ? `Nothing connected. ${on} on a Workstation, Storage or Goods out to send loads there.`
+    : `Nothing connected. ${on} on a Goods in, Workstation or Storage that should feed it.`;
 }
 
 function tryInstead(role) {
@@ -199,6 +213,19 @@ export function connectingText(layout, anchor) {
   return a.role === 'from'
     ? `Where should ${s.name} send its loads? Click the receiving station. Esc cancels.`
     : `What feeds ${s.name}? Click the station that sends loads to it. Esc cancels.`;
+}
+
+/**
+ * The prompt shown as a toast with a Cancel button while connect mode is on, on a touch screen or a narrow window where the status
+ * line is cut off and there is no Esc key. Says what to do, in the same words for both roles.
+ */
+export function connectPrompt(layout, anchor) {
+  const a = anchorOf(anchor);
+  const s = a && getStation(layout, a.anchorId);
+  if (!s) return '';
+  return a.role === 'from'
+    ? `Where should ${s.name} send its loads? Choose the receiving station on the plan.`
+    : `What feeds ${s.name}? Choose the station that sends loads to it.`;
 }
 
 /**
@@ -233,7 +260,7 @@ export function targetLabel(status, verb = 'Drop', role = 'from') {
 export function placementPrompt(layout, stationId) {
   const s = getStation(layout, stationId);
   if (!s || s.type === 'depot') return null;
-  const name = plannerName(s.type);
+  const name = nounOf(s.type);
   const canGo = canSend(s) && connectTargets(layout, { fromId: s.id }).valid.length > 0;
   const canBeFed = canReceive(s) && connectTargets(layout, { toId: s.id }).valid.length > 0;
   if (s.type === 'source') {

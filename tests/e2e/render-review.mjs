@@ -682,7 +682,7 @@ const poseGuard = async (ctx) => {
     const out = [];
     for (const alpha of [0, 0.5, 1]) {
       R.load('dense', { run: 600 });
-      R.view({ overlays: { grid: false } });
+      R.view({ overlays: { grid: false, jobs: false } }); // the Jobs overlay (lines from vehicles to their docks, "n waiting" badges) is not a vehicle: it has its own checks
       R.renderer.render(alpha);
       const cs = R.layout.grid.cellSize;
       const live = R.sim.vehicles;

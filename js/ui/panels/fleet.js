@@ -1,5 +1,6 @@
 // Fleet panel (docs/ARCHITECTURE.md 6.5): one card per vehicle fleet. The header of a card always shows the most-used knob
-// (how many vehicles) and, while a simulation exists, how many of them are working, waiting or idle. The body holds the
+// (how many vehicles); while a simulation exists, a live strip under it (fleet-status.js) says how many of them work, wait, stand
+// idle or are parked, how many trips they made and whether the fleet is barely used. The body holds the
 // vehicle data (type, colour, speed, loading times), the battery, breakdowns and parking rules.
 //
 //   const panel = createFleetPanel(ctx);   // ctx: see docs/ARCHITECTURE.md 6.8
@@ -19,6 +20,8 @@ import { getFleet, addFleet, updateFleet, removeFleet, duplicateFleet } from '..
 import { formatNumber, round } from '../../util/format.js';
 import { numberField, selectField, textField, segmentedField, stepperField, switchField, section, emptyState, callout, humanSeconds, uid } from './fields.js';
 import { createGuidanceHeader, forFleet } from './nextsteps.js';
+import { createFleetStatus } from './fleet-status.js';
+import { createFleetJobs } from './jobs-view.js';
 
 const INLINE_W = '120px';
 const quoted = (name) => `“${name}”`;
@@ -438,6 +441,18 @@ function breakdownSection(env) {
   return sec;
 }
 
+/** "Jobs this fleet serves": which flows the fleet carries, how many flows share its vehicles, and the switch that dedicates a flow to it (jobs-view.js). */
+function jobsSection(env) {
+  const { ctx, id, syncs, memory } = env;
+  const jobs = createFleetJobs(ctx, id);
+  const sec = rememberedSection(memory, `${id}:jobs`, true, 'Jobs this fleet serves', '', jobs.el);
+  syncs.push((fleet, state) => {
+    jobs.update(fleet, state);
+    sec.setAside(jobs.aside);
+  });
+  return sec;
+}
+
 function parkingSection(env) {
   const { initial, edit, syncs, memory, id, ctx } = env;
   const home = selectField({
@@ -482,40 +497,17 @@ function cardHeader(env, onToggle) {
   count.el.querySelector('.field__label').classList.add('sr-only');
   count.input.style.width = '44px';
   const summary = h('span', { class: 'text-dim truncate', style: { minWidth: 0, fontSize: 'var(--fs-sm)' } });
-  const status = createStatusRow();
-  const quick = h('div', { class: 'row row--wrap', style: { padding: '0 12px 12px 12px', '--gap': '12px' } }, count.el, summary, status.el);
+  // the live status (working / waiting / idle / parked, trips, "barely used") is the strip of js/ui/panels/fleet-status.js under this header
+  const quick = h('div', { class: 'row row--wrap', style: { padding: '0 12px 12px 12px', '--gap': '12px' } }, count.el, summary);
   const el = h('div', null, h('div', { class: 'row', style: { '--gap': '2px', paddingRight: '8px' } }, toggle, duplicate, remove), quick);
 
-  syncs.push((fleet, state, live) => {
+  syncs.push((fleet) => {
     name.textContent = fleet.name;
     dot.style.background = fleet.color;
     count.set(fleet.count);
     summary.textContent = fleetSummary(fleet);
-    summary.hidden = !!live;
-    status.set(live);
   });
   return { el, toggle };
-}
-
-/** Working / waiting / idle (and, only when there are any, charging / out of service) with a dot each; hidden without a simulation. */
-function createStatusRow() {
-  const parts = [['working', 'driving', 'working'], ['waiting', 'waiting', 'waiting'], ['idle', 'idle', 'idle'], ['charging', 'charging', 'charging'], ['down', 'broken', 'out of service']].map(([key, tone, word]) => {
-    const text = h('span');
-    return { key, word, text, el: h('span', { class: 'row', style: { '--gap': '5px' } }, h('span', { class: `dot tone-${tone}` }), text) };
-  });
-  const el = h('div', { class: 'row row--wrap', role: 'group', 'aria-label': 'Live status', style: { '--gap': '10px', fontSize: 'var(--fs-sm)' }, hidden: true }, parts.map((p) => p.el));
-  return {
-    el,
-    set(counts) {
-      el.hidden = !counts;
-      if (!counts) return;
-      for (const p of parts) {
-        const n = counts[p.key];
-        p.el.hidden = n === 0 && (p.key === 'charging' || p.key === 'down');
-        p.text.textContent = `${n} ${p.word}`;
-      }
-    },
-  };
 }
 
 function duplicateCard(ctx, id) {
@@ -550,8 +542,9 @@ function createFleetCard(ctx, initial, memory, open) {
   const body = h('div', { class: 'stack', style: { '--gap': '0', borderTop: '1px solid var(--border)' }, id: `fleet-body-${env.id}` });
   const head = cardHeader(env, () => setExpanded(!expanded));
   head.toggle.setAttribute('aria-controls', body.id);
-  body.append(vehicleSection(env).el, batterySection(env).el, breakdownSection(env).el, parkingSection(env).el);
-  const el = h('div', { class: 'card', role: 'group', 'aria-label': `Fleet ${initial.name}`, dataset: { fleet: env.id } }, head.el, body);
+  body.append(jobsSection(env).el, vehicleSection(env).el, batterySection(env).el, breakdownSection(env).el, parkingSection(env).el);
+  const live = createFleetStatus(ctx, env.id);
+  const el = h('div', { class: 'card', role: 'group', 'aria-label': `Fleet ${initial.name}`, dataset: { fleet: env.id } }, head.el, live.el, body);
 
   function setExpanded(value) {
     expanded = value;
@@ -568,9 +561,10 @@ function createFleetCard(ctx, initial, memory, open) {
 
   return {
     el,
-    update(fleet, state, live) {
+    update(fleet, state, counts) {
       el.setAttribute('aria-label', `Fleet ${fleet.name}`);
-      for (const sync of env.syncs) sync(fleet, state, live);
+      for (const sync of env.syncs) sync(fleet, state, counts);
+      live.update(state);
     },
     setSelected(on) { el.classList.toggle('card--selected', on); },
     /** Bring a fleet that was selected elsewhere into view, unless the planner is working inside this card right now. */

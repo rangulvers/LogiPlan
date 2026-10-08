@@ -15,15 +15,21 @@ import { TAU, roundRectPath, fontOf, measure } from './draw.js';
 
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
-/** Handle radius (CSS px) for a mouse and for a coarse pointer (touch); the pointer target is larger than the drawing. */
+/**
+ * Handle radius (CSS px) for a mouse (smaller when the plan is zoomed far out, so the handle does not cover the plant) and for a
+ * coarse pointer (touch, always large); the pointer target is larger than the drawing.
+ */
 export const HANDLE_R = 11;
+export const HANDLE_R_MIN = 8;
 export const HANDLE_R_COARSE = 14;
 /** Extra radius while the pointer is over the handle or it is pressed. */
 const GROW = 2.5;
 /** Gap between the station edge and the handle circle: clear of the 8 px resize handle on that edge. */
 const EDGE_GAP = 8;
-/** Pointer reach beyond the drawn circle. */
-const HIT_SLACK = 5;
+/** Below this size (px of the shorter side of the brick, zoomed far out) the plan is too small to aim at: no handle. */
+const MIN_STATION_PX = 14;
+/** Pointer reach beyond the drawn circle (kept small: the resize handle in the middle of the same edge has its own zone). */
+const HIT_SLACK = 3;
 
 const sideCache = { layout: null, id: '', side: 'e' };
 
@@ -42,8 +48,8 @@ export function handleGeometry(fr) {
   const h = fr.view.connectHandle;
   if (!h || !fr.scene) return null;
   const e = fr.scene.stationById.get(h.id);
-  if (!e) return null;
-  const r = fr.coarse ? HANDLE_R_COARSE : HANDLE_R;
+  if (!e || Math.min(e.w, e.h) * fr.zoom < MIN_STATION_PX) return null;
+  const r = fr.coarse ? HANDLE_R_COARSE : clamp(fr.cs * fr.zoom * 0.45, HANDLE_R_MIN, HANDLE_R);
   const rect = { x: fr.ox + e.x * fr.zoom, y: fr.oy + e.y * fr.zoom, w: e.w * fr.zoom, h: e.h * fr.zoom };
   const g = handlePlacement(rect, sideOf(fr.layout, h.id), r + EDGE_GAP);
   g.r = r;
@@ -118,8 +124,11 @@ function brickPath(ctx, fr, e, pad) {
   roundRectPath(ctx, fr.ox + e.x * z - pad, fr.oy + e.y * z - pad, e.w * z + 2 * pad, e.h * z + 2 * pad, radiusOf(fr) + pad);
 }
 
-/** Pill with a short sentence centred above (or, near the top edge, below) the station. */
-function drawTargetPill(ctx, fr, e, text, status) {
+/**
+ * Pill with a short sentence centred above the station, or below it when the gesture started above (the rubber band arrives
+ * from there and its arrow head must stay visible) or when there is no room above.
+ */
+function drawTargetPill(ctx, fr, e, text, status, below) {
   const theme = fr.theme;
   const z = fr.zoom;
   ctx.font = fontOf(theme, 700, 11.5);
@@ -129,8 +138,9 @@ function drawTargetPill(ctx, fr, e, text, status) {
   const h = 22;
   const cx = fr.ox + (e.x + e.w / 2) * z;
   const x = clamp(cx - w / 2, 6, Math.max(6, fr.w - w - 6));
-  let y = fr.oy + e.y * z - h - 8;
+  let y = below ? fr.oy + (e.y + e.h) * z + 8 : fr.oy + e.y * z - h - 8;
   if (y < 6) y = fr.oy + (e.y + e.h) * z + 8;
+  else if (y + h > fr.h - 6) y = fr.oy + e.y * z - h - 8;
   const good = status === 'valid';
   ctx.beginPath();
   roundRectPath(ctx, x, y, w, h, h / 2);
@@ -151,6 +161,7 @@ export function drawConnectTargets(ctx, fr) {
   const c = fr.view.connect;
   if (!c || !fr.scene) return;
   const theme = fr.theme;
+  const anchor = fr.scene.stationById.get(c.anchorId);
   let over = null;
   for (const e of fr.scene.stations) {
     const id = e.st.id;
@@ -178,5 +189,8 @@ export function drawConnectTargets(ctx, fr) {
       ctx.globalAlpha = 1;
     }
   }
-  if (over) drawTargetPill(ctx, fr, over, targetLabel(c.overStatus, c.verb, c.role), c.overStatus);
+  if (over) {
+    const below = !!anchor && anchor.y + anchor.h / 2 < over.y + over.h / 2; // the gesture comes from above
+    drawTargetPill(ctx, fr, over, targetLabel(c.overStatus, c.verb, c.role), c.overStatus, below);
+  }
 }

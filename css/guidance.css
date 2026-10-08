@@ -124,7 +124,21 @@
   min-width: 0;
 }
 
+.guide-step__head {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+}
+
+.guide-step__show {
+  flex: none;
+  margin: -3px -6px -3px 0; /* tucked into the corner: the title keeps the width */
+  color: var(--text-dim);
+}
+
 .guide-step__title {
+  flex: 1 1 auto;
+  min-width: 0;
   font-size: var(--fs-md);
   font-weight: var(--fw-semibold);
   line-height: var(--lh-tight);
@@ -146,8 +160,8 @@
   margin-top: var(--sp-2);
 }
 
-.guide-step__actions:empty {
-  display: none;
+.guide-step__actions:not(:has(> :not([hidden]))) {
+  display: none; /* nothing to press: no empty row */
 }
 
 .guide-connect {
@@ -156,6 +170,10 @@
   align-items: center;
   gap: var(--sp-2);
   min-width: 0;
+}
+
+.guide-connect + .guide-step__dismiss {
+  margin-left: calc(-1 * var(--sp-2)); /* its own row under the choice: the word lines up with the select */
 }
 
 .guide-connect[hidden] {
@@ -243,12 +261,12 @@
   margin-top: 2px;
   border: 1.5px solid var(--control-border);
   border-radius: var(--radius-pill);
-  color: #fff;
 }
 
 .guide-check__row.is-done .guide-check__box {
   border-color: var(--good);
-  background: var(--good);
+  background: var(--good-soft);
+  color: var(--good-text);
 }
 
 .guide-check__row.is-current .guide-check__box {
@@ -287,11 +305,12 @@
 .guide-chip {
   position: absolute;
   z-index: var(--z-float);
+  top: var(--sp-2); /* a definite height, so the popover can be capped to the room there is */
   right: var(--sp-2);
   bottom: 44px;
   left: var(--sp-2);
   display: flex;
-  flex-direction: column;
+  flex-direction: column-reverse; /* the chip is first in the DOM (Tab order) and lowest on screen; the popover opens above it */
   align-items: flex-start;
   gap: var(--sp-2);
   pointer-events: none;
@@ -334,7 +353,7 @@
 
 .guide-pop {
   width: min(360px, 100%);
-  max-height: min(60vh, 440px);
+  max-height: min(440px, calc(100% - 34px - 84px)); /* chip, gap, and the simulation bar at the top */
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -356,6 +375,17 @@
   line-height: var(--lh);
 }
 
+@media (pointer: coarse) {
+  .guide-check__row {
+    align-items: center;
+    min-height: var(--control-h); /* 40 px on a touch screen */
+  }
+
+  .guide-check__box {
+    margin-top: 0;
+  }
+}
+
 @media (forced-colors: active) {
   .guide-check__row.is-done .guide-check__box {
     border-color: Highlight;
@@ -373,4 +403,18 @@
   .guide-stack {
     display: none !important;
   }
+}
+
+/* Canvas guidance (js/ui/render/jobs.js, js/ui/editor/connector.js): the display options gained the "Jobs" toggle. On a narrow
+   stage the toggles wrap onto a second line instead of running out of the bar. */
+.overlays__group:not(.overlays__group--heat) {
+  flex-wrap: wrap;
+}
+
+/* Walkthrough: a tap on the chip, the cards or the popover must not flash the browser's blue tap rectangle over the control. */
+.guide button,
+.guide select,
+.guide-chip button,
+.guide-pop button {
+  -webkit-tap-highlight-color: transparent;
 }

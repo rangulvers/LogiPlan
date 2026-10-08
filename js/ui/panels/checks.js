@@ -12,6 +12,8 @@
 import { h } from '../../util/dom.js';
 import { icon } from '../icons.js';
 import { callout, emptyState } from './fields.js';
+import { applyFix, fixForIssue } from '../guidance.js';
+import { createConnectControl } from './nextsteps.js';
 
 const GROUPS = Object.freeze([
   { severity: 'error', title: 'Errors', explain: 'The simulation cannot work properly until these are fixed.' },
@@ -62,6 +64,7 @@ export function createChecksPanel(ctx) {
   let count = 0;
   let notified = null;
   let onCount = null;
+  let controls = []; // the inline "where to / Connect" pickers of the issues on screen (kept in step with the layout)
 
   const summary = h('div', { class: 'row row--wrap', style: { padding: '12px 12px 0' } });
   const list = h('div', { class: 'stack', style: { padding: '12px', '--gap': '16px', outline: 'none' }, tabindex: '-1' });
@@ -83,8 +86,29 @@ export function createChecksPanel(ctx) {
     }, 'Dismiss');
   }
 
+  /** The one-click fix guidance offers for an issue: a "where to + Connect" picker, an "Add vehicles" button, or nothing. */
+  function fixControl(issue) {
+    const layout = ctx.store.getState().layout;
+    const fix = fixForIssue(layout, issue);
+    if (!fix) return null;
+    if (fix.type === 'connect-flow') {
+      const control = createConnectControl(ctx, fix);
+      control.el.dataset.issue = issue.id;
+      control.button.dataset.issue = issue.id;
+      control.button.dataset.role = 'fix';
+      control.update(layout);
+      controls.push(control);
+      return control.el;
+    }
+    return h('button', {
+      class: 'btn btn--sm btn--primary', type: 'button', 'aria-label': `${fix.label}: ${issue.message}`, dataset: { issue: issue.id, role: 'fix' },
+      onclick: () => applyFix(ctx, fix),
+    }, fix.label);
+  }
+
   function issueCallout(issue) {
-    const buttons = [showButton(issue), issue.severity === 'info' ? dismissButton(issue) : null].filter(Boolean);
+    const hint = issue.code === 'station-no-dock' ? h('span', { class: 'field__hint' }, 'Select the station and drag it next to a road.') : null;
+    const buttons = [fixControl(issue), showButton(issue), hint, issue.severity === 'info' ? dismissButton(issue) : null].filter(Boolean);
     return callout({
       severity: issue.severity, title: issue.message, text: issue.hint,
       actions: buttons.length ? h('div', { class: 'row row--wrap', style: { marginTop: '6px' } }, buttons) : null,
@@ -167,6 +191,7 @@ export function createChecksPanel(ctx) {
       const active = list.contains(document.activeElement) ? { ...document.activeElement.dataset } : null;
       const empty = !groups.error.length && !groups.warning.length && !groups.info.length;
       summary.replaceChildren(...summaryChips(groups));
+      controls = [];
       list.replaceChildren(
         ...(empty ? [emptyBlock()] : []),
         ...GROUPS.filter((g) => groups[g.severity].length).map((g) => groupBlock(g, groups[g.severity])),
@@ -188,7 +213,9 @@ export function createChecksPanel(ctx) {
       onCount = typeof fn === 'function' ? fn : null;
       onCount?.(count); // the shell may assign this after the first draw: deliver the current count right away
     },
-    update() {
+    update(state) {
+      const layout = state?.layout ?? ctx.store.getState().layout;
+      for (const control of controls) control.update(layout);
       if (shown && shown[0] === ctx.issues() && shown[1] === revision) return;
       draw();
     },

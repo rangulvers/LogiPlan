@@ -35,8 +35,8 @@ export const CHIP_NAME_MAX = 16;
 /** Lines are at full strength up to this distance (m) and at their faintest from FAR_M on. */
 const NEAR_M = 6;
 const FAR_M = 40;
-const MIN_ALPHA = 0.3;
-const MAX_ALPHA = 0.95;
+const MIN_ALPHA = 0.55;
+const MAX_ALPHA = 1;
 
 /** Line colours per theme: heading to pick up (amber) and carrying to deliver (blue). */
 const PALETTE = {
@@ -227,46 +227,59 @@ export function drawJobLines(ctx, fr) {
   if (count === 0) return;
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
-  for (let k = 0; k < count; k++) drawLine(ctx, fr, lineBuf, k * LINE_STRIDE, pal);
+  // many vehicles at work: a plain, lighter line each keeps the plan readable and the frame cheap (strokes are the cost here)
+  const crowd = count > CROWD_SOLID ? 2 : count > CROWD_NO_CASING ? 1 : 0;
+  const thin = crowd === 2 ? clamp(CROWD_SOLID / count, 0.4, 1) : 1;
+  for (let k = 0; k < count; k++) drawLine(ctx, fr, lineBuf, k * LINE_STRIDE, pal, crowd, thin);
   if (z >= CHIP_FOCUS_MIN_ZOOM) {
-    ctx.font = fontOf(fr.theme, 600, 10.5);
+    ctx.font = fontOf(fr.theme, 600, z >= 40 ? 12 : 10.5);
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    for (let k = 0; k < count; k++) {
-      const o = k * LINE_STRIDE;
-      if (z >= CHIP_MIN_ZOOM || lineBuf[o + 7] === 2) drawChip(ctx, fr, lineBuf, o, lineEntries[k], pal);
+    chipCount = 0;
+    for (let pass = 0; pass < 2; pass++) { // the chips of hovered / selected vehicles first: they win when chips would overlap
+      for (let k = 0; k < count; k++) {
+        const o = k * LINE_STRIDE;
+        const focus = lineBuf[o + 7] === 2;
+        if (focus === (pass === 0) && (z >= CHIP_MIN_ZOOM || focus)) drawChip(ctx, fr, lineBuf, o, lineEntries[k], pal);
+      }
     }
   }
   ctx.globalAlpha = 1;
-  ctx.setLineDash([]);
+  ctx.setLineDash(NO_DASH);
 }
 
-function drawLine(ctx, fr, buf, o, pal) {
+function drawLine(ctx, fr, buf, o, pal, crowd, thin) {
   const sx = buf[o];
   const sy = buf[o + 1];
   const ex = buf[o + 2];
   const ey = buf[o + 3];
   const focus = buf[o + 7] === 2;
   const color = buf[o + 5] === 0 ? pal.pickup : pal.drop;
-  const width = focus ? 2.4 : 1.6;
+  const z = fr.zoom;
+  const width = (focus ? 2.7 : 1.7) + clamp(z / 45, 0, 1.3); // a little heavier when zoomed in, where everything else is bigger
   const dx = ex - sx;
   const dy = ey - sy;
   const len = Math.hypot(dx, dy);
   const ux = dx / len;
   const uy = dy / len;
-  const head = focus ? 9 : 7.5;
+  const head = (focus ? 9.5 : 8) + clamp(z / 60, 0, 1.5);
   const bx = ex - ux * head * 0.8; // the dashes end where the arrow head begins
   const by = ey - uy * head * 0.8;
-  ctx.globalAlpha = buf[o + 4];
+  const plain = crowd === 2 && !focus; // lots of lines: no dashes, no casing
   // casing first: a solid, wider stroke in the halo colour keeps the dashes readable on roads, bricks and studs
-  ctx.setLineDash([]);
-  ctx.beginPath();
-  ctx.moveTo(sx, sy);
-  ctx.lineTo(bx, by);
-  ctx.lineWidth = width + 2.6;
-  ctx.strokeStyle = fr.theme.flowHalo;
-  ctx.stroke();
-  ctx.setLineDash(DASH);
+  if (crowd === 0 || focus) {
+    ctx.globalAlpha = 0.5 + buf[o + 4] * 0.4;
+    ctx.setLineDash(NO_DASH);
+    ctx.beginPath();
+    ctx.moveTo(sx, sy);
+    ctx.lineTo(bx, by);
+    ctx.lineWidth = width + 2.4;
+    ctx.strokeStyle = fr.theme.flowHalo;
+    ctx.stroke();
+  }
+  ctx.globalAlpha = plain ? buf[o + 4] * thin : buf[o + 4];
+  ctx.lineCap = 'butt'; // square dash ends: a dashed stroke with round caps costs several times more to rasterise
+  ctx.setLineDash(plain ? NO_DASH : z < 12 ? DASH_SMALL : z < 40 ? DASH : DASH_LARGE);
   ctx.lineDashOffset = 0;
   ctx.beginPath();
   ctx.moveTo(sx, sy);
@@ -274,7 +287,8 @@ function drawLine(ctx, fr, buf, o, pal) {
   ctx.lineWidth = width;
   ctx.strokeStyle = color;
   ctx.stroke();
-  ctx.setLineDash([]);
+  ctx.setLineDash(NO_DASH);
+  ctx.lineCap = 'round';
   const hw = head * 0.52;
   ctx.beginPath();
   ctx.moveTo(ex, ey);
@@ -287,12 +301,23 @@ function drawLine(ctx, fr, buf, o, pal) {
   ctx.fillStyle = color;
   ctx.fill();
 }
-const DASH = [5, 4];
+/** More lines than this: no casing / no dashes either. */
+const CROWD_NO_CASING = 24;
+const CROWD_SOLID = 64;
+const NO_DASH = [];
+const DASH_SMALL = [4, 3];
+const DASH = [6, 4];
+const DASH_LARGE = [9, 6];
 
+/** Rectangles (x0, y0, x1, y1) of the chips drawn so far this frame: a chip that would cover another is left out. */
+let chipRects = new Float64Array(4 * 16);
+let chipCount = 0;
+
+/** Draw the chip of one line unless it does not fit on the line or would cover a chip drawn before. */
 function drawChip(ctx, fr, buf, o, entry, pal) {
   const chip = chipOf(ctx, entry);
   const w = chip.w + 14;
-  const h = 17;
+  const h = fr.zoom >= 40 ? 19 : 17;
   const sx = buf[o];
   const sy = buf[o + 1];
   const dx = buf[o + 2] - sx;
@@ -306,8 +331,24 @@ function drawChip(ctx, fr, buf, o, entry, pal) {
   if (d + reach + 10 > len) return;
   const cx = sx + ux * d;
   const cy = sy + uy * d;
+  const x0 = cx - w / 2;
+  const y0 = cy - h / 2;
+  for (let i = 0; i < chipCount; i++) {
+    const r = i * 4;
+    if (x0 < chipRects[r + 2] && x0 + w > chipRects[r] && y0 < chipRects[r + 3] && y0 + h > chipRects[r + 1]) return;
+  }
+  if ((chipCount + 1) * 4 > chipRects.length) {
+    const grown = new Float64Array(chipRects.length * 2);
+    grown.set(chipRects);
+    chipRects = grown;
+  }
+  const r = chipCount++ * 4;
+  chipRects[r] = x0;
+  chipRects[r + 1] = y0;
+  chipRects[r + 2] = x0 + w;
+  chipRects[r + 3] = y0 + h;
   ctx.globalAlpha = Math.min(1, buf[o + 4] + 0.25);
-  fillPill(ctx, cx - w / 2, cy - h / 2, w, h, fr.theme.flowChip);
+  fillPill(ctx, x0, y0, w, h, fr.theme.flowChip);
   ctx.lineWidth = 1.25;
   ctx.strokeStyle = buf[o + 5] === 0 ? pal.pickup : pal.drop;
   ctx.stroke();
@@ -367,7 +408,7 @@ function drawBadge(ctx, fr, e, n, high, z) {
   }
   const text = waitingText(n);
   const tw = measureCached(ctx, text);
-  const w = tw + h + 4; // icon cell + text + padding
+  const w = tw + h + 8; // icon cell + text + padding
   const x = right - w;
   const y = top - h - 3;
   fillPill(ctx, x - 1.5, y - 1.5, w + 3, h + 3, '#ffffff');
@@ -376,7 +417,7 @@ function drawBadge(ctx, fr, e, n, high, z) {
   else drawBox(ctx, x + h / 2 + 1, y + h / 2, h * 0.5, '#ffe9bd', '#7a4a00');
   ctx.textAlign = 'left';
   ctx.fillStyle = ink;
-  ctx.fillText(text, x + h + 1, y + h / 2 + 0.5);
+  ctx.fillText(text, x + h + 4, y + h / 2 + 0.5);
 }
 
 /** A "!" in a circle: the colour-independent mark of a badge that has turned red. */

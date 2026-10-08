@@ -316,8 +316,8 @@ export class Renderer {
 
   /**
    * What is under screen point (px, py) in CSS pixels. Priority: the flow handle ('connect-handle', only while
-   * `view.connectHandle` is set), vehicles, resize handles, labels, stations, flows (within 6 px), obstacles,
-   * then the plain cell. `cell` is always present.
+   * `view.connectHandle` is set and the point is not on a resize handle), vehicles, resize handles, labels, stations,
+   * flows (within 6 px), obstacles, then the plain cell. `cell` is always present.
    * @returns {{ kind: string, id?: string, cell: number[], handle?: string }}
    */
   hitTest(px, py) {
@@ -330,16 +330,15 @@ export class Renderer {
     const result = (kind, id, extra) => ({ kind, id, cell, ...extra });
     const scene = fr.scene;
     if (!scene) return { kind: 'cell', cell };
-    const connectId = hitConnectHandle(fr, px, py); // the flow handle floats above everything else
+    const ctx = this.ctx;
+    const hr = ctx ? handleRect(ctx, fr) : null;
+    const resize = hr ? hitHandle(hr.x, hr.y, hr.w, hr.h, px, py, HANDLE_HIT_PX) : null;
+    // the flow handle floats above vehicles and bricks, but the resize handle sitting at the middle of the same edge keeps its zone
+    const connectId = resize ? null : hitConnectHandle(fr, px, py);
     if (connectId) return result('connect-handle', connectId);
     const vehicle = hitVehicle(fr, px, py);
     if (vehicle) return result('vehicle', vehicle.id);
-    const ctx = this.ctx;
-    const hr = ctx ? handleRect(ctx, fr) : null;
-    if (hr) {
-      const name = hitHandle(hr.x, hr.y, hr.w, hr.h, px, py, HANDLE_HIT_PX);
-      if (name) return result(fr.selKind, fr.selIds[0], { handle: name });
-    }
+    if (resize) return result(fr.selKind, fr.selIds[0], { handle: resize });
     const label = ctx ? hitLabel(ctx, fr, px, py) : null;
     if (label) return result('label', label.id, selectedHandle(fr, 'label', label.id));
     const marker = hitMarker(fr, px, py);

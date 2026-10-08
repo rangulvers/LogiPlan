@@ -783,7 +783,7 @@ await withBrowser(async ({ page, url, errors, browser }) => {
     assert.match(await status(), /^Connect Goods receiving to Dispatch$/);
     await snap('15-flow-drag-light');
     await release();
-    assert.equal(await undoLabel(), 'Add flow');
+    assert.match(await undoLabel(), /^Connect .+ → .+$/);
     assert.deepEqual((await layout()).flows.map((f) => [f.from, f.to]), [['s1', 's2'], ['s2', 's3'], ['s1', 's3']]);
     assert.deepEqual(await selection(), sel('flow', 'f3'));
     assert.equal((await view()).flowPreview, null);
@@ -795,7 +795,7 @@ await withBrowser(async ({ page, url, errors, browser }) => {
     await snap('16-flow-pending-light');
     await click([38, 14]);
     assert.deepEqual((await layout()).flows.map((f) => f.id), ['f1', 'f2', 'f3']);
-    assert.equal(await undoLabel(), 'Add flow');
+    assert.match(await undoLabel(), /^Connect .+ → .+$/);
     await press('Control+z');
     await click([20, 13]);
     await click([38, 14]);
@@ -962,6 +962,7 @@ await withBrowser(async ({ page, url, errors, browser }) => {
     await open('starter', '&runner=real');
     await page.evaluate(() => { window.harness.runner.setSpeed(60); return window.harness.runner.play(); });
     await page.waitForFunction(() => window.harness.renderer.sim && window.harness.renderer.sim.time > 30 && window.harness.renderer.sim.vehicles.some((v) => v.visible));
+    const simBefore = await page.evaluate(() => window.harness.runner.sim.time); // placing the brick below restarts the run after 250 ms, so read the clock first
     await press('2');
     await click([30, 4]);
     assert.equal((await layout()).stations.length, 5, 'placing a brick while the simulation runs');
@@ -978,7 +979,7 @@ await withBrowser(async ({ page, url, errors, browser }) => {
     await page.mouse.click(spot.x, spot.y);
     assert.deepEqual(await selection(), sel('fleet', spot.fleet), 'a click on a running vehicle selects its fleet');
     await snap('29-running-fleet-selected-light');
-    const simBefore = await page.evaluate(() => { window.__sim = window.harness.runner.sim; return window.harness.runner.sim.time; });
+    await page.evaluate(() => { window.__sim = window.harness.runner.sim; });
     await drag([[30, 4], [34, 4]]);
     assert.equal((await station('s5')).x, 33, 'moving a brick with a simulation attached');
     await page.waitForFunction(() => window.harness.runner.sim !== window.__sim, null, { timeout: 5000 });

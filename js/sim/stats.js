@@ -763,12 +763,14 @@ export class Stats {
     const loaded = new Float64Array(defs.length);
     const empty = new Float64Array(defs.length);
     const park = new Float64Array(defs.length);
+    const byVehicle = defs.map(() => ({}));
     for (let i = 0; i < vehicles.length; i++) {
       const fi = this.vehFleet[i];
       if (fi < 0) continue;
       const v = vehicles[i];
       const at = i * VEHICLE_FIELDS;
-      trips[fi] += Math.max(0, nn(v.trips) - this.snapVehicle[at]);
+      byVehicle[fi][v.id] = Math.max(0, nn(v.trips) - this.snapVehicle[at]);
+      trips[fi] += byVehicle[fi][v.id];
       loaded[fi] += Math.max(0, nn(v.loadedDistance) - this.snapVehicle[at + 1]);
       empty[fi] += Math.max(0, nn(v.emptyDistance) - this.snapVehicle[at + 2]);
       park[fi] += Math.max(0, nn(v.parkDistance) - this.snapVehicle[at + 3]);
@@ -791,6 +793,7 @@ export class Stats {
         utilization: shares.driving + shares.waiting + shares.loading + shares.unloading,
         shares,
         trips: trips[fi],
+        vehicleTrips: byVehicle[fi],
         tripsPerVehicleHour: count > 0 && dur > 0 ? trips[fi] / ((count * dur) / 3600) : 0,
         distance,
         distancePerVehicle: count > 0 ? distance / count : 0,

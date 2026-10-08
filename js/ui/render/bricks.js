@@ -188,7 +188,8 @@ export function planContent(ctx, fr, g, type, st, rt) {
   const pad = clamp(g.cell * 0.1, 3, 9);
   const fpx = clamp(g.cell * 0.27, 10, 19);
   const innerW = g.w - 2 * pad;
-  const name = st ? st.name : (STATION_TYPES[type] || STATION_TYPES.process).short;
+  // a placement ghost has no station yet: it carries the planner's word ("Goods in"), as the toolbar does, not the model's ("Source")
+  const name = st ? st.name : (STATION_TYPES[type] || STATION_TYPES.process).label.replace(/\s*\(.*\)$/, '');
   const dot = planDot(g, rt, pad);
   const badge = planBadge(ctx, fr, g, type, rt, dot, innerW);
   const reserve = (dot ? dot.d + ROW_GAP : 0) + (badge ? badge.w + ROW_GAP : 0);

@@ -25,11 +25,18 @@ const FIX_ICONS = { 'connect-flow': 'flow', 'add-fleet': 'plus', focus: 'target'
 const fixIcon = (fix) => (fix.type === 'set-tool' ? fix.tool : FIX_ICONS[fix.type] || 'chevron-right');
 
 const setText = (el, text) => { if (el.textContent !== text) el.textContent = text; };
+const setAttr = (el, name, value) => { if (el.getAttribute(name) !== value) el.setAttribute(name, value); };
 const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
 /** The first control a keyboard user can reach inside `root`, or null. */
 function firstControl(root) {
   return [...root.querySelectorAll('button, select')].find((c) => !c.disabled && !c.hidden && !c.closest('[hidden]')) || null;
+}
+
+/** Does the keyboard focus sit in `root` because of the keyboard (not a mouse click)? */
+function keyboardFocusIn(root) {
+  const active = document.activeElement;
+  return Boolean(active) && root.contains(active) && active.matches(':focus-visible');
 }
 
 /** Steps that mention the selected thing first (the rest keeps its order). */
@@ -43,6 +50,17 @@ export function rankBySelection(steps, selection) {
 /** Filters for the tabs that show only their own steps. */
 export const forFlows = (step) => step.scopes.includes('flows');
 export const forFleet = (step) => step.scopes.includes('fleet');
+
+/**
+ * `hide` rule of the Properties tab: while one station is selected its form asks "Where do loads go?" / "Where do loads come from?"
+ * itself, with the same choice and the same Connect button one block further down, so the card leaves those steps out: two pickers
+ * for one question are one too many. Every other step stays.
+ */
+export function hiddenInProperties(step, state) {
+  const selection = state.ui?.selection;
+  if (selection?.kind !== 'station' || selection.ids.length !== 1) return false;
+  return step.id === `connect-out:${selection.ids[0]}` || step.id === `connect-in:${selection.ids[0]}`;
+}
 
 // ---------------------------------------------------------------------------------------------------------
 // Inline "choose where, then Connect"
@@ -67,9 +85,9 @@ export function createConnectControl(ctx, initialFix, { primary = true, label = 
   function describe(layout) {
     const other = getStation(layout, select.value);
     const fixed = getStation(layout, picksTo() ? fix.fromId : fix.toId);
-    select.setAttribute('aria-label', picksTo() ? `Where should ${fixed?.name ?? 'this station'} send its loads?` : `Which station sends loads to ${fixed?.name ?? 'this station'}?`);
+    setAttr(select, 'aria-label', picksTo() ? `Where should ${fixed?.name ?? 'this station'} send its loads?` : `Which station sends loads to ${fixed?.name ?? 'this station'}?`);
     const [a, b] = picksTo() ? [fixed, other] : [other, fixed];
-    button.setAttribute('aria-label', a && b ? `Connect ${a.name} to ${b.name}` : label);
+    setAttr(button, 'aria-label', a && b ? `Connect ${a.name} to ${b.name}` : label);
   }
 
   select.addEventListener('change', () => { chosen = select.value; if (latest) describe(latest); });
@@ -113,16 +131,17 @@ function createStepRow(ctx, g) {
   const title = h('strong', { class: 'guide-step__title' });
   const text = h('p', { class: 'guide-step__text' });
   const primary = h('button', { class: 'btn btn--primary btn--sm', type: 'button', onclick: () => { if (step) g.apply(step.fix); } });
-  const show = h('button', { class: 'btn btn--ghost btn--sm', type: 'button', onclick: () => { if (step) ctx.actions.focus(step.refs); } }, icon('target', { size: 14 }), 'Show');
-  const dismiss = h('button', { class: 'btn btn--ghost btn--sm', type: 'button', onclick: () => { if (step) g.dismiss(step.id); } }, 'Not now');
-  const actions = h('div', { class: 'guide-step__actions' }, primary, show, dismiss);
-  const el = h('li', { class: 'guide-step' }, iconBox, h('div', { class: 'guide-step__body' }, title, text, actions));
+  const show = h('button', { class: 'btn btn--ghost btn--icon btn--sm guide-step__show', type: 'button', title: 'Show on the plan', onclick: () => { if (step) ctx.actions.focus(step.refs); } }, icon('target', { size: 16 }));
+  const alt = h('button', { class: 'btn btn--sm', type: 'button', hidden: true, onclick: () => { if (step?.alt) g.apply(step.alt); } });
+  const dismiss = h('button', { class: 'btn btn--ghost btn--sm guide-step__dismiss', type: 'button', onclick: () => { if (step) g.dismiss(step.id); } }, 'Not now');
+  const actions = h('div', { class: 'guide-step__actions' }, primary, alt, dismiss);
+  const el = h('li', { class: 'guide-step' }, iconBox, h('div', { class: 'guide-step__body' }, h('div', { class: 'guide-step__head' }, title, show), text, actions));
 
   return {
     el,
     update(next, layout) {
       step = next;
-      el.dataset.step = next.id;
+      if (el.dataset.step !== next.id) el.dataset.step = next.id;
       const cls = `guide-step guide-step--${next.severity}`;
       if (el.className !== cls) el.className = cls;
       if (iconName !== next.icon) {
@@ -147,11 +166,16 @@ function createStepRow(ctx, g) {
           primaryKey = key;
           primary.replaceChildren(icon(fixIcon(next.fix), { size: 14 }), next.fix.label || 'Do it');
         }
-        primary.setAttribute('aria-label', `${next.fix.label}: ${next.title}`);
+        setAttr(primary, 'aria-label', `${next.fix.label}: ${next.title}`);
+      }
+      alt.hidden = !next.alt;
+      if (next.alt) {
+        setText(alt, next.alt.label || 'Other way');
+        setAttr(alt, 'aria-label', `${next.alt.label}: ${next.title}`);
       }
       const places = (next.refs?.stationIds?.length || next.refs?.flowIds?.length) && next.fix?.type !== 'focus';
       show.hidden = !places;
-      show.setAttribute('aria-label', `Show ${next.title} on the plan`);
+      setAttr(show, 'aria-label', `Show on the plan: ${next.title}`);
       dismiss.hidden = !next.dismissible;
     },
   };
@@ -163,14 +187,15 @@ function createStepRow(ctx, g) {
 
 /**
  * @param {object} ctx the shared ctx (docs/ARCHITECTURE.md 6.8)
- * @param {{ filter?: (step: object) => boolean, max?: number, compact?: boolean, title?: string, follow?: boolean, allSet?: boolean }} [options]
- *   `filter` keeps only some steps (a filtered card hides itself when it has none); `max` steps show before "n more"; `compact` drops
+ * @param {{ filter?: (step: object) => boolean, hide?: (step: object, state: object) => boolean, max?: number, compact?: boolean, title?: string, follow?: boolean, allSet?: boolean }} [options]
+ *   `filter` keeps only some steps (a filtered card hides itself when it has none); `hide` drops steps that something else on
+ *   screen already shows (it also gets the state); `max` steps show before "n more"; `compact` drops
  *   the header (the chip popover brings its own); `follow` puts steps about the selected station / flow / fleet first; `allSet`
  *   (default: no filter) shows the "All set" state when nothing is left anywhere.
  * @returns {{ el: HTMLElement, update(state: object): void, destroy(): void }}
  */
 export function createNextStepsCard(ctx, options = {}) {
-  const { filter = null, max = 3, compact = false, title = 'Next steps', follow = false } = options;
+  const { filter = null, hide = null, max = 3, compact = false, title = 'Next steps', follow = false } = options;
   const allSetEnabled = options.allSet ?? !filter;
   const g = guidanceFor(ctx);
   const rows = new Map();
@@ -182,13 +207,13 @@ export function createNextStepsCard(ctx, options = {}) {
   const count = h('span', { class: 'badge badge--accent', hidden: true });
   const head = compact ? null : h('div', { class: 'guide__head' }, headIcon, heading, count);
   const allSetText = h('p', { class: 'guide-step__text' });
-  const runButton = h('button', { class: 'btn btn--primary btn--sm', type: 'button', onclick: () => { void ctx.runner.toggle(); } });
+  const runButton = h('button', { class: 'btn btn--primary btn--sm', type: 'button', onclick: () => { void ctx.runner?.toggle(); } });
   const allSet = h('div', { class: 'guide-step guide-step--good guide__allset', hidden: true },
     h('span', { class: 'guide-step__icon', 'aria-hidden': 'true' }, icon('check', { size: 16 })),
     h('div', { class: 'guide-step__body' }, allSetText, h('div', { class: 'guide-step__actions' }, runButton)));
-  const list = h('ol', { class: 'guide__list', 'aria-live': 'polite', 'aria-relevant': 'additions text' });
+  const list = h('ol', { class: 'guide__list', 'aria-live': 'polite', 'aria-relevant': 'additions' });
   const more = h('button', { class: 'btn btn--ghost btn--sm guide__more', type: 'button', 'aria-expanded': 'false', onclick: () => { expanded = !expanded; if (last) update(last); } });
-  const el = h('section', { class: `card guide${compact ? ' guide--compact' : ''}`, 'aria-label': title, hidden: true }, head, allSet, list, h('div', { class: 'guide__foot' }, more));
+  const el = h('section', { class: `card guide${compact ? ' guide--compact' : ''}`, 'aria-label': compact ? `${title} list` : title, hidden: true }, head, allSet, list, h('div', { class: 'guide__foot' }, more));
   let headMode = null;
   let runMode = null;
 
@@ -203,7 +228,8 @@ export function createNextStepsCard(ctx, options = {}) {
     }
     count.hidden = done || openCount === 0;
     setText(count, String(openCount));
-    count.className = `badge ${warn ? 'badge--warn' : 'badge--accent'}`;
+    const tone = `badge ${warn ? 'badge--warn' : 'badge--accent'}`;
+    if (count.className !== tone) count.className = tone;
   }
 
   function paintAllSet(done, progress) {
@@ -212,7 +238,7 @@ export function createNextStepsCard(ctx, options = {}) {
     setText(allSetText, progress.ran
       ? 'Nothing left to set up. Change the plant or the Simulate settings and run it again to see what happens.'
       : 'Your plant is ready. Run it to see the vehicles work.');
-    const mode = ctx.runner.playing ? 'pause' : 'run';
+    const mode = ctx.runner?.playing ? 'pause' : 'run';
     if (mode !== runMode) {
       runMode = mode;
       runButton.replaceChildren(icon(mode === 'pause' ? 'pause' : 'play', { size: 14 }), mode === 'pause' ? 'Pause' : 'Run');
@@ -221,7 +247,6 @@ export function createNextStepsCard(ctx, options = {}) {
 
   function reconcile(shown, layout) {
     const wanted = new Set(shown.map((s) => s.id));
-    const hadFocus = el.contains(document.activeElement);
     for (const [id, row] of rows) {
       if (wanted.has(id)) continue;
       row.el.remove();
@@ -233,16 +258,15 @@ export function createNextStepsCard(ctx, options = {}) {
       row.update(step, layout);
       if (list.children[i] !== row.el) list.insertBefore(row.el, list.children[i] || null);
     });
-    if (hadFocus && !el.contains(document.activeElement)) {
-      // The step the planner just finished took the focus with it: hand it to the next action.
-      (firstControl(allSet.hidden ? list : allSet) || firstControl(el) || heading).focus({ preventScroll: true });
-    }
   }
 
   function update(state) {
     last = state;
+    // A keyboard user who finished a step keeps their place. A mouse user is not handed a focused button they never chose: it
+    // would also take the Space key (play / pause) away from the shell.
+    const hadFocus = keyboardFocusIn(el);
     const { steps, open, progress } = g.read(state);
-    const mine = filter ? steps.filter(filter) : steps;
+    const mine = (filter ? steps.filter(filter) : steps).filter((step) => !hide || !hide(step, state));
     const openMine = mine.filter((s) => s.severity !== 'info');
     const notes = mine.filter((s) => s.severity === 'info');
     const done = allSetEnabled && open.length === 0;
@@ -255,9 +279,13 @@ export function createNextStepsCard(ctx, options = {}) {
     paintAllSet(done, progress);
     reconcile(shown, state.layout);
     more.hidden = !overflow;
-    more.setAttribute('aria-expanded', String(expanded));
+    setAttr(more, 'aria-expanded', String(expanded));
     setText(more, expanded ? 'Show fewer' : `${plural(ordered.length - max, 'more step')}`);
     list.hidden = shown.length === 0;
+    if (hadFocus && !el.contains(document.activeElement)) {
+      // What held the focus is gone (the step was done): hand it to the next action.
+      (firstControl(allSet.hidden ? list : allSet) || firstControl(el) || heading).focus({ preventScroll: true });
+    }
   }
 
   const off = g.dismissals.subscribe(() => { if (last) update(last); });
@@ -273,7 +301,7 @@ export function createNextStepsCard(ctx, options = {}) {
  * the thing it names. `update(state)` also hides it while something is selected (the Properties tab shows the item then).
  * @returns {{ el: HTMLElement, update(state: object): void, destroy(): void }}
  */
-export function createChecklistCard(ctx) {
+export function createChecklistCard(ctx, { onHidden = null } = {}) {
   const g = guidanceFor(ctx);
   let open = true;
   let last = null;
@@ -306,11 +334,15 @@ export function createChecklistCard(ctx) {
 
   function update(state) {
     last = state;
+    const hadFocus = keyboardFocusIn(el);
     const { checklist } = g.read(state);
     items = checklist.items;
     const hide = g.dismissals.has('checklist') || checklist.complete || Boolean(state.ui?.selection?.kind);
     el.hidden = hide;
-    if (hide) return;
+    if (hide) {
+      if (hadFocus) onHidden?.(); // the list that held the focus is gone: the owner decides where it goes
+      return;
+    }
     if (!rows.length) build(items);
     items.forEach((item, i) => {
       const row = rows[i];
@@ -349,8 +381,8 @@ export function createChecklistCard(ctx) {
  * @param {{ checklist?: boolean, filter?: (step: object) => boolean, max?: number, follow?: boolean }} [options]
  */
 export function createGuidanceHeader(ctx, { checklist = false, ...cardOptions } = {}) {
-  const list = checklist ? createChecklistCard(ctx) : null;
   const card = createNextStepsCard(ctx, cardOptions);
+  const list = checklist ? createChecklistCard(ctx, { onHidden: () => (firstControl(card.el) || card.el.querySelector('.guide__title'))?.focus({ preventScroll: true }) }) : null;
   const el = h('div', { class: 'guide-stack', 'data-guidance': '' }, list?.el, card.el);
   return {
     el,
@@ -379,6 +411,7 @@ export function createGuideChip(ctx) {
   let isOpen = false;
   let last = null;
   let warnShown = null;
+  const reported = new Set();
   const card = createNextStepsCard(ctx, { compact: true, max: 3, follow: false, allSet: false });
   const closeButton = h('button', { class: 'btn btn--ghost btn--sm btn--icon', type: 'button', 'aria-label': 'Close the list of next steps', onclick: () => close(true) }, icon('close', { size: 16 }));
   const popup = h('div', { class: 'guide-pop card', id: popId, role: 'region', 'aria-label': 'Next steps', hidden: true },
@@ -389,7 +422,8 @@ export function createGuideChip(ctx) {
   const label = h('span', { class: 'guide-chip__label' });
   const caret = icon('chevron-up', { size: 14, class: 'guide-chip__caret' });
   const button = h('button', { class: 'btn btn--sm guide-chip__button', type: 'button', 'aria-expanded': 'false', 'aria-controls': popId, 'data-guide-chip-button': '' }, glyph, label, caret);
-  const el = h('div', { class: 'guide-chip', hidden: true, 'data-guide-chip': '' }, popup, button);
+  // The button comes first in the DOM, so Tab goes from the chip into the popover (which is drawn above it, see .guide-chip).
+  const el = h('div', { class: 'guide-chip', hidden: true, 'data-guide-chip': '' }, button, popup);
 
   function onOutside(e) {
     if (!el.contains(e.target)) close(false);
@@ -423,6 +457,19 @@ export function createGuideChip(ctx) {
   });
 
   function update(state) {
+    // The chip is updated by the shell together with its toolbars: whatever goes wrong here must not stop them.
+    try {
+      refresh(state);
+    } catch (err) {
+      const key = String(err && err.message);
+      if (!reported.has(key)) {
+        reported.add(key);
+        console.error('[LogiPlan] guide chip', err);
+      }
+    }
+  }
+
+  function refresh(state) {
     last = state;
     const { open: pending } = g.read(state);
     const n = pending.length;

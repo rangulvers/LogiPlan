@@ -342,6 +342,14 @@ body {
   margin-left: auto; /* stays at the right edge when it wraps below the simulation bar */
 }
 
+.overlays__body {
+  display: contents; /* a desktop screen shows the groups in the bar itself; compact screens wrap them (see the media queries) */
+}
+
+.overlays__toggle {
+  display: none; /* only compact screens fold the display options away */
+}
+
 .overlays__group {
   display: flex;
   align-items: center;
@@ -667,6 +675,29 @@ body.is-resizing {
 @media (max-height: 520px) {
   .statusbar {
     display: none; /* a phone held sideways needs every line for the plan */
+  }
+}
+
+/* Compact screens (a phone, upright or sideways): the display options sit behind one button instead of covering the plan. */
+@media (max-width: 899.98px), (max-height: 520px) {
+  .overlays {
+    margin-left: 0;
+  }
+
+  .overlays__toggle {
+    display: inline-flex;
+  }
+
+  .overlays__body {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    column-gap: var(--sp-3);
+    row-gap: var(--sp-1);
+  }
+
+  .overlays[data-open="false"] .overlays__body {
+    display: none;
   }
 }
 
