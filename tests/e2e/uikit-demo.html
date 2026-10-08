@@ -1,0 +1,701 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LogiPlan UI kit</title>
+  <!-- Kitchen sink of css/tokens.css, css/components.css, js/ui/icons.js and js/ui/charts.js.
+       Served by scripts/serve.mjs; screenshotted by tests/e2e/uikit-visual.mjs.
+       ?theme=light|dark|auto selects the theme (auto = follow the OS). -->
+  <link rel="stylesheet" href="../../css/tokens.css">
+  <link rel="stylesheet" href="../../css/components.css">
+  <style>
+    /* Demo page layout only; the kit itself lives in css/components.css. */
+    .demo-header { position: sticky; top: 0; z-index: var(--z-sticky); display: flex; align-items: center; gap: var(--sp-3); padding: 10px var(--sp-4); background: var(--surface); border-bottom: 1px solid var(--border); }
+    .demo-header h1 { font-size: var(--fs-lg); }
+    .demo { display: flex; flex-direction: column; gap: var(--sp-7); max-width: 1280px; margin: 0 auto; padding: var(--sp-6) var(--sp-4) 64px; }
+    .demo-section > h2 { margin-bottom: var(--sp-3); font-size: var(--fs-lg); }
+    .demo-section > h2 small { margin-left: var(--sp-2); color: var(--text-faint); font-size: var(--fs-sm); font-weight: var(--fw-regular); }
+    .demo-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr)); gap: var(--sp-4); align-items: start; }
+    .demo-grid--wide { grid-template-columns: repeat(auto-fill, minmax(min(100%, 520px), 1fr)); }
+    .demo-sub { margin: var(--sp-4) 0 var(--sp-2); }
+    .demo-swatches { display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: var(--sp-2); }
+    .demo-swatch { display: flex; flex-direction: column; gap: 2px; padding: var(--sp-2); border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface); font-size: var(--fs-xs); }
+    .demo-swatch i { display: block; height: 28px; margin-bottom: 4px; border-radius: var(--radius-sm); box-shadow: inset 0 0 0 1px var(--border); }
+    .demo-swatch code { color: var(--text-faint); font-family: var(--font-mono); font-size: 10.5px; }
+    .demo-bricks { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
+    .demo-brick { display: inline-flex; align-items: center; gap: 8px; height: 36px; padding: 0 14px 0 10px; border-radius: var(--radius-lg); font-weight: var(--fw-semibold); box-shadow: inset 0 -3px 0 rgba(0, 0, 0, 0.18); }
+    .demo-states { display: flex; flex-wrap: wrap; gap: var(--sp-2) var(--sp-4); }
+    .demo-states span { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-sm); }
+    .demo-type > div { padding: 2px 0; }
+    .demo-box { display: grid; place-items: center; width: 72px; height: 48px; border: 1px solid var(--border); background: var(--surface); color: var(--text-dim); font-size: var(--fs-xs); }
+    .demo-space { display: flex; align-items: flex-end; gap: var(--sp-3); }
+    .demo-space span { display: block; width: 100%; background: var(--accent-soft); border: 1px solid var(--accent-line); }
+    .demo-stage { position: relative; min-height: 260px; padding: var(--sp-4); border: 1px dashed var(--border-strong); border-radius: var(--radius-lg); }
+    .demo-stage .modal-backdrop { position: absolute; border-radius: inherit; }
+    .demo-stage .toast-region { position: static; width: 100%; transform: none; }
+    .demo-tipbox { display: flex; flex-wrap: wrap; gap: 36px 130px; padding: 52px 120px 44px; }
+    .demo-data-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--sp-4); align-items: start; }
+    @media (min-width: 980px) { .demo-data-grid { grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); } }
+    .demo-force-tip::before, .demo-force-tip::after { opacity: 1; visibility: visible; }
+    .demo-tools { display: flex; gap: var(--sp-4); align-items: flex-start; flex-wrap: wrap; }
+    .demo-icons { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: var(--sp-2); }
+    .demo-icons div { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 10px 4px 8px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface); font-size: var(--fs-xs); color: var(--text-dim); }
+    .demo-icons svg { color: var(--text); }
+    .demo-icon-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-3) var(--sp-4); color: var(--text); }
+    .demo-panel { width: 340px; max-width: 100%; }
+    .demo-note { margin-top: var(--sp-2); color: var(--text-dim); font-size: var(--fs-sm); }
+    .demo-kpis { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 200px), 1fr)); gap: var(--sp-3); }
+    .demo-chart-card .card__body { padding-top: var(--sp-2); }
+    .demo-gauges { display: flex; flex-wrap: wrap; gap: var(--sp-6); justify-content: space-around; }
+    @media (max-width: 600px) { .demo { padding-inline: var(--sp-4); } .demo-header { flex-wrap: wrap; } }
+  </style>
+</head>
+<body>
+  <header class="demo-header">
+    <h1>LogiPlan UI kit</h1>
+    <span class="chip chip--outline">tokens · components · icons · charts</span>
+    <span class="spacer"></span>
+    <div class="segmented" role="group" aria-label="Theme" id="theme-switch">
+      <button class="segmented__item" type="button" data-theme-choice="auto"><span data-icon="layers" data-size="14"></span>Auto</button>
+      <button class="segmented__item" type="button" data-theme-choice="light"><span data-icon="sun" data-size="14"></span>Light</button>
+      <button class="segmented__item" type="button" data-theme-choice="dark"><span data-icon="moon" data-size="14"></span>Dark</button>
+    </div>
+  </header>
+
+  <main class="demo">
+
+    <!-- ============================== Foundations ============================== -->
+    <section class="demo-section" data-shot="foundations">
+      <h2>Foundations <small>tokens</small></h2>
+      <p class="eyebrow">Surfaces and lines</p>
+      <div class="demo-swatches demo-sub" id="sw-surfaces"></div>
+      <p class="eyebrow">Accent and semantic colours</p>
+      <div class="demo-swatches demo-sub" id="sw-semantic"></div>
+      <p class="eyebrow">Station bricks</p>
+      <div class="demo-bricks demo-sub">
+        <span class="demo-brick" style="background: var(--st-source); color: var(--st-source-ink)"><span data-icon="source"></span>Source</span>
+        <span class="demo-brick" style="background: var(--st-process); color: var(--st-process-ink)"><span data-icon="process"></span>Workstation</span>
+        <span class="demo-brick" style="background: var(--st-storage); color: var(--st-storage-ink)"><span data-icon="storage"></span>Storage</span>
+        <span class="demo-brick" style="background: var(--st-sink); color: var(--st-sink-ink)"><span data-icon="sink"></span>Sink</span>
+        <span class="demo-brick" style="background: var(--st-depot); color: var(--st-depot-ink)"><span data-icon="depot"></span>Depot</span>
+      </div>
+      <p class="eyebrow demo-sub">Operational states (always with a label)</p>
+      <div class="demo-states" id="states"></div>
+      <p class="eyebrow demo-sub">Categorical series colours</p>
+      <div class="demo-swatches demo-sub" id="sw-series"></div>
+      <div class="demo-grid demo-sub">
+        <div class="demo-type stack" style="--gap: 2px">
+          <p class="eyebrow">Type scale</p>
+          <div style="font-size: var(--fs-3xl); font-weight: 600; letter-spacing: -0.01em">28 KPI 1,284</div>
+          <div style="font-size: var(--fs-2xl); font-weight: 600">22 Heading</div>
+          <div style="font-size: var(--fs-xl); font-weight: 600">18 Section title</div>
+          <div style="font-size: var(--fs-lg); font-weight: 600">15 Dialog title</div>
+          <div>13 Body text, the dense default for panels and tables</div>
+          <div class="text-dim" style="font-size: var(--fs-sm)">12 Secondary text and labels</div>
+          <div class="text-faint" style="font-size: var(--fs-xs)">11 Captions, axis labels</div>
+          <div class="tnum">Tabular: 1,111.11 / 8,888.88</div>
+          <div style="font-family: var(--font-mono); font-size: var(--fs-sm)">mono: s12 → s14 #f08a24</div>
+        </div>
+        <div class="stack">
+          <p class="eyebrow">Spacing (4 px base) and radii</p>
+          <div class="demo-space" id="spacing"></div>
+          <div class="row row--wrap">
+            <span class="demo-box" style="border-radius: var(--radius-sm)">4</span>
+            <span class="demo-box" style="border-radius: var(--radius-md)">6</span>
+            <span class="demo-box" style="border-radius: var(--radius-lg)">8</span>
+            <span class="demo-box" style="border-radius: var(--radius-xl)">12</span>
+          </div>
+          <div class="row row--wrap" style="--gap: 16px">
+            <span class="demo-box" style="box-shadow: var(--shadow-1); border-radius: var(--radius-md)">1</span>
+            <span class="demo-box" style="box-shadow: var(--shadow-2); border-radius: var(--radius-md)">2</span>
+            <span class="demo-box" style="box-shadow: var(--shadow-3); border-radius: var(--radius-md)">3</span>
+            <span class="kbd-group"><kbd class="kbd">Ctrl</kbd><kbd class="kbd">Shift</kbd><kbd class="kbd">Z</kbd></span>
+            <kbd class="kbd">Space</kbd>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================== Buttons ============================== -->
+    <section class="demo-section" data-shot="buttons">
+      <h2>Buttons, toolbars, segmented controls</h2>
+      <div class="demo-grid">
+        <div class="card"><div class="card__header"><h3 class="card__title">Variants</h3></div><div class="card__body stack">
+          <div class="row row--wrap">
+            <button class="btn btn--primary" type="button"><span data-icon="play" data-size="14"></span>Run simulation</button>
+            <button class="btn" type="button">Secondary</button>
+            <button class="btn btn--ghost" type="button">Ghost</button>
+          </div>
+          <div class="row row--wrap">
+            <button class="btn btn--danger" type="button"><span data-icon="trash" data-size="14"></span>Delete fleet</button>
+            <button class="btn btn--danger-ghost" type="button">Remove</button>
+            <button class="btn btn--primary" type="button" disabled>Disabled</button>
+            <button class="btn" type="button" disabled>Disabled</button>
+          </div>
+          <div class="row row--wrap">
+            <button class="btn btn--sm btn--primary" type="button">Small primary</button>
+            <button class="btn btn--sm" type="button"><span data-icon="plus" data-size="14"></span>Add flow</button>
+            <button class="btn btn--sm btn--ghost" type="button">Small ghost</button>
+          </div>
+          <div class="row row--wrap">
+            <button class="btn btn--icon" type="button" aria-label="Settings" data-tip="Settings"><span data-icon="settings"></span></button>
+            <button class="btn btn--icon btn--ghost" type="button" aria-label="Help" data-tip="Help"><span data-icon="help"></span></button>
+            <button class="btn btn--icon btn--sm" type="button" aria-label="Copy"><span data-icon="copy" data-size="16"></span></button>
+            <button class="btn btn--icon btn--sm btn--ghost" type="button" aria-label="Close"><span data-icon="close" data-size="16"></span></button>
+            <button class="btn btn--icon btn--sm btn--danger-ghost" type="button" aria-label="Delete"><span data-icon="trash" data-size="16"></span></button>
+            <button class="btn" type="button" aria-pressed="true"><span data-icon="grid" data-size="14"></span>Grid on</button>
+            <button class="btn" type="button" aria-pressed="false"><span data-icon="heat" data-size="14"></span>Heatmap</button>
+          </div>
+          <button class="btn btn--block" type="button">Block button</button>
+        </div></div>
+
+        <div class="card"><div class="card__header"><h3 class="card__title">Toolbars</h3><span class="card__subtitle">tool palette, sim controls</span></div><div class="card__body demo-tools">
+          <div class="toolbar toolbar--panel toolbar--vertical" role="toolbar" aria-label="Tools" style="--gap: 0">
+            <div class="toolbar__group">
+              <button class="btn btn--icon" type="button" aria-label="Select" aria-pressed="true" data-tip="Select (V)" data-tip-pos="right"><span data-icon="select"></span></button>
+              <button class="btn btn--icon" type="button" aria-label="Pan" data-tip="Pan (H)" data-tip-pos="right"><span data-icon="pan"></span></button>
+            </div>
+            <div class="toolbar__sep"></div>
+            <div class="toolbar__group">
+              <button class="btn btn--icon" type="button" aria-label="Road" data-tip="Road (R)" data-tip-pos="right"><span data-icon="road"></span></button>
+              <button class="btn btn--icon" type="button" aria-label="One-way" data-tip="One-way road (O)" data-tip-pos="right"><span data-icon="oneway"></span></button>
+              <button class="btn btn--icon" type="button" aria-label="Speed zone" data-tip="Speed zone (Z)" data-tip-pos="right"><span data-icon="speedzone"></span></button>
+              <button class="btn btn--icon" type="button" aria-label="Erase" data-tip="Erase (E)" data-tip-pos="right"><span data-icon="erase"></span></button>
+            </div>
+            <div class="toolbar__sep"></div>
+            <div class="toolbar__group">
+              <button class="btn btn--icon" type="button" aria-label="Source"><span data-icon="source"></span></button>
+              <button class="btn btn--icon" type="button" aria-label="Workstation"><span data-icon="process"></span></button>
+              <button class="btn btn--icon" type="button" aria-label="Storage"><span data-icon="storage"></span></button>
+              <button class="btn btn--icon" type="button" aria-label="Sink"><span data-icon="sink"></span></button>
+              <button class="btn btn--icon" type="button" aria-label="Depot"><span data-icon="depot"></span></button>
+            </div>
+          </div>
+          <div class="stack" style="--gap: 12px">
+            <div class="toolbar toolbar--panel" role="toolbar" aria-label="Simulation">
+              <button class="btn btn--icon" type="button" aria-label="Reset"><span data-icon="reset"></span></button>
+              <button class="btn btn--icon btn--primary" type="button" aria-label="Play"><span data-icon="play"></span></button>
+              <button class="btn btn--icon" type="button" aria-label="Step"><span data-icon="step"></span></button>
+              <div class="toolbar__sep"></div>
+              <select class="input input--sm" aria-label="Speed" style="width: 78px"><option>1×</option><option selected>10×</option><option>60×</option></select>
+              <span class="tnum text-dim" style="padding: 0 8px">0:42:10</span>
+            </div>
+            <div class="toolbar toolbar--panel" role="toolbar" aria-label="Overlays">
+              <button class="btn btn--icon" type="button" aria-label="Grid" aria-pressed="true"><span data-icon="grid"></span></button>
+              <button class="btn btn--icon" type="button" aria-label="Flows" aria-pressed="true"><span data-icon="flows"></span></button>
+              <button class="btn btn--icon" type="button" aria-label="Heatmap"><span data-icon="heat"></span></button>
+              <div class="toolbar__sep"></div>
+              <button class="btn btn--icon" type="button" aria-label="Zoom out"><span data-icon="zoomout"></span></button>
+              <button class="btn btn--icon" type="button" aria-label="Zoom in"><span data-icon="zoomin"></span></button>
+              <button class="btn btn--icon" type="button" aria-label="Fit"><span data-icon="fit"></span></button>
+            </div>
+            <div class="toolbar" role="toolbar" aria-label="History">
+              <button class="btn btn--icon btn--ghost" type="button" aria-label="Undo"><span data-icon="undo"></span></button>
+              <button class="btn btn--icon btn--ghost" type="button" aria-label="Redo" disabled><span data-icon="redo"></span></button>
+            </div>
+          </div>
+        </div></div>
+
+        <div class="card"><div class="card__header"><h3 class="card__title">Segmented controls</h3></div><div class="card__body stack">
+          <div class="segmented" role="group" aria-label="Heatmap">
+            <button class="segmented__item" type="button" aria-pressed="true">Off</button>
+            <button class="segmented__item" type="button" aria-pressed="false">Traffic</button>
+            <button class="segmented__item" type="button" aria-pressed="false">Waiting</button>
+          </div>
+          <div class="segmented segmented--sm" role="radiogroup" aria-label="Handedness">
+            <label class="segmented__item"><input type="radio" name="hand" checked><span>Right-hand</span></label>
+            <label class="segmented__item"><input type="radio" name="hand"><span>Left-hand</span></label>
+          </div>
+          <div class="segmented segmented--block" role="group" aria-label="Dispatch">
+            <button class="segmented__item" type="button" aria-pressed="true">Nearest</button>
+            <button class="segmented__item" type="button" aria-pressed="false">Oldest</button>
+            <button class="segmented__item" type="button" aria-pressed="false">Balanced</button>
+          </div>
+          <p class="eyebrow">Chips, badges, dots</p>
+          <div class="row row--wrap">
+            <span class="chip">Default</span>
+            <span class="chip chip--outline">Outline</span>
+            <span class="chip chip--error"><span data-icon="error" data-size="12"></span>2 errors</span>
+            <span class="chip chip--warn"><span data-icon="warning" data-size="12"></span>3 warnings</span>
+            <span class="chip chip--info"><span data-icon="info" data-size="12"></span>Info</span>
+            <span class="chip chip--good"><span data-icon="check" data-size="12"></span>Ready</span>
+          </div>
+          <div class="row row--wrap">
+            <span class="chip chip--source"><span class="swatch tone-source"></span>Source</span>
+            <span class="chip chip--process"><span class="swatch tone-process"></span>Workstation</span>
+            <span class="chip chip--storage"><span class="swatch tone-storage"></span>Storage</span>
+            <span class="chip chip--sink"><span class="swatch tone-sink"></span>Sink</span>
+            <span class="chip chip--depot"><span class="swatch tone-depot"></span>Depot</span>
+          </div>
+          <div class="row row--wrap">
+            <span class="badge">4</span><span class="badge badge--accent">12</span><span class="badge badge--good">OK</span><span class="badge badge--warn">3</span><span class="badge badge--bad">7</span>
+            <span class="dot tone-busy"></span><span class="dot tone-starved"></span><span class="dot tone-blocked"></span><span class="dot dot--lg tone-down"></span><span class="dot tone-idle"></span>
+          </div>
+        </div></div>
+      </div>
+    </section>
+
+    <!-- ============================== Forms ============================== -->
+    <section class="demo-section" data-shot="forms">
+      <h2>Form controls</h2>
+      <div class="demo-grid">
+        <div class="card"><div class="card__header"><h3 class="card__title">Inputs</h3></div><div class="card__body stack" style="--gap: 14px">
+          <div class="field">
+            <label class="field__label" for="f-name">Station name</label>
+            <input class="input" id="f-name" type="text" value="Assembly line 2" placeholder="Name">
+          </div>
+          <div class="field">
+            <label class="field__label" for="f-cycle">Cycle time</label>
+            <div class="input-group"><input class="input" id="f-cycle" type="number" value="90"><span class="input-unit">s</span></div>
+            <p class="field__hint">Mean time one machine needs per part.</p>
+          </div>
+          <div class="field is-invalid">
+            <label class="field__label" for="f-cap">Input slots</label>
+            <div class="input-group"><input class="input" id="f-cap" type="number" value="0" aria-invalid="true"><span class="input-unit">loads</span></div>
+            <p class="field__hint">Loads waiting per incoming flow.</p>
+            <p class="field__error" role="alert">Must be at least 1, otherwise the station can never start.</p>
+          </div>
+          <div class="field-grid">
+            <div class="field"><label class="field__label" for="f-speed">Speed</label><div class="input-group"><input class="input" id="f-speed" type="number" value="1.5" step="0.1"><span class="input-unit">m/s</span></div></div>
+            <div class="field"><label class="field__label" for="f-len">Length</label><div class="input-group"><input class="input" id="f-len" type="number" value="1.2"><span class="input-unit">m</span></div></div>
+          </div>
+          <div class="field">
+            <label class="field__label" for="f-disp">Dispatch strategy</label>
+            <select class="input" id="f-disp"><option>Nearest job first</option><option>Oldest job first (FIFO)</option><option>Balanced</option></select>
+          </div>
+          <div class="field">
+            <label class="field__label" for="f-notes">Notes</label>
+            <textarea class="input" id="f-notes" placeholder="Assumptions for this variant…"></textarea>
+          </div>
+          <div class="field"><label class="field__label" for="f-dis">Disabled</label><input class="input" id="f-dis" value="Locked while running" disabled></div>
+        </div></div>
+
+        <div class="card"><div class="card__header"><h3 class="card__title">Toggles, stepper, sliders</h3></div><div class="card__body stack" style="--gap: 14px">
+          <label class="check"><input type="checkbox" checked><span>Show docks</span></label>
+          <label class="check"><input type="checkbox"><span>Show station ids</span></label>
+          <label class="check"><input type="checkbox" id="chk-ind"><span>Indeterminate (some selected)</span></label>
+          <label class="check"><input type="checkbox" disabled><span>Disabled option</span></label>
+          <div class="row row--wrap" style="--gap: 16px">
+            <label class="check"><input type="radio" name="idle" checked><span>Park in depot</span></label>
+            <label class="check"><input type="radio" name="idle"><span>Stay on road</span></label>
+          </div>
+          <div class="stack" style="--gap: 10px">
+            <label class="switch"><input class="switch__input" type="checkbox" checked><span class="switch__track"></span><span>Battery model</span></label>
+            <label class="switch"><input class="switch__input" type="checkbox"><span class="switch__track"></span><span>Vehicle breakdowns</span></label>
+            <label class="switch"><input class="switch__input" type="checkbox" disabled><span class="switch__track"></span><span>Disabled switch</span></label>
+          </div>
+          <div class="field field--inline" style="--control-w: 132px">
+            <label class="field__label" for="f-count">Vehicles</label>
+            <div class="stepper"><button class="stepper__btn" type="button" aria-label="Fewer"><span data-icon="minus" data-size="14"></span></button><input class="stepper__input" id="f-count" type="number" value="4"><button class="stepper__btn" type="button" aria-label="More"><span data-icon="plus" data-size="14"></span></button></div>
+          </div>
+          <div class="field field--inline">
+            <label class="field__label" for="f-pr">Priority</label>
+            <select class="input input--sm" id="f-pr"><option>Normal</option><option>High</option><option>Urgent</option></select>
+          </div>
+          <div class="field">
+            <div class="field__head"><label class="field__label" for="r-demand">Demand</label><span class="field__value" data-range-out="r-demand">1.2×</span></div>
+            <div class="range" data-range data-fmt="x"><input id="r-demand" type="range" min="0.2" max="3" step="0.05" value="1.2"></div>
+          </div>
+          <div class="field">
+            <div class="field__head"><label class="field__label" for="r-speed">Vehicle speed</label><span class="field__value" data-range-out="r-speed">0.8×</span></div>
+            <div class="range" data-range data-fmt="x"><input id="r-speed" type="range" min="0.2" max="3" step="0.05" value="0.8"></div>
+          </div>
+          <div class="field">
+            <div class="field__head"><label class="field__label" for="r-lim">Speed limit (zone)</label><span class="field__value" data-range-out="r-lim">50 %</span></div>
+            <div class="range" data-range data-fmt="pct"><input id="r-lim" type="range" min="10" max="100" step="5" value="50"></div>
+          </div>
+        </div></div>
+
+        <div class="card"><div class="card__header"><h3 class="card__title">Collapsible sections</h3></div>
+          <details class="section" open>
+            <summary class="section__header"><span class="section__chevron" data-icon="chevron-right" data-size="14"></span>Battery<span class="section__aside">on</span></summary>
+            <div class="section__body">
+              <div class="field-grid">
+                <div class="field"><label class="field__label" for="b1">Runtime</label><div class="input-group input-group--sm"><input class="input input--sm" id="b1" type="number" value="480"><span class="input-unit">min</span></div></div>
+                <div class="field"><label class="field__label" for="b2">Charge time</label><div class="input-group input-group--sm"><input class="input input--sm" id="b2" type="number" value="90"><span class="input-unit">min</span></div></div>
+              </div>
+            </div>
+          </details>
+          <details class="section">
+            <summary class="section__header"><span class="section__chevron" data-icon="chevron-right" data-size="14"></span>Breakdowns<span class="section__aside">off</span></summary>
+            <div class="section__body"><p class="field__hint">Mean time between failures and repair time.</p></div>
+          </details>
+          <button class="section__header" type="button" aria-expanded="false" style="border-top: 1px solid var(--border)"><span class="section__chevron" data-icon="chevron-right" data-size="14"></span>Button-driven header<span class="section__aside">3</span></button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================== Cards, tabs, lists ============================== -->
+    <section class="demo-section" data-shot="layout">
+      <h2>Cards, KPIs, tabs, lists</h2>
+      <div class="demo-kpis" id="kpis"></div>
+      <div class="demo-grid demo-sub">
+        <div class="card demo-panel" style="width: auto">
+          <div class="tabs" role="tablist" aria-label="Panels">
+            <button class="tab" type="button" role="tab" aria-selected="false">Properties</button>
+            <button class="tab" type="button" role="tab" aria-selected="false">Fleet</button>
+            <button class="tab" type="button" role="tab" aria-selected="false">Flows</button>
+            <button class="tab" type="button" role="tab" aria-selected="false">Simulate</button>
+            <button class="tab" type="button" role="tab" aria-selected="true">Results</button>
+            <button class="tab" type="button" role="tab" aria-selected="false">Experiments</button>
+            <button class="tab" type="button" role="tab" aria-selected="false">Checks<span class="badge badge--bad">3</span></button>
+          </div>
+          <div class="card__body">
+            <dl class="kv">
+              <dt>Throughput</dt><dd>112 /h</dd>
+              <dt>Lead time (mean)</dt><dd>14.2 min</dd>
+              <dt>Lead time (p95)</dt><dd>27.8 min</dd>
+              <dt>WIP</dt><dd>18.4 loads</dd>
+              <dt>Deadlocks</dt><dd>0</dd>
+            </dl>
+          </div>
+        </div>
+        <div class="stack">
+          <div class="callout callout--error"><span class="callout__icon" data-icon="error" data-size="16"></span><div class="callout__body"><div class="callout__title">Weld cell cannot be reached</div><div class="callout__text">No route from the inbound dock to Weld cell: the road ends in a one-way dead end.</div></div></div>
+          <div class="callout callout--warn"><span class="callout__icon" data-icon="warning" data-size="16"></span><div class="callout__body"><div class="callout__title">Fleet is saturated</div><div class="callout__text">AGVs work 91 % of the time. Add a vehicle or speed them up.</div></div></div>
+          <div class="callout callout--info"><span class="callout__icon" data-icon="info" data-size="16"></span><div class="callout__body"><div class="callout__title">Warming up</div><div class="callout__text">KPIs start after 10 min of simulated time.</div></div></div>
+          <div class="callout callout--good"><span class="callout__icon" data-icon="check" data-size="16"></span><div class="callout__body"><div class="callout__title">No problems found</div></div></div>
+        </div>
+        <div class="stack">
+          <div class="card"><div class="empty"><span class="empty__icon"><span data-icon="chart" data-size="20"></span></span><div class="empty__title">No results yet</div><div class="empty__text">Press play to simulate the plant. KPIs appear after the warm-up.</div><div class="empty__actions"><button class="btn btn--primary btn--sm" type="button"><span data-icon="play" data-size="14"></span>Run</button></div></div></div>
+          <div class="card"><div class="card__body stack">
+            <div class="row"><span class="skeleton skeleton--circle"></span><div class="stack" style="flex: 1"><span class="skeleton"></span><span class="skeleton skeleton--text"></span></div></div>
+            <span class="skeleton skeleton--chart"></span>
+          </div></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="demo-section" data-shot="cards">
+      <h2>Card variants, dividers</h2>
+      <div class="demo-grid">
+        <div class="card card--flat">
+          <div class="card__header"><h3 class="card__title">Flat card with footer</h3><div class="card__actions"><button class="btn btn--icon btn--sm btn--ghost" type="button" aria-label="More"><span data-icon="more" data-size="16"></span></button></div></div>
+          <div class="card__body stack"><p>No shadow: sits inside panels that already have an outline.</p><hr class="divider" style="margin: 0"><div class="row"><span>Left</span><span class="divider divider--vertical"></span><span>Middle</span><span class="divider divider--vertical"></span><span>Right</span></div></div>
+          <div class="card__footer"><button class="btn btn--sm" type="button">Cancel</button><button class="btn btn--sm btn--primary" type="button">Save</button></div>
+        </div>
+        <div class="card card--interactive" tabindex="0">
+          <div class="card__header"><h3 class="card__title truncate">Interactive card with a very long title that has to be truncated</h3></div>
+          <div class="card__body"><p>Hover to see the border and shadow change; used for example gallery tiles and fleet cards.</p></div>
+        </div>
+        <div class="card card--selected">
+          <div class="card__header"><h3 class="card__title">Selected card</h3><span class="chip chip--good" style="margin-left: auto"><span data-icon="check" data-size="12"></span>Active</span></div>
+          <div class="card__body stack">
+            <div class="progress progress--good" role="progressbar" aria-valuenow="64" aria-valuemin="0" aria-valuemax="100"><div class="progress__bar" style="--w: 64%"></div></div>
+            <div class="input-group is-disabled"><input class="input" value="Disabled group" disabled><span class="input-unit">s</span></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================== Data ============================== -->
+    <section class="demo-section" data-shot="data">
+      <h2>Tables, progress, status</h2>
+      <div class="demo-data-grid">
+        <div class="table-wrap" style="--table-max-h: 260px">
+          <table class="table">
+            <thead><tr><th>Variant</th><th class="num">Throughput /h</th><th class="num">Lead time</th><th class="num">WIP</th><th class="num">Fleet use</th><th class="num">Deadlocks</th></tr></thead>
+            <tbody>
+              <tr><td><span class="dot tone-info"></span> A · Baseline</td><td class="num is-worst">92</td><td class="num">18.4 min</td><td class="num">24.1</td><td class="num">94 %</td><td class="num">3</td></tr>
+              <tr><td><span class="dot tone-accent"></span> B · +1 AGV</td><td class="num">104</td><td class="num">16.0 min</td><td class="num">21.7</td><td class="num">82 %</td><td class="num">1</td></tr>
+              <tr class="is-selected"><td><span class="dot tone-good"></span> C · One-way aisles</td><td class="num is-best">118</td><td class="num is-best">12.9 min</td><td class="num is-best">15.2</td><td class="num">71 %</td><td class="num is-best">0</td></tr>
+              <tr><td><span class="dot tone-warn"></span> D · Faster AGVs</td><td class="num">111</td><td class="num">14.3 min</td><td class="num">18.0</td><td class="num is-worst">96 %</td><td class="num">0</td></tr>
+              <tr><td><span class="dot tone-bad"></span> E · Two docks</td><td class="num">109</td><td class="num is-worst">19.6 min</td><td class="num is-worst">27.5</td><td class="num is-best">64 %</td><td class="num">2</td></tr>
+              <tr><td>F · Long variant name that keeps going</td><td class="num">101</td><td class="num">15.5 min</td><td class="num">20.2</td><td class="num">79 %</td><td class="num">1</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="card"><div class="card__header"><h3 class="card__title">Progress and state bars</h3></div><div class="card__body stack" style="--gap: 14px">
+          <div class="stack" style="--gap: 4px"><div class="row"><span class="text-dim">Buffer fill</span><span class="spacer"></span><span class="tnum">38 %</span></div><div class="progress" role="progressbar" aria-valuenow="38" aria-valuemin="0" aria-valuemax="100"><div class="progress__bar" style="--w: 38%"></div></div></div>
+          <div class="stack" style="--gap: 4px"><div class="row"><span class="text-dim">Fleet utilization</span><span class="spacer"></span><span class="tnum">86 %</span></div><div class="progress progress--warn" role="progressbar" aria-valuenow="86" aria-valuemin="0" aria-valuemax="100"><div class="progress__bar" style="--w: 86%"></div></div></div>
+          <div class="stack" style="--gap: 4px"><div class="row"><span class="text-dim">Output buffer</span><span class="spacer"></span><span class="tnum">100 % · blocked</span></div><div class="progress progress--bad" role="progressbar" aria-valuenow="100" aria-valuemin="0" aria-valuemax="100"><div class="progress__bar" style="--w: 100%"></div></div></div>
+          <div class="stack" style="--gap: 4px"><div class="row"><span class="text-dim">AGV time shares</span></div>
+            <div class="progress progress--lg progress--stacked" role="img" aria-label="Driving 46 %, waiting 12 %, loading 14 %, idle 28 %">
+              <div class="progress__bar tone-driving" style="--w: 46%"></div><div class="progress__bar tone-waiting" style="--w: 12%"></div><div class="progress__bar tone-loading" style="--w: 14%"></div><div class="progress__bar tone-idle" style="--w: 28%"></div>
+            </div>
+          </div>
+          <div class="demo-states"><span><span class="dot tone-driving"></span>Driving</span><span><span class="dot tone-waiting"></span>Waiting</span><span><span class="dot tone-loading"></span>Loading</span><span><span class="dot tone-idle"></span>Idle</span></div>
+        </div></div>
+      </div>
+    </section>
+
+    <!-- ============================== Overlays ============================== -->
+    <section class="demo-section" data-shot="overlays">
+      <h2>Menus, dialogs, toasts, tooltips</h2>
+      <div class="demo-grid">
+        <div class="stack">
+          <p class="eyebrow">Menu (dropdown)</p>
+          <div class="menu" role="menu" style="width: 240px">
+            <div class="menu__label">Export</div>
+            <button class="menu__item" type="button" role="menuitem"><span class="menu__icon" data-icon="export" data-size="16"></span>Project as JSON<span class="menu__kbd">Ctrl+S</span></button>
+            <button class="menu__item is-focused" type="button" role="menuitem"><span class="menu__icon" data-icon="chart" data-size="16"></span>Report (HTML)</button>
+            <button class="menu__item" type="button" role="menuitem"><span class="menu__icon" data-icon="download" data-size="16"></span>Layout as PNG</button>
+            <div class="menu__sep"></div>
+            <button class="menu__item" type="button" role="menuitemcheckbox" aria-checked="true"><span class="menu__icon" data-icon="check" data-size="16"></span>Include comparison</button>
+            <button class="menu__item menu__item--danger" type="button" role="menuitem"><span class="menu__icon" data-icon="trash" data-size="16"></span>Discard changes</button>
+            <button class="menu__item" type="button" role="menuitem" disabled>Unavailable</button>
+          </div>
+        </div>
+        <div class="stack">
+          <p class="eyebrow">Popover</p>
+          <div class="popover stack" style="width: 260px">
+            <div class="field"><div class="field__head"><span class="field__label">Speed limit factor</span><span class="field__value">50 %</span></div><div class="range" style="--p: 0.44"><input type="range" min="10" max="100" value="50" aria-label="Speed limit"></div></div>
+            <div class="row"><button class="btn btn--sm btn--ghost" type="button">Reset</button><span class="spacer"></span><button class="btn btn--sm btn--primary" type="button">Apply</button></div>
+          </div>
+          <p class="eyebrow demo-sub">Toasts</p>
+          <div class="demo-stage toast-stage" style="min-height: 0">
+          <div class="toast-region">
+            <div class="toast toast--success"><span class="toast__icon" data-icon="check" data-size="16"></span><span class="toast__msg">Example loaded: Starter plant.</span><button class="toast__action" type="button">Undo</button></div>
+            <div class="toast toast--warn"><span class="toast__icon" data-icon="warning" data-size="16"></span><span class="toast__msg">Flow already exists between these stations.</span><button class="toast__close" type="button" aria-label="Dismiss"><span data-icon="close" data-size="14"></span></button></div>
+            <div class="toast toast--error"><span class="toast__icon" data-icon="error" data-size="16"></span><span class="toast__msg">Could not read the file.</span></div>
+            <div class="toast"><span class="toast__icon" data-icon="info" data-size="16"></span><span class="toast__msg">Share link copied to the clipboard.</span></div>
+          </div>
+          </div>
+        </div>
+        <div class="stack">
+          <p class="eyebrow">Modal dialog</p>
+          <div class="demo-stage">
+            <div class="modal-backdrop">
+              <div class="modal modal--sm" role="dialog" aria-modal="true" aria-labelledby="m-title">
+                <div class="modal__header"><h3 class="modal__title" id="m-title">Delete scenario?</h3><button class="btn btn--icon btn--sm btn--ghost modal__close" type="button" aria-label="Close"><span data-icon="close" data-size="16"></span></button></div>
+                <div class="modal__body"><p>Variant "C · One-way aisles" and its undo history will be removed. This cannot be undone.</p></div>
+                <div class="modal__footer"><button class="btn" type="button">Cancel</button><button class="btn btn--danger" type="button">Delete</button></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <p class="eyebrow demo-sub">Dropdown menus (.dropdown__menu opens down, --end right-aligned, --up above; they combine)</p>
+      <div class="demo-stage" style="display: flex; justify-content: space-between; align-items: flex-start; min-height: 190px">
+        <div class="dropdown">
+          <button class="btn" type="button" aria-haspopup="menu" aria-expanded="true"><span data-icon="export" data-size="14"></span>Export<span data-icon="chevron-down" data-size="14"></span></button>
+          <div class="menu dropdown__menu" role="menu">
+            <button class="menu__item" type="button" role="menuitem"><span class="menu__icon" data-icon="export" data-size="16"></span>Project as JSON</button>
+            <button class="menu__item" type="button" role="menuitem"><span class="menu__icon" data-icon="download" data-size="16"></span>Layout as PNG</button>
+          </div>
+        </div>
+        <div class="dropdown">
+          <button class="btn" type="button" aria-haspopup="menu" aria-expanded="true">Scenario B<span data-icon="chevron-down" data-size="14"></span></button>
+          <div class="menu dropdown__menu dropdown__menu--end" role="menu">
+            <button class="menu__item" type="button" role="menuitem"><span class="menu__icon" data-icon="copy" data-size="16"></span>Duplicate</button>
+            <button class="menu__item menu__item--danger" type="button" role="menuitem"><span class="menu__icon" data-icon="trash" data-size="16"></span>Delete</button>
+          </div>
+        </div>
+        <div class="dropdown" style="align-self: flex-end">
+          <button class="btn btn--sm" type="button" aria-haspopup="menu" aria-expanded="true">Opens upwards<span data-icon="chevron-up" data-size="14"></span></button>
+          <div class="menu dropdown__menu dropdown__menu--up dropdown__menu--end" role="menu">
+            <button class="menu__item" type="button" role="menuitem">Heatmap: traffic</button>
+            <button class="menu__item" type="button" role="menuitem">Heatmap: waiting</button>
+          </div>
+        </div>
+      </div>
+      <p class="eyebrow demo-sub">CSS tooltips ([data-tip], shown here forced open)</p>
+      <div class="demo-tipbox">
+        <button class="btn btn--icon demo-force-tip" type="button" aria-label="Top" data-tip="Undo (Ctrl+Z)"><span data-icon="undo"></span></button>
+        <button class="btn btn--icon demo-force-tip" type="button" aria-label="Bottom" data-tip="Fit to screen (F)" data-tip-pos="bottom"><span data-icon="fit"></span></button>
+        <button class="btn btn--icon demo-force-tip" type="button" aria-label="Right" data-tip="Select (V)" data-tip-pos="right"><span data-icon="select"></span></button>
+        <button class="btn btn--icon demo-force-tip" type="button" aria-label="Left" data-tip="Pan (H)" data-tip-pos="left" style="margin-left: 70px"><span data-icon="pan"></span></button>
+        <button class="btn btn--sm demo-force-tip" type="button" data-tip="Longer help text wraps after about two hundred and forty pixels so it stays readable on small screens.">Wrapping tip</button>
+      </div>
+    </section>
+
+    <!-- ============================== Charts ============================== -->
+    <section class="demo-section" data-shot="charts">
+      <h2>Charts <small>canvas, theme-aware, hi-dpi</small></h2>
+      <div class="demo-grid demo-grid--wide">
+        <div class="card demo-chart-card"><div class="card__header"><h3 class="card__title">Throughput and WIP</h3><span class="card__subtitle">time series, hover for values</span></div><div class="card__body" id="c-line"></div></div>
+        <div class="card demo-chart-card"><div class="card__header"><h3 class="card__title">Fleet size sweep</h3><span class="card__subtitle" id="sweep-status">click a point to apply it</span></div><div class="card__body" id="c-sweep"></div></div>
+        <div class="card demo-chart-card"><div class="card__header"><h3 class="card__title">Throughput by variant</h3><span class="card__subtitle">best and worst highlighted</span></div><div class="card__body" id="c-bar-h"></div></div>
+        <div class="card demo-chart-card"><div class="card__header"><h3 class="card__title">Lead time by variant</h3><span class="card__subtitle">grouped columns</span></div><div class="card__body" id="c-bar-v"></div></div>
+        <div class="card demo-chart-card"><div class="card__header"><h3 class="card__title">Station utilization</h3><span class="card__subtitle">per-bar colours = station type</span></div><div class="card__body" id="c-bar-st"></div></div>
+        <div class="card demo-chart-card"><div class="card__header"><h3 class="card__title">Vehicle time shares</h3></div><div class="card__body" id="c-stack-veh"></div></div>
+        <div class="card demo-chart-card"><div class="card__header"><h3 class="card__title">Workstation states</h3></div><div class="card__body" id="c-stack-st"></div></div>
+        <div class="card demo-chart-card"><div class="card__header"><h3 class="card__title">Gauges</h3></div><div class="card__body"><div class="demo-gauges" id="c-gauges"></div></div></div>
+        <div class="card demo-chart-card"><div class="card__header"><h3 class="card__title">Empty and sparse data</h3></div><div class="card__body stack" style="--gap: 12px" id="c-empty"></div></div>
+      </div>
+    </section>
+
+    <!-- ============================== Icons ============================== -->
+    <section class="demo-section" data-shot="icons">
+      <h2>Icons <small id="icon-count"></small></h2>
+      <div class="demo-icon-row" id="icon-sizes"></div>
+      <div class="demo-icons demo-sub" id="icons"></div>
+    </section>
+  </main>
+
+  <script type="module">
+    import { icon, ICON_NAMES } from '../../js/ui/icons.js';
+    import { createLineChart, createBarChart, createStackedBar, createSparkline, createGauge, segmentsFromShares } from '../../js/ui/charts.js';
+    import { createRng } from '../../js/util/rng.js';
+    import { formatClock } from '../../js/util/format.js';
+
+    const $ = (sel, root = document) => root.querySelector(sel);
+    const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
+
+    // ---- icons placeholders: <span data-icon="play" data-size="14"></span>
+    for (const el of $$('[data-icon]')) {
+      const svg = icon(el.dataset.icon, { size: Number(el.dataset.size) || 18, class: el.className });
+      el.replaceWith(svg);
+    }
+
+    // ---- theme switch (?theme=light|dark|auto)
+    const root = document.documentElement;
+    function setTheme(choice) {
+      if (choice === 'light' || choice === 'dark') root.dataset.theme = choice; else delete root.dataset.theme;
+      for (const b of $$('[data-theme-choice]')) b.setAttribute('aria-pressed', String(b.dataset.themeChoice === (choice || 'auto')));
+    }
+    setTheme(new URLSearchParams(location.search).get('theme') || 'auto');
+    for (const b of $$('[data-theme-choice]')) b.addEventListener('click', () => setTheme(b.dataset.themeChoice));
+
+    // ---- generic toggles for the demo (buttons with aria-pressed, tabs)
+    for (const b of $$('.btn[aria-pressed], .segmented button')) {
+      b.addEventListener('click', () => {
+        const group = b.closest('.segmented');
+        if (group) $$('button', group).forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+        else b.setAttribute('aria-pressed', String(b.getAttribute('aria-pressed') !== 'true'));
+      });
+    }
+    for (const t of $$('.tab')) t.addEventListener('click', () => $$('.tab', t.parentElement).forEach((x) => x.setAttribute('aria-selected', String(x === t))));
+    $('#chk-ind').indeterminate = true;
+    $('.section__header[aria-expanded]').addEventListener('click', (e) => {
+      const open = e.currentTarget.getAttribute('aria-expanded') !== 'true';
+      e.currentTarget.setAttribute('aria-expanded', String(open));
+    });
+
+    // ---- range sliders: --p and data-value are driven from JS (see docs/UI-KIT.md)
+    function syncRange(wrap) {
+      const input = $('input', wrap);
+      const p = (input.value - input.min) / (input.max - input.min);
+      const text = wrap.dataset.fmt === 'pct' ? `${input.value} %` : `${Number(input.value).toFixed(2).replace(/0$/, '')}×`;
+      wrap.style.setProperty('--p', p);
+      wrap.dataset.value = text;
+      const out = $(`[data-range-out="${input.id}"]`);
+      if (out) out.textContent = text;
+    }
+    for (const wrap of $$('[data-range]')) {
+      syncRange(wrap);
+      $('input', wrap).addEventListener('input', () => syncRange(wrap));
+    }
+
+    // ---- foundations: swatches, states, spacing
+    const css = getComputedStyle(root);
+    const swatch = (name, label = name) => `<div class="demo-swatch"><i style="background: var(${name})"></i><strong>${label}</strong><code data-token="${name}"></code></div>`;
+    $('#sw-surfaces').innerHTML = ['--bg', '--surface', '--surface-2', '--surface-3', '--border', '--border-strong', '--text', '--text-dim', '--text-faint'].map((n) => swatch(n)).join('');
+    $('#sw-semantic').innerHTML = ['--accent', '--accent-solid', '--accent-soft', '--good', '--good-soft', '--warn', '--warn-soft', '--bad', '--bad-soft', '--info', '--info-soft'].map((n) => swatch(n)).join('');
+    $('#sw-series').innerHTML = [1, 2, 3, 4, 5, 6, 7, 8].map((n) => swatch(`--series-${n}`, `series ${n}`)).join('');
+    $('#states').innerHTML = ['busy', 'starved', 'blocked', 'down', 'idle', 'driving', 'waiting', 'loading', 'unloading', 'parked', 'charging', 'broken']
+      .map((s) => `<span><span class="dot dot--lg tone-${s}"></span>${s[0].toUpperCase() + s.slice(1)}</span>`).join('');
+    $('#spacing').innerHTML = [1, 2, 3, 4, 5, 6, 7, 8].map((n) => `<div style="flex: 1"><span style="height: var(--sp-${n})"></span><div class="text-faint" style="font-size: var(--fs-xs)">sp-${n}</div></div>`).join('');
+    const fillTokens = () => { for (const c of $$('[data-token]')) c.textContent = css.getPropertyValue(c.dataset.token).trim(); };
+    fillTokens();
+    new MutationObserver(() => requestAnimationFrame(fillTokens)).observe(root, { attributes: true });
+    matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => requestAnimationFrame(fillTokens));
+
+    // ---- icons gallery
+    $('#icon-count').textContent = `${ICON_NAMES.length} icons, 24 px grid, 1.75 stroke`;
+    $('#icons').innerHTML = '';
+    for (const name of ICON_NAMES) {
+      const cell = document.createElement('div');
+      cell.dataset.iconName = name;
+      cell.append(icon(name, { size: 24 }), Object.assign(document.createElement('span'), { textContent: name }));
+      $('#icons').append(cell);
+    }
+    for (const size of [14, 16, 18, 20, 24, 32]) {
+      const row = document.createElement('span');
+      row.className = 'row';
+      row.append(icon('depot', { size }), icon('process', { size }), icon('storage', { size }), icon('forklift', { size }));
+      $('#icon-sizes').append(row);
+    }
+
+    // ---- sample data (deterministic)
+    const rng = createRng(11);
+    const T = Array.from({ length: 97 }, (_, i) => i * 300); // 8 h in 5 min steps
+    const throughput = T.map((t) => Math.round(10 * (118 * (1 - Math.exp(-t / 2400)) + rng.range(-7, 7))) / 10);
+    const wip = T.map((t) => Math.round(10 * (9 + 10 * (1 - Math.exp(-t / 3000)) + rng.range(-1.6, 1.6))) / 10);
+    const fleetSizes = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+    const sweepMean = fleetSizes.map((n) => 150 * (1 - Math.exp(-n / 3.4)));
+    const sweepLo = sweepMean.map((v, i) => v - 9 + i * 0.5);
+    const sweepHi = sweepMean.map((v, i) => v + 9 - i * 0.5);
+
+    const charts = [];
+    const bySelector = {};
+    const mount = (selector, chart) => { $(selector).append(chart.el); charts.push(chart); bySelector[selector] = chart; return chart; };
+
+    mount('#c-line', createLineChart({
+      x: T, xAxis: 'time', xLabel: 'Simulated time', yLabel: 'Throughput (units/h) and WIP (loads)', height: 240,
+      series: [{ name: 'Throughput', y: throughput, area: true }, { name: 'WIP', y: wip }],
+      refLines: [{ axis: 'y', value: 120, label: 'Target 120 /h' }, { axis: 'x', value: 600, label: 'Warm-up ends' }],
+    }));
+
+    const sweepStatus = $('#sweep-status');
+    mount('#c-sweep', createLineChart({
+      x: fleetSizes, xLabel: 'Number of AGVs', yLabel: 'Throughput (units/h), mean and min-max of 5 runs', height: 240,
+      series: [{ name: 'Throughput', y: sweepMean, lo: sweepLo, hi: sweepHi }],
+      markers: true, yUnit: '/h', xFormat: (v) => `${v} AGVs`,
+      refLines: [{ axis: 'x', value: 4, label: 'current: 4' }],
+      onPointClick: (hit) => { sweepStatus.textContent = `applied: ${hit.x} AGVs`; },
+    }));
+
+    mount('#c-bar-h', createBarChart({
+      categories: ['A · Baseline', 'B · +1 AGV', 'C · One-way aisles', 'D · Faster AGVs', 'E · Two docks'],
+      series: [{ name: 'Throughput', values: [92, 104, 118, 111, 109] }],
+      unit: '/h', highlight: 'both', better: 'higher',
+    }));
+
+    mount('#c-bar-v', createBarChart({
+      orientation: 'vertical', height: 250, unit: 'min', valueLabel: 'Lead time (minutes)',
+      categories: ['A', 'B', 'C', 'D', 'E'],
+      series: [{ name: 'Mean lead time', values: [18.4, 16, 12.9, 14.3, 19.6] }, { name: 'p95 lead time', values: [34.2, 29.8, 22.1, 26.5, 36.9] }],
+    }));
+
+    mount('#c-bar-st', createBarChart({
+      categories: ['Inbound dock', 'Press 1', 'Press 2', 'Assembly', 'Warehouse', 'Shipping'],
+      series: [{ name: 'Utilization', values: [48, 86, 91, 97, 42, 55], colors: ['--st-source', '--st-process', '--st-process', '--st-process', '--st-storage', '--st-sink'] }],
+      unit: '%', max: 100,
+    }));
+
+    mount('#c-stack-veh', createStackedBar({
+      rows: [
+        { label: 'AGV (4)', note: '86 % working', segments: segmentsFromShares({ driving: 0.46, waiting: 0.12, loading: 0.1, unloading: 0.09, idle: 0.05, parked: 0.1, charging: 0.07, broken: 0.01 }) },
+        { label: 'Forklift (2)', note: '64 % working', segments: segmentsFromShares({ driving: 0.31, waiting: 0.05, loading: 0.15, unloading: 0.13, idle: 0.36 }) },
+        { label: 'Tugger train (1)', note: '41 % working', segments: segmentsFromShares({ driving: 0.28, waiting: 0.02, loading: 0.06, unloading: 0.05, idle: 0.59 }) },
+      ],
+    }));
+
+    mount('#c-stack-st', createStackedBar({
+      rows: [
+        { label: 'Press 1', segments: segmentsFromShares({ busy: 0.71, starved: 0.2, blocked: 0.08, down: 0.01 }) },
+        { label: 'Press 2', segments: segmentsFromShares({ busy: 0.88, starved: 0.04, blocked: 0.05, down: 0.03 }) },
+        { label: 'Assembly line with a long name', segments: segmentsFromShares({ busy: 0.97, starved: 0.015, blocked: 0.005, down: 0.01 }) },
+      ],
+    }));
+
+    const gauges = [
+      { value: 0.62, label: 'Fleet utilization', thresholds: [{ to: 0.35, color: 'info', label: 'Oversized' }, { to: 0.85, color: 'good', label: 'Healthy' }, { to: 0.95, color: 'warn', label: 'Saturated' }, { to: 1, color: 'bad', label: 'Overloaded' }] },
+      { value: 0.91, label: 'Fleet utilization', thresholds: [{ to: 0.35, color: 'info', label: 'Oversized' }, { to: 0.85, color: 'good', label: 'Healthy' }, { to: 0.95, color: 'warn', label: 'Saturated' }, { to: 1, color: 'bad', label: 'Overloaded' }] },
+      { value: 0.07, label: 'Time waiting in traffic', max: 0.5, thresholds: [{ to: 0.12, color: 'good', label: 'Fine' }, { to: 0.25, color: 'warn', label: 'Congested' }, { to: 0.5, color: 'bad', label: 'Jammed' }] },
+    ];
+    for (const g of gauges) { const chart = createGauge(g); $('#c-gauges').append(chart.el); charts.push(chart); }
+
+    const kpis = [
+      { label: 'Throughput', value: '112', unit: '/h', delta: ['+8.4 %', 'good'], spark: throughput.slice(24) },
+      { label: 'Lead time (mean)', value: '14.2', unit: 'min', delta: ['+1.1 min', 'bad'], spark: wip.slice(24).map((v) => 10 + v / 2) },
+      { label: 'WIP', value: '18.4', unit: 'loads', delta: ['0', ''], spark: wip.slice(24) },
+      { label: 'Traffic wait share', value: '7', unit: '%', delta: ['-2.0 pts', 'good'], spark: throughput.slice(24).map((v, i) => 12 - i / 8 + (v % 3)) },
+    ];
+    $('#kpis').innerHTML = kpis.map((k, i) => `<div class="card"><div class="kpi"><div class="kpi__label">${k.label}</div><div class="kpi__value tnum">${k.value}<span class="kpi__unit">${k.unit}</span></div><div class="kpi__foot"><span class="delta ${k.delta[1] ? 'delta--' + k.delta[1] : ''}">${k.delta[0]}</span><div class="kpi__spark" id="spark-${i}"></div></div></div></div>`).join('');
+    kpis.forEach((k, i) => mount(`#spark-${i}`, createSparkline({ values: k.spark, color: ['--series-1', '--series-2', '--series-3', '--series-5'][i], unit: k.unit })));
+
+    mount('#c-empty', createLineChart({ series: [], height: 120, empty: 'No data yet. Press play to start the simulation.' }));
+    mount('#c-empty', createLineChart({ x: [1], series: [{ name: 'Throughput', y: [42] }], height: 120, yUnit: '/h' }));
+    mount('#c-empty', createBarChart({ categories: ['Only one'], series: [{ name: 'Throughput', values: [42] }], height: 70, unit: '/h' }));
+    mount('#c-empty', createStackedBar({ rows: [{ label: 'Nothing yet', segments: [{ key: 'driving', value: 0 }, { key: 'idle', value: 0 }] }] }));
+
+    window.__charts = charts;
+    window.__chartAt = bySelector;
+    window.__demo = { setTheme, syncRange };
+    requestAnimationFrame(() => requestAnimationFrame(() => { window.__demoReady = true; }));
+  </script>
+</body>
+</html>

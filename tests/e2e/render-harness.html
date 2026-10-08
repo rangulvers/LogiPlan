@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LogiPlan renderer harness</title>
+  <style>
+    html, body { margin: 0; height: 100%; overflow: hidden; background: #eef1f6; }
+    body.dark { background: #12161d; }
+    canvas { display: block; width: 100vw; height: 100vh; touch-action: none; }
+  </style>
+</head>
+<body>
+<canvas id="plant" aria-label="Plant layout"></canvas>
+<script type="module">
+// Test page for the plant renderer. Builds a realistic sample plant and a FAKE simulation object (no
+// engine involved: states, fills and vehicle poses are scripted) and exposes window.harness so that
+// tests/e2e/render-visual.mjs can drive the camera, theme, overlays and view state and take screenshots.
+import { Renderer, createView } from '../../js/ui/renderer.js';
+import { Camera } from '../../js/ui/camera.js';
+import { buildGraph } from '../../js/sim/graph.js';
+import { layoutFromAscii } from '../helpers/ascii.js';
+import { FLEET_PRESETS } from '../../js/model/defaults.js';
+
+const COLS = 36;
+const ROWS = 22;
+const CS = 2;
+
+/** The sample plant: source A, presses B / C, storage E, sink D, depot F on a ring road with a one-way spur. */
+function buildLayout() {
+  const g = Array.from({ length: ROWS }, () => Array(COLS).fill('.'));
+  const rect = (x, y, w, h, ch) => { for (let j = y; j < y + h; j++) for (let i = x; i < x + w; i++) g[j][i] = ch; };
+  rect(6, 4, 3, 2, 'A');
+  rect(13, 3, 3, 3, 'B');
+  rect(20, 3, 3, 3, 'C');
+  rect(27, 4, 3, 2, 'D');
+  rect(12, 12, 4, 3, 'E');
+  rect(22, 16, 3, 2, 'F');
+  for (let x = 3; x <= 32; x++) { g[6][x] = '+'; g[15][x] = x > 3 && x < 32 ? '>' : '+'; } // top: two-way, bottom: one-way east
+  for (let y = 6; y <= 15; y++) { g[y][3] = '+'; g[y][32] = '+'; }
+  for (let y = 7; y <= 14; y++) g[y][17] = 'v'; // one-way spur from the top road to the bottom road
+  const layout = layoutFromAscii(g.map((row) => row.join('')), {
+    name: 'Renderer harness plant',
+    stations: {
+      A: { type: 'source', name: 'Goods in' },
+      B: { type: 'process', name: 'Press', params: { machines: 2 } },
+      C: { type: 'process', name: 'Final assembly', params: { machines: 3 } },
+      D: { type: 'sink', name: 'Shipping' },
+      E: { type: 'storage', name: 'Supermarket' },
+      F: { type: 'depot', name: 'Charging bay', params: { slots: 4, chargers: 2 } },
+    },
+    flows: [['A', 'E', { weight: 3 }], ['E', 'B', { weight: 2 }], ['B', 'E'], ['B', 'C'], ['C', 'D', { weight: 2 }]],
+    fleets: [{ preset: 'agv', count: 3, battery: { enabled: true } }, { preset: 'forklift', count: 2 }, { preset: 'tugger', count: 1 }],
+  });
+  layout.grid = { cols: COLS, rows: ROWS, cellSize: CS };
+  let id = 1;
+  const add = (x, y, w, h, kind) => layout.obstacles.push({ id: 'o' + id++, x, y, w, h, kind });
+  add(0, 0, COLS, 1, 'wall'); add(0, ROWS - 1, COLS, 1, 'wall'); add(0, 1, 1, ROWS - 2, 'wall'); add(COLS - 1, 1, 1, ROWS - 2, 'wall');
+  add(34, 7, 1, 8, 'wall');
+  add(5, 9, 6, 2, 'rack'); add(20, 9, 9, 2, 'rack'); add(20, 12, 9, 2, 'rack'); add(26, 18, 2, 3, 'rack');
+  add(9, 12, 1, 1, 'column'); add(19, 11, 1, 1, 'column'); add(30, 9, 1, 1, 'column'); add(30, 12, 1, 1, 'column');
+  for (let x = 25; x <= 30; x++) layout.roads[x + ',6'].limit = 0.5; // speed zone in front of the sink
+  layout.labels.push(
+    { id: 'l1', x: 7.5, y: 2.2, text: 'Inbound' },
+    { id: 'l2', x: 17.5, y: 1.9, text: 'Production hall', size: 1.4 },
+    { id: 'l3', x: 28.5, y: 2.6, text: 'Outbound' },
+  );
+  return layout;
+}
+
+const layout = buildLayout();
+const graph = buildGraph(layout);
+
+// ---- fake simulation ---------------------------------------------------------------------------------------
+
+const station = (id, patch) => ({ id, state: 'normal', fill: 0, fillLabel: '', ...patch });
+const stationRT = [
+  station('A', { type: 'source', state: 'blocked', fill: 1, fillLabel: '6/6 +3', yard: 3 }),
+  station('B', { type: 'process', state: 'busy', fill: 0.5, fillLabel: '2/4', machines: [{ state: 'busy', progress: 0.65 }, { state: 'busy', progress: 0.2 }] }),
+  station('C', { type: 'process', state: 'starved', fill: 0.12, fillLabel: '0/4', machines: [{ state: 'idle', progress: 0 }, { state: 'blocked', progress: 1 }, { state: 'down', progress: 0.4 }] }),
+  station('D', { type: 'sink', consumed: 128 }),
+  station('E', { type: 'storage', fill: 0.78, fillLabel: '31/40' }),
+  station('F', { type: 'depot', slots: 4, chargers: 2, parked: [], charging: [] }),
+];
+
+const fleets = layout.fleets;
+const [agv, forklift, tugger] = fleets;
+
+/** Pose on the road: cell coordinates (fractional), heading direction (dx, dy), lane offset for two-way roads. */
+function vehicle(id, fleet, state, cx, cy, dir, opts = {}) {
+  const [dx, dy] = dir;
+  const off = opts.twoWay ? 0.22 * CS : 0;
+  const x = (cx + 0.5) * CS - dy * off;
+  const y = (cy + 0.5) * CS + dx * off;
+  const heading = Math.atan2(dy, dx);
+  return {
+    id, fleetId: fleet.id, fleet, name: id, color: fleet.color, state, order: null, load: opts.load || [], battery: opts.battery ?? 1,
+    visible: opts.visible !== false, x, y, heading, prevX: x - 0.1 * dx, prevY: y - 0.1 * dy, prevHeading: heading,
+    tv: { length: fleet.length, width: Math.min(1, fleet.length * 0.55), waiting: !!opts.waiting, disabled: !!opts.disabled, onRoad: true },
+  };
+}
+
+const E_ = [1, 0];
+const W_ = [-1, 0];
+const S_ = [0, 1];
+const N_ = [0, -1];
+const vehicles = [
+  vehicle('v1#1', agv, 'toDrop', 9.4, 6, E_, { twoWay: true, load: [{}], battery: 0.82 }),
+  vehicle('v1#2', agv, 'toPickup', 21.2, 6, W_, { twoWay: true, waiting: true, battery: 0.41 }),
+  vehicle('v2#1', forklift, 'toDrop', 17, 10.3, S_, { load: [{}] }),
+  vehicle('v3#1', tugger, 'toDrop', 24.5, 15, E_, { load: [{}, {}, {}, {}] }),
+  vehicle('v1#3', agv, 'broken', 3, 10.5, S_, { twoWay: true, disabled: true, battery: 0.9 }),
+  vehicle('v2#2', forklift, 'toPickup', 31, 9, S_, { twoWay: true }),
+];
+const parkedAgv = vehicle('v1#4', agv, 'parked', 22, 16, N_, { visible: false });
+const chargingAgv = vehicle('v1#5', agv, 'charging', 23, 16, N_, { visible: false });
+chargingAgv.battery = 0.35;
+stationRT[5].parked = [parkedAgv];
+stationRT[5].charging = [chargingAgv];
+
+const sim = {
+  layout, settings: layout.settings, time: 1234, dt: 0.1, graph,
+  stations: stationRT, vehicles,
+  logistics: {
+    stations: stationRT, stationById: new Map(stationRT.map((s) => [s.id, s])), vehicles,
+    flows: layout.flows.map((f, i) => ({ id: f.id, def: f, delivered: [34, 21, 6, 19, 17][i] })),
+  },
+  traffic: { vehicles: [], activeDeadlocks: [] },
+  /** Scripted congestion: a hot spot at the junction (17, 6) that fades with distance. */
+  heat() {
+    const edgePasses = new Int32Array(graph.edges.length);
+    const edgeWait = new Float64Array(graph.edges.length);
+    const nodeWait = new Float64Array(graph.nodeCount);
+    for (const e of graph.edges) {
+      const d2 = (graph.cx(e.from) - 17) ** 2 + (graph.cy(e.from) - 6) ** 2;
+      edgePasses[e.id] = Math.round(10 + 14 * Math.cos((graph.cx(e.from) + graph.cy(e.from)) / 5) ** 2 + 190 * Math.exp(-d2 / 12));
+      edgeWait[e.id] = Math.round(60 * Math.exp(-d2 / 6));
+    }
+    nodeWait[6 * COLS + 17] = 140;
+    nodeWait[6 * COLS + 18] = 70;
+    nodeWait[7 * COLS + 17] = 35;
+    return { edgePasses, edgeWait, nodeWait };
+  },
+};
+
+// ---- harness -----------------------------------------------------------------------------------------------
+
+const canvas = document.getElementById('plant');
+const camera = new Camera();
+const renderer = new Renderer(canvas, { camera, theme: 'light' });
+renderer.layout = layout;
+renderer.sim = sim;
+renderer.view = createView();
+
+function drawNow(alpha = 1) {
+  renderer.render(alpha);
+}
+
+// 1 x 1 scratch canvas for pixel read-backs (reading the visible canvas repeatedly would make Chromium warn)
+const scratch = document.createElement('canvas');
+scratch.width = 1;
+scratch.height = 1;
+const scratchCtx = scratch.getContext('2d', { willReadFrequently: true });
+
+/** RGB of the on-screen canvas pixel at device position (x, y); also forces pending drawing to finish. */
+function readPixel(x, y) {
+  scratchCtx.clearRect(0, 0, 1, 1);
+  scratchCtx.drawImage(canvas, x, y, 1, 1, 0, 0, 1, 1);
+  return Array.from(scratchCtx.getImageData(0, 0, 1, 1).data.slice(0, 3));
+}
+
+window.harness = {
+  ready: false,
+  readPixel,
+  renderer, camera, layout, sim, graph,
+  /** Light / dark canvas palette and page background. */
+  setTheme(mode) {
+    renderer.theme = mode;
+    document.body.classList.toggle('dark', mode === 'dark');
+    drawNow();
+  },
+  /** Attach / detach the fake simulation (edit mode vs. run mode). */
+  setSim(on) {
+    renderer.sim = on ? sim : null;
+    drawNow();
+  },
+  setView(patch) {
+    const { overlays, ...rest } = patch;
+    Object.assign(renderer.view, rest);
+    if (overlays) Object.assign(renderer.view.overlays, overlays);
+    drawNow();
+  },
+  setCamera({ x, y, zoom }) {
+    if (zoom !== undefined) camera.zoomTo(zoom);
+    if (x !== undefined) camera.centerOn(x, y);
+    drawNow();
+  },
+  /** Centre on a grid cell at a zoom (px per metre). */
+  focus(cx, cy, zoom) {
+    camera.zoomTo(zoom);
+    camera.centerOn((cx + 0.5) * CS, (cy + 0.5) * CS);
+    drawNow();
+  },
+  fit(padding = 24) {
+    camera.fit(layout, canvas.clientWidth, canvas.clientHeight, padding);
+    drawNow();
+  },
+  setDeadlock(on) {
+    sim.traffic.activeDeadlocks = on ? [{ nodes: [6 * COLS + 17, 6 * COLS + 18] }] : [];
+    drawNow();
+  },
+  draw: drawNow,
+  /**
+   * Frame cost with `count` vehicles: renders `frames` frames back to back, forces the rasteriser to finish
+   * with a read-back and returns the mean milliseconds per frame.
+   */
+  bench(count = 100, frames = 120) {
+    const saved = sim.vehicles;
+    const crowd = Array.from({ length: count }, (_, i) => {
+      const v = vehicles[i % vehicles.length];
+      const dx = ((i * 1.7) % 24) - 12;
+      const dy = ((i * 0.9) % 10) - 5;
+      return { ...v, id: `${v.id}/${i}`, x: v.x + dx, y: v.y + dy, prevX: v.prevX + dx, prevY: v.prevY + dy };
+    });
+    sim.vehicles = crowd;
+    sim.logistics.vehicles = crowd;
+    for (let i = 0; i < 20; i++) renderer.render(0.5);
+    readPixel(0, 0);
+    const t0 = performance.now();
+    for (let i = 0; i < frames; i++) renderer.render((i % 10) / 10);
+    readPixel(0, 0);
+    const ms = (performance.now() - t0) / frames;
+    sim.vehicles = saved;
+    sim.logistics.vehicles = saved;
+    drawNow();
+    return { ms, vehicles: crowd.length };
+  },
+  /** Cell centre in CSS px of the canvas (for hit-test assertions). */
+  cellToScreen(cx, cy) {
+    return camera.worldToScreen((cx + 0.5) * CS, (cy + 0.5) * CS);
+  },
+  resize() {
+    renderer.resize();
+    drawNow();
+  },
+};
+
+camera.fit(layout, canvas.clientWidth, canvas.clientHeight, 24);
+drawNow();
+window.harness.ready = true;
+</script>
+</body>
+</html>

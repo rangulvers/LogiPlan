@@ -1,0 +1,497 @@
+/* LogiPlan design tokens (docs/ARCHITECTURE.md section 7, docs/UI-KIT.md).
+ *
+ * Every colour, size and duration used by css/components.css lives here as a CSS custom property.
+ * Themes: light is the default; dark applies under :root[data-theme='dark'] and, when no explicit
+ * theme is set, under prefers-color-scheme: dark (:root:not([data-theme='light'])). The two dark
+ * blocks and the print block below are generated from one table and must stay identical.
+ * js/ui/charts.js reads these properties at draw time; js/ui/theme.js mirrors the neutral ones for the canvas.
+ */
+
+:root {
+  color-scheme: light;
+
+  /* Surfaces & lines */
+  --bg: #eef1f6; /* app background behind panels */
+  --surface: #ffffff; /* panels, cards, inputs */
+  --surface-2: #f6f8fb; /* subtle fill: table header, input addon */
+  --surface-3: #edf0f6; /* hover / pressed / chip fill */
+  --border: #dfe4ec; /* hairline between regions */
+  --border-strong: #c3ccda; /* control outline */
+  --border-hover: #a9b4c6; /* control outline on hover */
+  --hover: rgba(28, 34, 48, 0.05); /* overlay for transparent controls */
+  --pressed: rgba(28, 34, 48, 0.09); /* overlay while pressed */
+  --track: #d5dbe6; /* switch / slider / progress track */
+  --scrim: rgba(18, 24, 38, 0.45); /* modal backdrop */
+  --inverse-bg: #1c2230; /* tooltips and toasts */
+  --inverse-text: #f1f4fa;
+  --inverse-accent: #8ab4ff; /* links / actions on inverse surfaces */
+  --inverse-good: #4cd08a;
+  --inverse-warn: #f5b94c;
+  --inverse-bad: #ff7b80;
+
+  /* Text */
+  --text: #1c2230;
+  --text-dim: #4f5d75; /* secondary text */
+  --text-faint: #5f6c83; /* hints, placeholders, axis labels (still AA on surfaces 1-3) */
+
+  /* Accent */
+  --accent: #2f7df6; /* brand blue: selection, focus, graphics */
+  --accent-solid: #2a68d8; /* fill behind white text (AA) */
+  --accent-hover: #2459c4;
+  --accent-active: #1f4ca8;
+  --accent-soft: #e8f0fe; /* selected / toggled background */
+  --accent-line: #b9d2fb; /* border of selected elements */
+  --accent-glow: rgba(47, 125, 246, 0.28); /* focus halo */
+  --accent-text: #1f5fd1; /* accent-coloured text */
+  --on-accent: #ffffff;
+
+  /* Semantic */
+  --good: #1f9d5b;
+  --good-soft: #e5f6ec;
+  --good-text: #17784a;
+  --warn: #cc7a00;
+  --warn-soft: #fdf3dc;
+  --warn-text: #855000;
+  --bad: #e5484d;
+  --bad-soft: #fdeaea;
+  --bad-text: #c4262c;
+  --bad-solid: #c92d33; /* fill behind white text (AA) */
+  --bad-hover: #b3252b;
+  --info: #2f7df6;
+  --info-soft: #e8f0fe;
+  --info-text: #1f5fd1;
+
+  /* Stations (bricks) - dark values are the canvas bricks, 10 % darker */
+  --st-source: #2f7df6;
+  --st-process: #f5b82e;
+  --st-storage: #f08a24;
+  --st-sink: #3dbb6d;
+  --st-depot: #8a63d2;
+  --st-source-ink: #0b1220; /* text / icon colour with AA contrast on the brick */
+  --st-process-ink: #1c2230;
+  --st-storage-ink: #1c2230;
+  --st-sink-ink: #1c2230;
+  --st-depot-ink: #000000;
+  --st-source-soft: rgba(47, 125, 246, 0.12);
+  --st-process-soft: rgba(245, 184, 46, 0.18);
+  --st-storage-soft: rgba(240, 138, 36, 0.15);
+  --st-sink-soft: rgba(61, 187, 109, 0.15);
+  --st-depot-soft: rgba(138, 99, 210, 0.13);
+
+  /* Vehicle states (parked is the only themed one) */
+  --state-parked: #c4ccd8;
+
+  /* Charts */
+  --chart-grid: #e8ecf2; /* horizontal gridlines */
+  --chart-axis: #c3ccda; /* baseline */
+  --series-1: #2a78d6; /* categorical order is fixed, never cycled */
+  --series-2: #eb6834;
+  --series-3: #1baf7a;
+  --series-4: #eda100;
+  --series-5: #e87ba4;
+  --series-6: #008300;
+  --series-7: #4a3aa7;
+  --series-8: #e34948;
+  --series-other: #8b93a1; /* series 9+ fold into one neutral */
+
+  /* Elevation */
+  --shadow-1: 0 1px 2px rgba(20, 30, 50, 0.06);
+  --shadow-2: 0 4px 14px rgba(20, 30, 50, 0.10), 0 1px 3px rgba(20, 30, 50, 0.08);
+  --shadow-3: 0 18px 48px rgba(20, 30, 50, 0.22), 0 2px 8px rgba(20, 30, 50, 0.10);
+
+  /* Misc */
+  --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%234f5d75' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 6.25l4 4 4-4'/%3E%3C/svg%3E"); /* drop-down arrow for select.input */
+  --scroll-thumb: rgba(80, 96, 125, 0.36);
+  --scroll-thumb-hover: rgba(80, 96, 125, 0.58);
+
+  /* ---- state colours (fixed: mirror STATUS_COLORS in js/ui/theme.js; always paired with a label or icon) ---- */
+  --state-busy: #2fb36b;
+  --state-starved: #f5a524;
+  --state-blocked: #f76b15;
+  --state-down: #e5484d;
+  --state-idle: #8b93a1;
+  --state-driving: var(--state-busy);
+  --state-waiting: var(--state-blocked);
+  --state-loading: #2f7df6;
+  --state-unloading: #7fb0fa;
+  --state-charging: #8a63d2;
+  --state-broken: var(--state-down);
+
+  /* ---- spacing (4 px base) ---- */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-7: 32px;
+  --sp-8: 48px;
+
+  /* ---- radii ---- */
+  --radius-xs: 3px;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px; /* cards */
+  --radius-xl: 12px; /* dialogs */
+  --radius-pill: 999px;
+
+  /* ---- typography ---- */
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-md: 13px; /* base size of the dense UI */
+  --fs-lg: 15px;
+  --fs-xl: 18px;
+  --fs-2xl: 22px;
+  --fs-3xl: 28px; /* KPI numbers */
+  --fw-regular: 400;
+  --fw-medium: 500;
+  --fw-semibold: 600;
+  --lh-tight: 1.25;
+  --lh: 1.45;
+
+  /* ---- controls ---- */
+  --control-h: 32px;
+  --control-h-sm: 26px;
+  --focus-color: var(--accent);
+  --focus-ring: 2px solid var(--focus-color);
+  --focus-offset: 2px;
+  --focus-glow: 0 0 0 3px var(--accent-glow);
+
+  /* ---- z-index scale ---- */
+  --z-raised: 1;
+  --z-sticky: 10;
+  --z-float: 20; /* controls floating over the canvas */
+  --z-drawer: 40;
+  --z-dropdown: 60;
+  --z-modal: 80;
+  --z-toast: 90;
+  --z-tooltip: 100;
+
+  /* ---- motion ---- */
+  --t-fast: 100ms;
+  --t-base: 160ms;
+  --t-slow: 260ms;
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    color-scheme: dark;
+
+    /* Surfaces & lines */
+    --bg: #12161d;
+    --surface: #1a202a;
+    --surface-2: #202735;
+    --surface-3: #2a3342;
+    --border: #2b3443;
+    --border-strong: #3d495c;
+    --border-hover: #53617a;
+    --hover: rgba(255, 255, 255, 0.06);
+    --pressed: rgba(255, 255, 255, 0.10);
+    --track: #3a4559;
+    --scrim: rgba(0, 0, 0, 0.6);
+    --inverse-bg: #e6ebf5;
+    --inverse-text: #1c2230;
+    --inverse-accent: #1f5fd1;
+    --inverse-good: #17784a;
+    --inverse-warn: #855000;
+    --inverse-bad: #c4262c;
+
+    /* Text */
+    --text: #e6ebf5;
+    --text-dim: #a3afc4;
+    --text-faint: #93a0b8;
+
+    /* Accent */
+    --accent: #5b9bff;
+    --accent-solid: #2a68d8;
+    --accent-hover: #3070e0;
+    --accent-active: #2459c4;
+    --accent-soft: rgba(91, 155, 255, 0.16);
+    --accent-line: rgba(91, 155, 255, 0.45);
+    --accent-glow: rgba(91, 155, 255, 0.38);
+    --accent-text: #7fb1ff;
+    --on-accent: #ffffff;
+
+    /* Semantic */
+    --good: #3ccb7f;
+    --good-soft: rgba(60, 203, 127, 0.16);
+    --good-text: #4cd08a;
+    --warn: #f5b94c;
+    --warn-soft: rgba(245, 185, 76, 0.16);
+    --warn-text: #f5b94c;
+    --bad: #ff6b70;
+    --bad-soft: rgba(255, 107, 112, 0.16);
+    --bad-text: #ff7b80;
+    --bad-solid: #c92d33;
+    --bad-hover: #d6383e;
+    --info: #5b9bff;
+    --info-soft: rgba(91, 155, 255, 0.16);
+    --info-text: #7fb1ff;
+
+    /* Stations (bricks) - dark values are the canvas bricks, 10 % darker */
+    --st-source: #2a71dd;
+    --st-process: #dda629;
+    --st-storage: #d87c20;
+    --st-sink: #37a862;
+    --st-depot: #7c59bd;
+    --st-source-ink: #ffffff;
+    --st-process-ink: #1c2230;
+    --st-storage-ink: #1c2230;
+    --st-sink-ink: #1c2230;
+    --st-depot-ink: #ffffff;
+    --st-source-soft: rgba(47, 125, 246, 0.20);
+    --st-process-soft: rgba(245, 184, 46, 0.20);
+    --st-storage-soft: rgba(240, 138, 36, 0.20);
+    --st-sink-soft: rgba(61, 187, 109, 0.20);
+    --st-depot-soft: rgba(138, 99, 210, 0.24);
+
+    /* Vehicle states (parked is the only themed one) */
+    --state-parked: #586377;
+
+    /* Charts */
+    --chart-grid: #262e3b;
+    --chart-axis: #3d495c;
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --series-3: #199e70;
+    --series-4: #c98500;
+    --series-5: #d55181;
+    --series-6: #008300;
+    --series-7: #9085e9;
+    --series-8: #e66767;
+    --series-other: #7f8ca3;
+
+    /* Elevation */
+    --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.35);
+    --shadow-2: 0 6px 18px rgba(0, 0, 0, 0.45), 0 1px 3px rgba(0, 0, 0, 0.4);
+    --shadow-3: 0 20px 56px rgba(0, 0, 0, 0.6), 0 2px 8px rgba(0, 0, 0, 0.45);
+
+    /* Misc */
+    --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23a3afc4' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 6.25l4 4 4-4'/%3E%3C/svg%3E");
+    --scroll-thumb: rgba(160, 180, 215, 0.30);
+    --scroll-thumb-hover: rgba(160, 180, 215, 0.50);
+  }
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+
+  /* Surfaces & lines */
+  --bg: #12161d;
+  --surface: #1a202a;
+  --surface-2: #202735;
+  --surface-3: #2a3342;
+  --border: #2b3443;
+  --border-strong: #3d495c;
+  --border-hover: #53617a;
+  --hover: rgba(255, 255, 255, 0.06);
+  --pressed: rgba(255, 255, 255, 0.10);
+  --track: #3a4559;
+  --scrim: rgba(0, 0, 0, 0.6);
+  --inverse-bg: #e6ebf5;
+  --inverse-text: #1c2230;
+  --inverse-accent: #1f5fd1;
+  --inverse-good: #17784a;
+  --inverse-warn: #855000;
+  --inverse-bad: #c4262c;
+
+  /* Text */
+  --text: #e6ebf5;
+  --text-dim: #a3afc4;
+  --text-faint: #93a0b8;
+
+  /* Accent */
+  --accent: #5b9bff;
+  --accent-solid: #2a68d8;
+  --accent-hover: #3070e0;
+  --accent-active: #2459c4;
+  --accent-soft: rgba(91, 155, 255, 0.16);
+  --accent-line: rgba(91, 155, 255, 0.45);
+  --accent-glow: rgba(91, 155, 255, 0.38);
+  --accent-text: #7fb1ff;
+  --on-accent: #ffffff;
+
+  /* Semantic */
+  --good: #3ccb7f;
+  --good-soft: rgba(60, 203, 127, 0.16);
+  --good-text: #4cd08a;
+  --warn: #f5b94c;
+  --warn-soft: rgba(245, 185, 76, 0.16);
+  --warn-text: #f5b94c;
+  --bad: #ff6b70;
+  --bad-soft: rgba(255, 107, 112, 0.16);
+  --bad-text: #ff7b80;
+  --bad-solid: #c92d33;
+  --bad-hover: #d6383e;
+  --info: #5b9bff;
+  --info-soft: rgba(91, 155, 255, 0.16);
+  --info-text: #7fb1ff;
+
+  /* Stations (bricks) - dark values are the canvas bricks, 10 % darker */
+  --st-source: #2a71dd;
+  --st-process: #dda629;
+  --st-storage: #d87c20;
+  --st-sink: #37a862;
+  --st-depot: #7c59bd;
+  --st-source-ink: #ffffff;
+  --st-process-ink: #1c2230;
+  --st-storage-ink: #1c2230;
+  --st-sink-ink: #1c2230;
+  --st-depot-ink: #ffffff;
+  --st-source-soft: rgba(47, 125, 246, 0.20);
+  --st-process-soft: rgba(245, 184, 46, 0.20);
+  --st-storage-soft: rgba(240, 138, 36, 0.20);
+  --st-sink-soft: rgba(61, 187, 109, 0.20);
+  --st-depot-soft: rgba(138, 99, 210, 0.24);
+
+  /* Vehicle states (parked is the only themed one) */
+  --state-parked: #586377;
+
+  /* Charts */
+  --chart-grid: #262e3b;
+  --chart-axis: #3d495c;
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --series-3: #199e70;
+  --series-4: #c98500;
+  --series-5: #d55181;
+  --series-6: #008300;
+  --series-7: #9085e9;
+  --series-8: #e66767;
+  --series-other: #7f8ca3;
+
+  /* Elevation */
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --shadow-2: 0 6px 18px rgba(0, 0, 0, 0.45), 0 1px 3px rgba(0, 0, 0, 0.4);
+  --shadow-3: 0 20px 56px rgba(0, 0, 0, 0.6), 0 2px 8px rgba(0, 0, 0, 0.45);
+
+  /* Misc */
+  --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23a3afc4' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 6.25l4 4 4-4'/%3E%3C/svg%3E");
+  --scroll-thumb: rgba(160, 180, 215, 0.30);
+  --scroll-thumb-hover: rgba(160, 180, 215, 0.50);
+}
+
+/* Tabular figures for columns of numbers, KPIs and clocks. */
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Bigger touch targets on coarse pointers. */
+@media (pointer: coarse) {
+  :root {
+    --control-h: 40px;
+    --control-h-sm: 34px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --t-fast: 0ms;
+    --t-base: 0ms;
+    --t-slow: 0ms;
+  }
+}
+
+/* Paper is light: printing always uses the light palette, whatever theme is on screen. */
+@media print {
+  :root:root:root {
+    color-scheme: light;
+
+    /* Surfaces & lines */
+    --bg: #eef1f6; /* app background behind panels */
+    --surface: #ffffff; /* panels, cards, inputs */
+    --surface-2: #f6f8fb; /* subtle fill: table header, input addon */
+    --surface-3: #edf0f6; /* hover / pressed / chip fill */
+    --border: #dfe4ec; /* hairline between regions */
+    --border-strong: #c3ccda; /* control outline */
+    --border-hover: #a9b4c6; /* control outline on hover */
+    --hover: rgba(28, 34, 48, 0.05); /* overlay for transparent controls */
+    --pressed: rgba(28, 34, 48, 0.09); /* overlay while pressed */
+    --track: #d5dbe6; /* switch / slider / progress track */
+    --scrim: rgba(18, 24, 38, 0.45); /* modal backdrop */
+    --inverse-bg: #1c2230; /* tooltips and toasts */
+    --inverse-text: #f1f4fa;
+    --inverse-accent: #8ab4ff; /* links / actions on inverse surfaces */
+    --inverse-good: #4cd08a;
+    --inverse-warn: #f5b94c;
+    --inverse-bad: #ff7b80;
+
+    /* Text */
+    --text: #1c2230;
+    --text-dim: #4f5d75; /* secondary text */
+    --text-faint: #5f6c83; /* hints, placeholders, axis labels (still AA on surfaces 1-3) */
+
+    /* Accent */
+    --accent: #2f7df6; /* brand blue: selection, focus, graphics */
+    --accent-solid: #2a68d8; /* fill behind white text (AA) */
+    --accent-hover: #2459c4;
+    --accent-active: #1f4ca8;
+    --accent-soft: #e8f0fe; /* selected / toggled background */
+    --accent-line: #b9d2fb; /* border of selected elements */
+    --accent-glow: rgba(47, 125, 246, 0.28); /* focus halo */
+    --accent-text: #1f5fd1; /* accent-coloured text */
+    --on-accent: #ffffff;
+
+    /* Semantic */
+    --good: #1f9d5b;
+    --good-soft: #e5f6ec;
+    --good-text: #17784a;
+    --warn: #cc7a00;
+    --warn-soft: #fdf3dc;
+    --warn-text: #855000;
+    --bad: #e5484d;
+    --bad-soft: #fdeaea;
+    --bad-text: #c4262c;
+    --bad-solid: #c92d33; /* fill behind white text (AA) */
+    --bad-hover: #b3252b;
+    --info: #2f7df6;
+    --info-soft: #e8f0fe;
+    --info-text: #1f5fd1;
+
+    /* Stations (bricks) - dark values are the canvas bricks, 10 % darker */
+    --st-source: #2f7df6;
+    --st-process: #f5b82e;
+    --st-storage: #f08a24;
+    --st-sink: #3dbb6d;
+    --st-depot: #8a63d2;
+    --st-source-ink: #0b1220; /* text / icon colour with AA contrast on the brick */
+    --st-process-ink: #1c2230;
+    --st-storage-ink: #1c2230;
+    --st-sink-ink: #1c2230;
+    --st-depot-ink: #000000;
+    --st-source-soft: rgba(47, 125, 246, 0.12);
+    --st-process-soft: rgba(245, 184, 46, 0.18);
+    --st-storage-soft: rgba(240, 138, 36, 0.15);
+    --st-sink-soft: rgba(61, 187, 109, 0.15);
+    --st-depot-soft: rgba(138, 99, 210, 0.13);
+
+    /* Vehicle states (parked is the only themed one) */
+    --state-parked: #c4ccd8;
+
+    /* Charts */
+    --chart-grid: #e8ecf2; /* horizontal gridlines */
+    --chart-axis: #c3ccda; /* baseline */
+    --series-1: #2a78d6; /* categorical order is fixed, never cycled */
+    --series-2: #eb6834;
+    --series-3: #1baf7a;
+    --series-4: #eda100;
+    --series-5: #e87ba4;
+    --series-6: #008300;
+    --series-7: #4a3aa7;
+    --series-8: #e34948;
+    --series-other: #8b93a1; /* series 9+ fold into one neutral */
+
+    /* Elevation */
+    --shadow-1: 0 1px 2px rgba(20, 30, 50, 0.06);
+    --shadow-2: 0 4px 14px rgba(20, 30, 50, 0.10), 0 1px 3px rgba(20, 30, 50, 0.08);
+    --shadow-3: 0 18px 48px rgba(20, 30, 50, 0.22), 0 2px 8px rgba(20, 30, 50, 0.10);
+
+    /* Misc */
+    --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%234f5d75' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 6.25l4 4 4-4'/%3E%3C/svg%3E"); /* drop-down arrow for select.input */
+    --scroll-thumb: rgba(80, 96, 125, 0.36);
+    --scroll-thumb-hover: rgba(80, 96, 125, 0.58);
+  }
+}
