@@ -516,6 +516,31 @@ Accessibility: all controls are real buttons/inputs with `aria-label`/`title`; v
 
 ---
 
+### 6.8 The shared `ctx` (assembled by `js/ui/app.js`, consumed by every panel, dialog and the editor)
+```js
+ctx = {
+  store, runner, renderer, camera, canvas,
+  toast(msg, { kind = 'info', ms = 3500, action: { label, onClick } = null } = {}),
+  setStatus(text),                                  // status line under the canvas ('' clears)
+  graph() → Graph,                                  // buildGraph(store layout), cached per layout identity
+  issues() → Issue[],                               // validateLayout(layout, { graph }), cached per layout identity
+  dialogs: {                                        // js/ui/dialogs.js  createDialogs(ctx)
+    show({ title, body /* Node */, actions /* [{ label, variant, onClick, close? }] */, size: 'sm'|'md'|'lg' }) → { close() },
+    confirm({ title, text, confirmLabel, danger }) → Promise<boolean>,
+    prompt({ title, label, value, placeholder, confirmLabel }) → Promise<string | null>,
+    openWelcome(), openHelp(), openShare(), openImportExport(),
+  },
+  actions: {
+    fitView(),                                      // camera fits the whole layout
+    focus({ stationIds, flowIds, fleetIds, cells }),// select + pan/zoom the canvas to the referenced things (used by Checks and Insights)
+    setTool(name), setRightTab(name),               // 'properties'|'fleet'|'flows'|'simulate'|'results'|'experiments'|'checks'
+    loadExample(id), newProject(),                  // ask for confirmation when the project is dirty
+    exportPng(), exportReport(), exportJson(), importFile(), shareLink(),
+  },
+}
+```
+Panels call only what is listed here (never reach into app internals), so each panel can be exercised in isolation with a harness `ctx`.
+
 ## 7. Visual design ("Lego baseplate for engineers")
 Calm, precise, slightly playful. **Canvas:** light grey-blue baseplate with subtle studs in each cell; roads are dark plates with lane markings and chevrons for one-way; stations are
 colour-coded **bricks** (top face + darker front edge + studs) with icon and name, a fill bar and a status dot; vehicles are small coloured bodies with a heading notch, a load box when

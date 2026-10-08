@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>fields harness</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="../../css/tokens.css"><link rel="stylesheet" href="../../css/components.css">
+<style>body{padding:16px;max-width:360px}</style></head>
+<body><div id="root" class="stack"></div>
+<script type="module">
+import { numberField, selectField, rangeField, switchField, segmentedField, stepperField, distField, textField, section, callout } from '../../js/ui/panels/fields.js';
+const log = []; window.__log = log;
+const root = document.getElementById('root');
+window.f = {
+  num: numberField({ label: 'Cycle', unit: 's', min: 1, max: 100, value: 10, onChange: (v) => log.push(['num', v]) }),
+  int: numberField({ label: 'Slots', int: true, min: 1, max: 9, value: 4, onChange: (v) => log.push(['int', v]) }),
+  sel: selectField({ label: 'Dispatch', options: [{ value: 'a', label: 'A' }, { value: 2, label: 'Two' }], value: 'a', onChange: (v) => log.push(['sel', v]) }),
+  rng: rangeField({ label: 'Demand', min: 0.2, max: 3, step: 0.05, value: 1.5, format: (v) => v.toFixed(2) + 'x', resetValue: 1, onChange: (v) => log.push(['rng', v]) }),
+  sw: switchField({ label: 'Battery', checked: false, onChange: (v) => log.push(['sw', v]) }),
+  seg: segmentedField({ label: 'Hand', options: [{ value: 'right', label: 'Right' }, { value: 'left', label: 'Left' }], value: 'right', onChange: (v) => log.push(['seg', v]) }),
+  step: stepperField({ label: 'Vehicles', min: 0, max: 20, value: 3, onChange: (v) => log.push(['step', v]) }),
+  dist: distField({ label: 'Cycle time', value: { kind: 'normal', mean: 90, spread: 0.1 }, onChange: (v) => log.push(['dist', v]) }),
+  txt: textField({ label: 'Name', value: 'Press', onChange: (v) => log.push(['txt', v]) }),
+};
+root.append(...Object.values(window.f).map((c) => c.el), section({ title: 'More', aside: 'x' }, callout({ severity: 'warning', title: 'T', text: 'body' })).el);
+window.ready = true;
+</script></body></html>
