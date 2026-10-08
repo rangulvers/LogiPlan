@@ -216,9 +216,13 @@ test('abort: aborting in the middle of a run stops it at the next slice', async 
 test('abort: aborting from a timer works too, and the run does not finish', async () => {
   const controller = new AbortController();
   let last = 0;
-  setTimeout(() => controller.abort(), 15);
-  await assert.rejects(runSimulation(example('starter'), { duration: 300 * 3600, signal: controller.signal, onProgress: (p) => { last = p.fraction; } }), { name: 'AbortError' });
-  assert.ok(last > 0 && last < 1);
+  let armed = false;
+  const onProgress = (p) => {
+    last = p.fraction;
+    if (!armed) { armed = true; setTimeout(() => controller.abort(), 15); } // the run has started: a timer ends it
+  };
+  await assert.rejects(runSimulation(example('starter'), { duration: 300 * 3600, signal: controller.signal, onProgress }), { name: 'AbortError' });
+  assert.ok(last > 0 && last < 1, `stopped at ${last}`);
 });
 
 // ---------------------------------------------------------------------------------------------------------------------
