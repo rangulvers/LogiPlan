@@ -168,7 +168,7 @@ test('backlog counts loads that are ready now, not loads still in dwell', () => 
   assert.equal(sim.stats.report().flows.f1.backlog, 2);
 });
 
-test('the report has exactly the fields of docs/ARCHITECTURE.md 5.4 (plus traffic.brokenWait)', () => {
+test('the report has exactly the fields of docs/ARCHITECTURE.md 5.4 (plus traffic.brokenWait, flows[].avgBacklog, fleets[].unplaced)', () => {
   const sim = lineSim({ fleets: [{ count: 1, battery: { enabled: true } }] });
   sim.veh('v1#1').state = 'toPickup';
   sim.complete('D', 90);
@@ -189,10 +189,10 @@ test('the report has exactly the fields of docs/ARCHITECTURE.md 5.4 (plus traffi
   ]);
   assert.deepEqual(keys(r.fleets.v1), [
     'avgPickupWait', 'avgTransit', 'count', 'distance', 'distancePerVehicle', 'emptyShare', 'minBattery', 'name', 'shares', 'trips',
-    'tripsPerVehicleHour', 'utilization',
+    'tripsPerVehicleHour', 'unplaced', 'utilization',
   ]);
   assert.deepEqual(keys(r.fleets.v1.shares), ['broken', 'charging', 'driving', 'idle', 'loading', 'parked', 'unloading', 'waiting']);
-  assert.deepEqual(keys(r.flows.f1), ['avgPickupWait', 'avgTransit', 'backlog', 'delivered', 'from', 'to', 'trips']);
+  assert.deepEqual(keys(r.flows.f1), ['avgBacklog', 'avgPickupWait', 'avgTransit', 'backlog', 'delivered', 'from', 'to', 'trips']);
   assert.deepEqual(keys(r.traffic), ['brokenWait', 'deadlockEvents', 'deadlocks', 'hotspots', 'junctionWait', 'vehicleWait', 'waitShare']);
   assert.deepEqual(keys(r.traffic.hotspots[0]), ['cx', 'cy', 'node', 'wait']);
   assert.deepEqual(keys(r.orders), ['avgPickupWait', 'avgTransit', 'completed']);
@@ -1011,7 +1011,8 @@ test('DEFECT a deadlock that traffic reports twice (unresolved, then resolved) i
   const report = sim.stats.report();
   assert.equal(report.traffic.deadlocks, 1);
   assert.deepEqual(report.traffic.deadlockEvents.map((e) => e.resolved), [true], 'one deadlock, finally resolved');
-  const insight = generateInsights({ ...report, window: { ...report.window, duration: 600 } }, insightLayout()).find((i) => i.id === 'deadlocks');
+  // pretend ten minutes were measured after the warm-up (insights ignore warm-up reports)
+  const insight = generateInsights({ ...report, window: { ...report.window, duration: 600, warmingUp: false } }, insightLayout()).find((i) => i.id === 'deadlocks');
   assert.equal(insight.severity, 'warning', 'a resolved deadlock is not a critical "jam left standing"');
 });
 
@@ -1086,7 +1087,8 @@ test('DEFECT "fleet is mostly idle: try fewer vehicles" together with "add a veh
     flows: { f1: { backlog: 6 } },
   });
   const result = generateInsights(report, layout);
-  assert.ok(ids(result).includes('fleet-oversized:v1'), 'precondition: the fleet is reported as oversized');
+  // a third of the vehicle time is charging: the vehicles are not available for work, so the fleet is not "mostly idle"
+  assert.ok(!ids(result).includes('fleet-oversized:v1'), `charging time is not idle time:\n${describe(result)}`);
   assert.deepEqual(vehicleAdviceConflicts(result), [], describe(result));
 });
 

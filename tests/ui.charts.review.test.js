@@ -2,8 +2,9 @@
 // Node-only checks: property tests of the pure chart maths, a docs-versus-code cross-check, and contrast maths on the
 // design tokens. Browser behaviour (forced colours, focus, canvas text, lifecycle, touch) lives in tests/e2e/uikit-review.mjs.
 //
-// Test names carry the severity of the defect they pin down: "[high]", "[medium]", "[low]". Tests without a tag are
-// regression guards for behaviour that is correct today.
+// Tests named "DEFECT UIKIT-n (severity): ..." pin down a defect and fail until it is fixed (high = broken / illegible /
+// inaccessible, medium = unpolished / inconsistent / wrong docs, low = nit). Tests without that prefix are regression guards
+// for behaviour that is correct today.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -73,7 +74,7 @@ test('text tokens are AA on every surface in both themes (guard)', () => {
   }
 });
 
-test('[medium] WCAG 1.4.11: the outline of form controls and the off-state of switches reach 3:1 against the surface', () => {
+test('DEFECT UIKIT-1 (medium): WCAG 1.4.11: the outline of form controls and the off-state of switches reach 3:1 against the surface', () => {
   // --border-strong outlines .input, .input-group, .stepper, .check boxes and radios; --track is the off switch and the slider rail.
   const failures = [];
   for (const [name, theme] of Object.entries(THEMES)) {
@@ -85,7 +86,7 @@ test('[medium] WCAG 1.4.11: the outline of form controls and the off-state of sw
   assert.deepEqual(failures, []);
 });
 
-test('[medium] the focus ring (--accent, 2 px) reaches 3:1 on every surface it can sit on, toasts and tooltips included', () => {
+test('DEFECT UIKIT-2 (medium): the focus ring (--accent, 2 px) reaches 3:1 on every surface it can sit on, toasts and tooltips included', () => {
   // Buttons inside .toast sit on --inverse-bg, which is light in the dark theme; the ring colour is not switched there.
   const failures = [];
   for (const [name, theme] of Object.entries(THEMES)) {
@@ -97,7 +98,7 @@ test('[medium] the focus ring (--accent, 2 px) reaches 3:1 on every surface it c
   assert.deepEqual(failures, []);
 });
 
-test('[medium] text drawn on state colours inside stacked bars (ink chosen by inkFor) is AA at 11 px', () => {
+test('DEFECT UIKIT-3 (medium): text drawn on state colours inside stacked bars (ink chosen by inkFor) is AA at 11 px', () => {
   // charts.js prints "46 %" inside each segment with inkFor(fill); the segment colours are the --state-* tokens.
   const failures = [];
   for (const [name, theme] of Object.entries(THEMES)) {
@@ -158,7 +159,7 @@ test('UI-KIT.md: every documented option is read by the chart it is documented f
   });
 });
 
-test('[medium] ARCHITECTURE.md section 6.6 names the chart factories that charts.js actually exports', () => {
+test('DEFECT UIKIT-4 (medium): ARCHITECTURE.md section 6.6 names the chart factories that charts.js actually exports', () => {
   // The dashboard and compare panels are written against the architecture contract; a wrong name fails npm run check.
   const section = architectureDoc.slice(architectureDoc.indexOf('### 6.6'), architectureDoc.indexOf('### 6.7'));
   const bullet = section.split('\n').find((line) => line.includes('`charts.js`')) ?? '';
@@ -167,13 +168,13 @@ test('[medium] ARCHITECTURE.md section 6.6 names the chart factories that charts
   assert.deepEqual(missing, [], `section 6.6 lists ${missing.join(', ')} but charts.js exports ${Object.keys(charts).filter((n) => /^create/.test(n)).join(', ')}`);
 });
 
-test('[medium] UI-KIT.md promises aria-checked styling for check menu items; components.css has none', () => {
+test('DEFECT UIKIT-5 (medium): UI-KIT.md promises aria-checked styling for check menu items; components.css has none', () => {
   assert.match(uiKitDoc, /`aria-checked` for check items/);
   const styled = /\.menu__item(?:\[aria-checked|[^{]*\[aria-checked)/.test(css) || /\[aria-checked[^{]*\.menu__icon/.test(css);
   assert.ok(styled, 'no .menu__item[aria-checked] rule: a menuitemcheckbox looks the same checked and unchecked');
 });
 
-test('[low] charts.js header comment states the same bar thickness as the code and the docs', () => {
+test('DEFECT UIKIT-6 (low): charts.js header comment states the same bar thickness as the code and the docs', () => {
   const header = /bars at most (\d+) px thick/.exec(chartsSource.slice(0, 1200));
   const constant = /const BAR_MAX_THICKNESS = (\d+);/.exec(chartsSource);
   const documented = /bars are at most (\d+) px thick/.exec(uiKitDoc);
@@ -255,7 +256,7 @@ test('groupLayout: bars of a group never overlap and stay inside the band when i
   }
 });
 
-test('[low] segmentRects: every rectangle stays inside the bar and none overlaps its neighbour, even with sub-pixel segments', () => {
+test('DEFECT UIKIT-7 (low): segmentRects: every rectangle stays inside the bar and none overlaps its neighbour, even with sub-pixel segments', () => {
   // Segments narrower than the 2 px gap are forced to 1 px wide, which pushes later ones past the end and over their neighbours.
   const offenders = [];
   for (let i = 0; i < 3000; i++) {

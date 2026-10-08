@@ -133,6 +133,8 @@ export class StationRT {
     /** Parking places / chargers promised to vehicles that are still driving here. */
     this.reservedSlots = 0;
     this.reservedChargers = 0;
+    /** Since when a parked vehicle with work has been unable to leave (null: it can). */
+    this.blockedSince = null;
   }
 
   /** Loads that arrived at a source but found the output buffer full (count; the loads are in `yardQ`). */

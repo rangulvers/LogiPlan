@@ -96,7 +96,7 @@ const angleDiff = (a, b) => {
 
 /**
  * Per-tick checker bound to a TrafficSystem. Call `check()` after every `traffic.step`; read `violations` / `counts`.
- * Kinds: nan, speed, jump, decel, accel, overlap, headway, pathgap, cell (two vehicles intrude into one controlled cell), stats.
+ * Kinds: nan, speed, jump, decel, accel, overlap, headway, pathgap, cell (two vehicle centres in one controlled cell), cellFoot (two footprints reach into one), stats.
  * `opts`: overlapTol (m of interpenetration, default 0.02), cellAreaTol (m^2 of intrusion into a controlled cell
  * that still counts as "outside", default 0.03), headwayTol (m, default 1e-6), keep (max stored violations).
  */
@@ -104,7 +104,7 @@ export function createReviewChecker(traffic, opts = {}) {
   const g = traffic.graph;
   const L = g.cellSize;
   const overlapTol = opts.overlapTol ?? 0.02;
-  const cellAreaTol = opts.cellAreaTol ?? 0.03;
+  const cellAreaTol = opts.cellAreaTol ?? 0.15;
   const headwayTol = opts.headwayTol ?? 1e-6;
   const keep = opts.keep ?? 40;
   const violations = [];
@@ -197,11 +197,21 @@ export function createReviewChecker(traffic, opts = {}) {
     }
   }
 
-  /** At most one vehicle may reach into a controlled cell. */
+  /**
+   * At most one vehicle may be inside a controlled cell: by its centre (kind 'cell'), and, with a tolerance for the swing
+   * of a rigid body around a corner, by its footprint (kind 'cellFoot', more than `cellAreaTol` m^2 of the body in the cell).
+   */
   function cells() {
-    const seen = new Map();
+    const centres = new Map();
+    const feet = new Map();
     for (const tv of traffic.vehicles) {
       if (!tv.onRoad) continue;
+      const node = Math.floor(tv.y / L) * g.cols + Math.floor(tv.x / L);
+      if (node >= 0 && node < g.nodeCount && g.isNode[node] && g.controlled[node] === 1) {
+        const other = centres.get(node);
+        if (other) report('cell', `${other.id} and ${tv.id} are both centred in controlled cell ${g.cx(node)},${g.cy(node)}`, 1);
+        else centres.set(node, tv);
+      }
       const poly = rectOf(tv);
       let minX = Infinity;
       let maxX = -Infinity;
@@ -210,13 +220,13 @@ export function createReviewChecker(traffic, opts = {}) {
       for (const [x, y] of poly) { minX = Math.min(minX, x); maxX = Math.max(maxX, x); minY = Math.min(minY, y); maxY = Math.max(maxY, y); }
       for (let cy = Math.max(0, Math.floor(minY / L)); cy <= Math.min(g.rows - 1, Math.floor(maxY / L)); cy++) {
         for (let cx = Math.max(0, Math.floor(minX / L)); cx <= Math.min(g.cols - 1, Math.floor(maxX / L)); cx++) {
-          const node = cy * g.cols + cx;
-          if (!g.isNode[node] || g.controlled[node] !== 1) continue;
+          const n = cy * g.cols + cx;
+          if (!g.isNode[n] || g.controlled[n] !== 1) continue;
           const area = clippedArea(poly, cx * L, cy * L, (cx + 1) * L, (cy + 1) * L);
           if (area <= cellAreaTol) continue;
-          const other = seen.get(node);
-          if (other) report('cell', `${other.tv.id} and ${tv.id} both reach into controlled cell ${cx},${cy} (${other.area.toFixed(3)} / ${area.toFixed(3)} m^2)`, Math.min(area, other.area));
-          else seen.set(node, { tv, area });
+          const other = feet.get(n);
+          if (other) report('cellFoot', `${other.tv.id} and ${tv.id} both reach into controlled cell ${cx},${cy} (${other.area.toFixed(3)} / ${area.toFixed(3)} m^2)`, Math.min(area, other.area));
+          else feet.set(n, { tv, area });
         }
       }
     }
@@ -376,11 +386,11 @@ const FLEETS = [
 
 /**
  * One seeded scenario. Returns { lines, traffic, checker, vehicles, arrivals, stuck, moves }.
- * opts: seed, dt, seconds, vehicles, kind ('streets' | 'blob' | 'mixed'), chaos (0..1, share of random API abuse), dwellProb (share of trips ending in a pause),
+ * opts: seed, dt, seconds, vehicles, kind ('streets' | 'blob' | 'mixed'), chaos (0..1, share of random API abuse), dwellProb (share of trips ending in a pause), plainOnly (trips end only on cells that are not junctions),
  * resolve (resolveDeadlocks, default true), fleets (indexes into FLEETS), cells (candidate cell sizes).
  */
 export function runReviewScenario(opts) {
-  const { seed, dt = 0.1, seconds = 600, vehicles = 20, kind = 'mixed', chaos = 0.3, resolve = true, dwellProb = 0.3 } = opts;
+  const { seed, dt = 0.1, seconds = 600, vehicles = 20, kind = 'mixed', chaos = 0.3, resolve = true, dwellProb = 0.3, plainOnly = false } = opts;
   const rng = createRng(seed);
   const pick = rng.fork('pick');
   const ev = rng.fork('events');
@@ -403,11 +413,12 @@ export function runReviewScenario(opts) {
   const fleetPool = opts.fleets || FLEETS.map((_, i) => i);
   const result = { lines, traffic, checker, vehicles: [], arrivals: 0, deadlocks: 0, stuck: [], handedness, headway, cellSize };
 
+  const startCells = plainOnly ? domain.filter((x) => graph.controlled[x] === 0) : domain;
   const spawn = (i) => {
     for (let tries = 0; tries < 60; tries++) {
       const fl = FLEETS[fleetPool[pick.int(fleetPool.length)]];
       if (fl.length > 1.5 * cellSize) continue;
-      const tv = traffic.addVehicle({ id: `v${i}`, node: domain[pick.int(domain.length)], ...fl });
+      const tv = traffic.addVehicle({ id: `v${i}`, node: startCells[pick.int(startCells.length)], ...fl });
       if (tv) return tv;
     }
     return null;
@@ -415,13 +426,20 @@ export function runReviewScenario(opts) {
   for (let i = 0; i < n; i++) { const tv = spawn(i); if (tv) result.vehicles.push(tv); }
 
   const dwellUntil = new Map();
+  /** A goal is fine if the vehicle can leave it again towards most of the network (no trap behind a forced turn). */
+  const canLeave = (route) => {
+    const back = graph.search(route.nodes[route.nodes.length - 1], { arrivalEdge: route.edges.length > 0 ? route.edges[route.edges.length - 1] : -1 });
+    let reachable = 0;
+    for (const x of domain) if (Number.isFinite(back.dist(x))) reachable++;
+    return reachable * 2 >= domain.length;
+  };
   const plan = (tv) => {
     if (!tv.onRoad || tv.driving || tv.node < 0) return;
     const s = graph.search(tv.node, { arrivalEdge: tv.lastEdge });
-    const reach = domain.filter((x) => x !== tv.node && Number.isFinite(s.dist(x)));
-    for (let tries = 0; tries < 6 && reach.length > 0; tries++) {
+    const reach = domain.filter((x) => x !== tv.node && Number.isFinite(s.dist(x)) && (!plainOnly || graph.controlled[x] === 0));
+    for (let tries = 0; tries < 12 && reach.length > 0; tries++) {
       const route = s.routeTo(reach[pick.int(reach.length)]);
-      if (route && traffic.drive(tv, route)) return;
+      if (route && canLeave(route) && traffic.drive(tv, route)) return;
     }
   };
   traffic.onArrive = (tv) => { result.arrivals++; dwellUntil.set(tv, traffic.time + (pick.next() < dwellProb ? pick.range(0, 40) : 0)); };

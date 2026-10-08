@@ -747,10 +747,16 @@ test('charging: a parked vehicle with a low battery in a depot without chargers 
   const v = w.lg.vehicles[0];
   assert.equal(v.depot.id, 'H');
   v.battery = 0.3;
-  const seq = trace(w, v, 400);
+  const seq = [v.state];
+  let atCharger = null;
+  for (let i = 0; i < 4 * 400; i++) {
+    w.step();
+    if (v.state !== seq[seq.length - 1]) seq.push(v.state);
+    if (atCharger === null && v.state === 'charging') atCharger = [v.parkDistance, v.emptyDistance, v.loadedDistance];
+  }
   assert.deepEqual(seq.slice(0, 4), ['parked', 'toCharger', 'charging', 'toPickup'], 'the load that appeared meanwhile waited for it');
+  assert.deepEqual(atCharger, [16 * 2, 0, 0], 'H dock (x=2) -> C dock (x=18): 32 m of depot driving, neither loaded nor empty');
   assert.ok(v.timeIn.charging >= (0.9 - 0.3) * 300 - 1, 'charged from 30 % to the resume level of 90 %');
-  assert.ok(v.parkDistance > 0);
   assert.equal(w.lg.flowById.get('f1').delivered, 1, 'back in service');
 });
 

@@ -14,12 +14,21 @@
 // time), then `sim.time += dt`, then `sim.stats.sample(dt)` - the same order the real engine uses
 // (logistics, traffic, clock, stats). Events are forwarded to `sim.stats.onEvent` when stats are attached.
 //
+// Things to know when scripting state (they are easy to trip over):
+//   * complete() lowers logistics.liveLoads like the real sink does (never below 0): call setLive() after it when
+//     a scenario keeps a fixed number of loads in the plant.
+//   * A workstation's aggregate `state` follows setMachines(); assigning machine states by hand leaves it as it was
+//     ('starved' at the start, 'down' for a workstation without machines). Stats reads the machine states, not the aggregate.
+//   * addReadyLoads() creates loads that nobody has claimed; pass { claimed: true } for loads a vehicle is already
+//     on its way to (those do not count as backlog).
+//   * `unplaced` (ids of vehicles that found no room on the road) starts empty; set sim.logistics.unplaced.
+//
 // Shape, by field name:
 //   sim.layout, sim.settings, sim.time, sim.dt
 //   sim.graph      { cols, rows, cellSize, nodeCount, edges: [{ id }] }  + cx(id) cy(id) x(id) y(id)
 //   sim.traffic    { vehicles: [], stats: { edgePasses: Int32Array, edgeWait, nodeWait: Float64Array,
 //                    waitVehicle, waitJunction, waitBroken, deadlocks, totalWait, drivingTime } }
-//   sim.logistics  { stations: StationRT[], stationById, vehicles: VehicleRT[], flows, liveLoads, completed }
+//   sim.logistics  { stations: StationRT[], stationById, vehicles: VehicleRT[], flows, liveLoads, completed, unplaced: [] }
 //   sim.stations / sim.vehicles are aliases of logistics.stations / logistics.vehicles.
 // StationRT carries the fields of 5.3 (state, fill, inCount, outCount, produced, consumed, arrivals, inQ, outQ,
 // inbound; yard for sources; machines[] for processes; parked/charging/slots/chargers for depots).
@@ -86,8 +95,8 @@ function stationRT(def, layout) {
   }
   if (def.type === 'source') rt.yard = 0;
   if (def.type === 'process') {
-    rt.state = 'starved';
     rt.machines = Array.from({ length: def.params.machines }, () => ({ state: 'idle', remaining: 0, cycleTime: 0, progress: 0, holding: [] }));
+    rt.state = aggregateState(rt.machines); // 'starved', or 'down' for a workstation without machines
   }
   if (def.type === 'depot') Object.assign(rt, { parked: [], charging: [], slots: def.params.slots, chargers: def.params.chargers });
   return rt;
@@ -130,7 +139,7 @@ export function createFakeSim(layout, { dt = 1 } = {}) {
   const vehicles = layout.fleets.flatMap((fleet) => Array.from({ length: fleet.count }, (_, i) => vehicleRT(fleet, i + 1)));
   const logistics = {
     stations, stationById: new Map(stations.map((s) => [s.id, s])), vehicles,
-    flows: layout.flows.map((def) => ({ id: def.id, def })), liveLoads: 0, completed: 0,
+    flows: layout.flows.map((def) => ({ id: def.id, def })), liveLoads: 0, completed: 0, unplaced: [],
   };
 
   const sim = {
@@ -173,10 +182,20 @@ export function createFakeSim(layout, { dt = 1 } = {}) {
       st.state = aggregateState(st.machines);
     },
 
-    /** Put loads into the output queue of `flowId` at its origin station (for backlog tests). */
-    addReadyLoads(flowId, n, { readyAt = sim.time } = {}) {
+    /**
+     * Put loads into the output queue of `flowId` at its origin station (for backlog tests). `claimed` loads already
+     * have a vehicle on the way; `readyAt` in the future models a load still in dwell.
+     */
+    addReadyLoads(flowId, n, { readyAt = sim.time, claimed = false } = {}) {
       const flow = layout.flows.find((f) => f.id === flowId);
-      for (let i = 0; i < n; i++) sim.st(flow.from).outQ.get(flowId).push({ id: `L${flowId}-${i}`, createdAt: 0, origin: flow.from, readyAt, claimed: false });
+      const queue = sim.st(flow.from).outQ.get(flowId);
+      for (let i = 0; i < n; i++) queue.push({ id: `L${flowId}-${queue.length}`, createdAt: 0, origin: flow.from, readyAt, claimed });
+    },
+
+    /** Empty the output queue of `flowId` (its loads were taken away). */
+    clearReadyLoads(flowId) {
+      const flow = layout.flows.find((f) => f.id === flowId);
+      sim.st(flow.from).outQ.get(flowId).length = 0;
     },
 
     /** A load with the given lead time leaves the system at a sink: bookkeeping plus a loadCompleted event. */

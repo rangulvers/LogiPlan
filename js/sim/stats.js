@@ -10,25 +10,34 @@
 // snapshotted at reset and reported as deltas. The window length is the sum of the sampled dt values.
 //
 // Hot path: sample(dt) runs up to ~12,000 times per real second. It only reads fields and adds to
-// preallocated typed arrays: no arrays, objects or closures are created per tick. Everything that
-// allocates (report, heat, the rebuild after a shape change) lives outside it.
+// preallocated typed arrays: no arrays, objects or closures are created per tick, and it never walks a load
+// queue. The only queue walk (the transport backlog) happens once per BACKLOG_INTERVAL sim seconds. Everything
+// else that allocates (report, heat, the rebuild after a shape change) lives outside it.
 //
 // How the open points of the spec were resolved (also listed in the engineer's report):
 //  * Process stations: starved / blocked / down / utilization are shares of machine-time, so
 //    busy + starved + blocked + down = 1 ('idle' machines count as starved). `breakdowns` counts machines
 //    entering 'down', observed from the sampled machine states (the machineDown payload is undocumented).
+//    A workstation without machines is 'down' for the whole window, exactly as the logistics module reports it.
 //  * Source: blocked = share of time in state 'blocked', utilization = 1 - blocked.
 //    Storage: utilization = avgFill; starved / blocked = share of time completely empty / completely full.
 //    Sink and depot: utilization = avgFill, the other shares are 0.
 //  * Fleet shares are shares of vehicle-time. A 'dead' vehicle counts as 'broken'; a driving vehicle with
 //    tv.waiting counts as 'waiting'. utilization = driving + waiting + loading + unloading (breakdowns and
-//    charging are not "working"). A fleet without vehicles reports idle = 1 so shares always sum to 1.
+//    charging are not "working"). A fleet without vehicles reports idle = 1 so shares always sum to 1; before
+//    the first tick the shares are the current vehicle states. `count` is the number of vehicles that exist,
+//    `unplaced` the number that found no room on the road (logistics.unplaced) and therefore do not take part.
 //  * traffic.waitShare = (vehicle + junction + broken wait) / traffic.stats.drivingTime, because drivingTime
 //    already contains the waiting. `traffic.brokenWait` is an addition to the documented shape.
+//  * flows[].backlog = loads that are ready and that no vehicle has claimed yet, right now. `avgBacklog` is its
+//    mean over the window, read every BACKLOG_INTERVAL seconds: an instantaneous count flickers by a load or two
+//    and must not decide a recommendation. Claimed loads are excluded because a vehicle is already on its way.
 //  * series.t is absolute sim time (window.start + k * interval). throughput is the trailing 10 minutes in
 //    units/h; wip / vehiclesWorking / vehiclesWaiting are means over the interval since the previous point.
 //    Reset clears the series together with every other accumulator.
 //  * emptyShare, avgPickupWait, avgTransit and every lead-time statistic are null when there is no data.
+//  * A deadlock that traffic reports twice (unresolved first, resolved later) is one entry of deadlockEvents,
+//    so the list never has more entries than the traffic counter.
 
 /** Sim seconds between two series points (before decimation). */
 export const SERIES_INTERVAL = 60;
@@ -36,8 +45,10 @@ export const SERIES_INTERVAL = 60;
 export const SERIES_MAX_POINTS = 2000;
 /** Length of the trailing-throughput window, in series intervals (10 minutes). */
 export const TRAILING_INTERVALS = 10;
-/** Lead-time samples kept exactly; beyond this the store thins itself out by a doubling stride. */
+/** Lead-time samples kept exactly; beyond this the store compacts itself (see SampleSet). */
 export const LEAD_SAMPLE_CAP = 50000;
+/** Sim seconds between two readings of the transport backlog (a queue walk per flow). */
+export const BACKLOG_INTERVAL = 5;
 /** Number of congestion hot spots in the report. */
 export const HOTSPOT_COUNT = 10;
 /** Deadlock events kept in the report (the counter keeps counting). */
@@ -86,79 +97,141 @@ function kindOf(type) {
 }
 
 /**
- * Linear-interpolation percentile of an ascending array (the "R-7" definition used by spreadsheets).
+ * Linear-interpolation percentile ("R-7", as in spreadsheets) of `n` ascending values read through `valueAt`.
+ * @returns {number|null} null when n is 0
+ */
+function interpolate(n, p, valueAt) {
+  if (n === 0) return null;
+  const rank = Math.min(1, Math.max(0, p)) * (n - 1);
+  const lo = Math.floor(rank);
+  const a = valueAt(lo);
+  return a + (valueAt(Math.min(n - 1, lo + 1)) - a) * (rank - lo);
+}
+
+/**
+ * Percentile of an ascending array.
  * @param {ArrayLike<number>} sorted ascending values
  * @param {number} p fraction in [0, 1] (0.95 = 95th percentile)
  * @returns {number|null} null for an empty array
  */
 export function percentile(sorted, p) {
-  const n = sorted.length;
-  if (n === 0) return null;
-  const rank = Math.min(1, Math.max(0, p)) * (n - 1);
-  const lo = Math.floor(rank);
-  const hi = Math.min(n - 1, lo + 1);
-  return sorted[lo] + (sorted[hi] - sorted[lo]) * (rank - lo);
+  return interpolate(sorted.length, p, (i) => sorted[i]);
 }
 
 /**
- * Bounded sample store for lead times. Count, sum, min and max are exact for every sample ever added;
- * percentiles come from the retained samples. Up to `cap` samples are kept as they arrive; when the store
- * is full it keeps every second retained sample and doubles the stride, so the retained set is always the
- * arrivals 0, s, 2s, ... for the current stride s (deterministic, evenly spread over the whole window).
- * The sorted copy needed for percentiles is cached until the retained set changes.
+ * Merge ascending runs into one ascending sequence. Every value of runs[k] weighs 2^k observations.
+ * @returns {{ values: Float64Array, cum: Float64Array }} cum[i] = total weight of values[0..i]
+ */
+function mergeRuns(runs) {
+  const total = runs.reduce((n, run) => n + run.length, 0);
+  const values = new Float64Array(total);
+  const cum = new Float64Array(total);
+  const at = new Int32Array(runs.length);
+  let weight = 0;
+  for (let i = 0; i < total; i++) {
+    let best = -1;
+    for (let k = 0; k < runs.length; k++) {
+      if (at[k] < runs[k].length && (best < 0 || runs[k][at[k]] < runs[best][at[best]])) best = k;
+    }
+    values[i] = runs[best][at[best]++];
+    weight += 2 ** best;
+    cum[i] = weight;
+  }
+  return { values, cum };
+}
+
+/**
+ * Bounded sample store for lead times. Count, sum, min and max are exact for every sample ever added.
+ *
+ * Up to `cap` samples are kept as they arrive, so small sets give exact percentiles. When a level holds more
+ * than `cap` samples it is sorted and every second sample moves up one level, where it stands for two
+ * observations (the largest sample of an odd level stays behind, so the weights always add up to `count`).
+ * Compacting the *sorted* level keeps the rank error at one observation per compaction whatever the order in
+ * which the samples arrived; a periodic arrival pattern (two products alternating, a shift pattern) cannot
+ * make a whole class of samples disappear, as thinning by arrival index would. Which sample of a pair survives
+ * alternates from one compaction to the next, so the error does not accumulate on one side. Memory stays below
+ * about (1.5 * cap) * log2(count / cap) samples. Everything is deterministic.
  */
 export class SampleSet {
-  /** @param {number} [cap] retained samples before thinning starts (at least 2) */
+  /** @param {number} [cap] samples kept exactly before a level is compacted (at least 2) */
   constructor(cap = LEAD_SAMPLE_CAP) {
     this.cap = Math.max(2, Math.floor(cap));
     this.clear();
   }
 
   clear() {
-    this.items = [];
-    this.stride = 1;
+    /** levels[k]: retained samples that each stand for 2^k observations. */
+    this.levels = [[]];
     this.count = 0;
     this.sum = 0;
     this.min = Infinity;
     this.max = -Infinity;
-    this._sorted = null;
+    this._compactions = 0;
+    /** Caches, dropped whenever the data they were derived from changes. */
+    this._runs = [];
+    this._view = null;
+  }
+
+  /** Number of samples currently retained. */
+  get size() {
+    return this.levels.reduce((n, level) => n + level.length, 0);
   }
 
   /** Add one sample; non-finite values are ignored. Returns true when the sample was counted. */
   add(x) {
     if (!Number.isFinite(x)) return false;
-    const index = this.count++;
+    this.count++;
     this.sum += x;
     if (x < this.min) this.min = x;
     if (x > this.max) this.max = x;
-    if (index % this.stride !== 0) return true;
-    if (this.items.length >= this.cap) {
-      this._thin();
-      if (index % this.stride !== 0) return true;
-    }
-    this.items.push(x);
-    this._sorted = null;
+    const first = this.levels[0];
+    first.push(x);
+    this._runs[0] = null;
+    this._view = null;
+    if (first.length > this.cap) this._compact(0);
     return true;
   }
 
-  /** Retained samples in ascending order. The same array instance is returned until the next change. */
-  sorted() {
-    if (!this._sorted) this._sorted = Float64Array.from(this.items).sort();
-    return this._sorted;
-  }
-
-  /** Percentile (p in [0, 1]) of the retained samples, null when empty. */
+  /** Percentile (p in [0, 1]) of everything added, null when empty. Exact up to `cap` samples. */
   percentile(p) {
-    return percentile(this.sorted(), p);
+    return interpolate(this.count, p, (i) => this._valueAt(i));
   }
 
-  _thin() {
-    const items = this.items;
-    const kept = Math.ceil(items.length / 2);
-    for (let i = 0; i < kept; i++) items[i] = items[2 * i];
-    items.length = kept;
-    this.stride *= 2;
-    this._sorted = null;
+  /** Ascending copy of one level (cached until the level changes). */
+  _run(k) {
+    return this._runs[k] || (this._runs[k] = Float64Array.from(this.levels[k]).sort());
+  }
+
+  /** The sample standing at 0-based rank `index` of the ascending sequence of all observations. */
+  _valueAt(index) {
+    if (!this._view) {
+      const runs = this.levels.map((_, k) => this._run(k));
+      this._view = this.levels.length === 1 ? { values: runs[0], cum: null } : mergeRuns(runs);
+    }
+    const { values, cum } = this._view;
+    if (!cum) return values[index];
+    let lo = 0;
+    let hi = cum.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (cum[mid] > index) hi = mid;
+      else lo = mid + 1;
+    }
+    return values[lo];
+  }
+
+  /** Move every second sample of level k up to level k + 1 (cascading when that level overflows). */
+  _compact(k) {
+    const sorted = this._run(k);
+    if (k + 1 === this.levels.length) this.levels.push([]);
+    const upper = this.levels[k + 1];
+    const offset = this._compactions++ & 1;
+    for (let pair = 0; pair < sorted.length >> 1; pair++) upper.push(sorted[2 * pair + offset]);
+    this.levels[k] = sorted.length & 1 ? [sorted[sorted.length - 1]] : [];
+    this._runs[k] = null;
+    this._runs[k + 1] = null;
+    this._view = null;
+    if (upper.length > this.cap) this._compact(k + 1);
   }
 }
 
@@ -174,12 +247,28 @@ function windowDelta(current, snapshot, Type) {
   return { out, max };
 }
 
-/** Number of loads in a queue that are ready for pickup at `now` (claimed or not). */
+/** Number of loads in a queue that are ready for pickup at `now` and that no vehicle has claimed yet. */
 function readyLoads(queue, now) {
   let n = 0;
-  if (queue) for (const load of queue) if (!(load.readyAt > now)) n++;
+  if (queue) for (const load of queue) if (!load.claimed && !(load.readyAt > now)) n++;
   return n;
 }
+
+/** Fleet id of a vehicle id of the form "<fleetId>#<n>". */
+function fleetOf(vehicleId) {
+  const cut = typeof vehicleId === 'string' ? vehicleId.lastIndexOf('#') : -1;
+  return cut > 0 ? vehicleId.slice(0, cut) : vehicleId;
+}
+
+/** Fleet-time slot of a vehicle right now; a driving vehicle that wants to move but cannot is 'waiting'. */
+function slotOf(v) {
+  const slot = STATE_SLOT[v.state];
+  if (slot === undefined) return IDLE;
+  return slot === DRIVING && v.tv && v.tv.waiting ? WAITING : slot;
+}
+
+/** A node id as it appears in deadlock events: a non-negative integer. */
+const isNodeId = (n) => typeof n === 'number' && Number.isInteger(n) && n >= 0;
 
 const displayName = (st) => (st.def && st.def.name) || st.id;
 
@@ -210,6 +299,8 @@ export class Stats {
     this.oTransit = 0;
     this.deadlockEvents = [];
     this.stride = 1;
+    this.backlogK = 0;
+    this.backlogReadings = 0;
     this.serK = 0;
     this.serSince = 0;
     this.serWip = 0;
@@ -239,6 +330,11 @@ export class Stats {
     if (live > this.wipMax) this.wipMax = live;
     this._sampleStations(lg.stations || NONE, dt);
     this._sampleVehicles(lg.vehicles || NONE, dt);
+    const reading = Math.floor((this.duration + EPS) / BACKLOG_INTERVAL);
+    if (reading > this.backlogK) {
+      this.backlogK = reading;
+      this._readBacklog(lg.stations || NONE);
+    }
     const k = Math.floor((this.duration + EPS) / SERIES_INTERVAL);
     if (k > this.serK) this._closeInterval(k);
   }
@@ -256,7 +352,11 @@ export class Stats {
     else if (name === 'deadlock') this._onDeadlock(payload || {});
   }
 
-  /** Congestion heat of the current window: per-edge passes, per-edge and per-node waiting (veh*s) and their maxima. */
+  /**
+   * Congestion heat of the current window: per-edge passes, per-edge and per-node waiting (veh*s) and their maxima.
+   * Every call allocates three arrays of the size of the road graph (1.4 ms and 2.5 MB at the largest grid), so
+   * ask for it at the pace of the dashboard (a few times per second), not once per frame.
+   */
   heat() {
     if (this._stale()) this.reset();
     const ts = this._trafficStats();
@@ -356,11 +456,13 @@ export class Stats {
     this.minBat = f64(nFleet);
     this.fOrders = f64(nFleet); this.fPick = f64(nFleet); this.fTransit = f64(nFleet);
     this.lDelivered = f64(nFlow); this.lTrips = f64(nFlow); this.lPick = f64(nFlow); this.lTransit = f64(nFlow);
+    this.lBacklog = f64(nFlow);
+    this.flowOrigin = Int32Array.from(flows, (f) => this.stIndex.get(f.from) ?? -1);
     this.ring = f64(TRAILING_INTERVALS + 1);
     this._zeroed = [
       this.aIn, this.aOut, this.aFill, this.mIn, this.mOut, this.mFill, this.tBusy, this.tStarved, this.tBlocked,
       this.tDown, this.tCap, this.yardMax, this.breakdowns, this.sinkCount, this.fleetTime, this.fOrders,
-      this.fPick, this.fTransit, this.lDelivered, this.lTrips, this.lPick, this.lTransit, this.ring,
+      this.fPick, this.fTransit, this.lDelivered, this.lTrips, this.lPick, this.lTransit, this.lBacklog, this.ring,
     ];
     this.snapStation = f64(nSt * 3);
     this.snapVehicle = f64(this.nVeh * 3);
@@ -429,6 +531,12 @@ export class Stats {
     const ms = st.machines;
     const n = ms ? Math.min(ms.length, this.mCount[i]) : 0;
     const base = this.mOff[i];
+    if (n === 0) {
+      // no machine at all: logistics reports the workstation as 'down', and nothing ever gets produced there
+      this.tCap[i] += dt;
+      this.tDown[i] += dt;
+      return;
+    }
     this.tCap[i] += n * dt;
     for (let j = 0; j < n; j++) {
       const state = ms[j].state;
@@ -452,9 +560,7 @@ export class Stats {
       const fi = vehFleet[i];
       if (fi < 0) continue;
       const v = vehicles[i];
-      let slot = STATE_SLOT[v.state];
-      if (slot === undefined) slot = IDLE;
-      else if (slot === DRIVING && v.tv && v.tv.waiting) slot = WAITING;
+      const slot = slotOf(v);
       fleetTime[fi * SLOTS + slot] += dt;
       if (slot <= UNLOADING) {
         working++;
@@ -464,6 +570,17 @@ export class Stats {
     }
     this.serWorking += working * dt;
     this.serWaiting += waiting * dt;
+  }
+
+  /** Read the transport backlog of every flow (ready loads nobody has claimed); one reading per BACKLOG_INTERVAL. */
+  _readBacklog(stations) {
+    const now = nn(this.sim.time);
+    const flows = (this.sim.layout && this.sim.layout.flows) || NONE;
+    for (let li = 0; li < flows.length; li++) {
+      const origin = stations[this.flowOrigin[li]];
+      if (origin && origin.outQ) this.lBacklog[li] += readyLoads(origin.outQ.get(flows[li].id), now);
+    }
+    this.backlogReadings++;
   }
 
   /** A series boundary was reached: update the trailing-throughput ring and, every `stride` boundaries, emit a point. */
@@ -539,14 +656,30 @@ export class Stats {
     }
   }
 
+  /**
+   * Traffic reports a deadlock when it is detected and, if its first attempt to relocate a vehicle failed, a second
+   * time when a later attempt worked. That second report resolves the earlier entry instead of adding a new one.
+   */
   _onDeadlock(p) {
+    const vehicles = Array.from(p.vehicles || NONE, (v) => (typeof v === 'string' ? v : (v && v.id) || '')).filter(Boolean);
+    const resolved = Boolean(p.resolved);
+    if (resolved && vehicles.length > 0) {
+      const key = vehicles.slice().sort().join(',');
+      for (let i = this.deadlockEvents.length - 1; i >= 0; i--) {
+        const e = this.deadlockEvents[i];
+        if (!e.resolved && e.vehicles.slice().sort().join(',') === key) {
+          e.resolved = true;
+          return;
+        }
+      }
+    }
     if (this.deadlockEvents.length >= DEADLOCK_EVENT_CAP) return;
-    const ids = Array.from(p.vehicles || NONE, (v) => (typeof v === 'string' ? v : (v && v.id) || ''));
+    const limit = this.nNodes || Infinity;
     this.deadlockEvents.push({
       t: nn(p.t ?? this.sim.time),
-      nodes: Array.from(p.nodes || NONE, Number).filter(Number.isFinite),
-      vehicles: ids.filter(Boolean),
-      resolved: Boolean(p.resolved),
+      nodes: Array.from(p.nodes || NONE).filter((n) => isNodeId(n) && n < limit),
+      vehicles,
+      resolved,
     });
   }
 
@@ -624,14 +757,21 @@ export class Stats {
       loaded[fi] += Math.max(0, nn(v.loadedDistance) - this.snapVehicle[i * 3 + 1]);
       empty[fi] += Math.max(0, nn(v.emptyDistance) - this.snapVehicle[i * 3 + 2]);
     }
+    const unplaced = new Int32Array(defs.length);
+    for (const id of (this.sim.logistics && this.sim.logistics.unplaced) || NONE) {
+      const fi = this.fleetIndex.get(fleetOf(id));
+      if (fi !== undefined) unplaced[fi]++;
+    }
+    const time = this.duration > 0 ? this.fleetTime : this._vehicleSnapshot();
     const out = {};
     for (let fi = 0; fi < defs.length; fi++) {
       const count = this.fleetCount[fi];
-      const shares = this._fleetShares(fi, count);
+      const shares = this._fleetShares(time, fi, count);
       const distance = loaded[fi] + empty[fi];
       out[defs[fi].id] = {
         name: defs[fi].name || defs[fi].id,
         count,
+        unplaced: unplaced[fi],
         utilization: shares.driving + shares.waiting + shares.loading + shares.unloading,
         shares,
         trips: trips[fi],
@@ -647,14 +787,22 @@ export class Stats {
     return out;
   }
 
-  /** Fractions of vehicle-time per state; sum to 1 whenever the fleet has vehicles and time has passed. */
-  _fleetShares(fi, count) {
+  /** Number of vehicles per fleet and state right now: what the shares are before the first tick has been sampled. */
+  _vehicleSnapshot() {
+    const now = new Float64Array(this.fleetTime.length);
+    const vehicles = (this.sim.logistics && this.sim.logistics.vehicles) || NONE;
+    for (let i = 0; i < vehicles.length; i++) if (this.vehFleet[i] >= 0) now[this.vehFleet[i] * SLOTS + slotOf(vehicles[i])]++;
+    return now;
+  }
+
+  /** Fractions of `time` (vehicle-time or vehicle counts per fleet and state); they sum to 1 for every fleet. */
+  _fleetShares(time, fi, count) {
     const shares = {};
     const base = fi * SLOTS;
     let total = 0;
-    for (let s = 0; s < SLOTS; s++) total += this.fleetTime[base + s];
-    for (let s = 0; s < SLOTS; s++) shares[SLOT_KEYS[s]] = total > 0 ? this.fleetTime[base + s] / total : 0;
-    if (count === 0 && this.duration > 0) shares.idle = 1;
+    for (let s = 0; s < SLOTS; s++) total += time[base + s];
+    for (let s = 0; s < SLOTS; s++) shares[SLOT_KEYS[s]] = total > 0 ? time[base + s] / total : 0;
+    if (count === 0) shares.idle = 1;
     return shares;
   }
 
@@ -666,6 +814,7 @@ export class Stats {
     for (let li = 0; li < flows.length; li++) {
       const f = flows[li];
       const origin = stations[this.stIndex.get(f.from)];
+      const backlog = origin && origin.outQ ? readyLoads(origin.outQ.get(f.id), now) : 0;
       out[f.id] = {
         from: f.from,
         to: f.to,
@@ -673,7 +822,8 @@ export class Stats {
         trips: this.lTrips[li],
         avgPickupWait: meanOf(this.lPick[li], this.lTrips[li]),
         avgTransit: meanOf(this.lTransit[li], this.lTrips[li]),
-        backlog: origin && origin.outQ ? readyLoads(origin.outQ.get(f.id), now) : 0,
+        backlog,
+        avgBacklog: this.backlogReadings > 0 ? this.lBacklog[li] / this.backlogReadings : backlog,
       };
     }
     return out;

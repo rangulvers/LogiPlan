@@ -99,6 +99,8 @@ export class VehicleRT {
     /** Leaving a depot: the first leg may start in any direction (no arrival edge). */
     this.freeChoice = false;
     this.retryAt = 0;
+    /** An idle vehicle that held others up but found nowhere to go looks again at this time. */
+    this.roomRetryAt = 0;
     this.timer = 0;
     /** The state to return to after a repair (while 'broken'), or the state a dead vehicle was in. */
     this.resumeState = null;
@@ -185,9 +187,7 @@ export function canCharge(lg, vr) {
   const depots = lg.chargerDepots;
   if (depots.length === 0) return false;
   if (vr.state === 'parked') {
-    const here = vr.depot;
-    return here.chargers > 0 || depots.some((d) => (lg.graph.docks.get(here.id) || [])
-      .some((dock) => lg.routes.docksOf(lg.routes.settled(dock, -1), d.id).length > 0));
+    return depots.some((d) => (lg.graph.docks.get(vr.depot.id) || []).some((dock) => lg.routes.docksOf(lg.routes.settled(dock, -1), d.id).length > 0));
   }
   return lg.routes.reaches(lg.routes.settled(vr.tv.node, arrivalEdgeOf(lg, vr)), depots.map((d) => d.id));
 }

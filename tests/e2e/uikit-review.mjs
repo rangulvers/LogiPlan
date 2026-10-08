@@ -180,9 +180,18 @@ async function reviewKeyboard() {
         await page.waitForTimeout(15);
         const after = await page.screenshot({ clip });
         checked++;
-        if ((await contrastingPixels(page, before, after, 2)) < 40) invisible.push(await handle.evaluate((el) => `${el.tagName.toLowerCase()}${el.className ? '.' + String(el.className).trim().split(/\s+/).join('.') : ''}${el.id ? '#' + el.id : ''}`));
+        if ((await contrastingPixels(page, before, after, 2)) < 40) invisible.push(await handle.evaluate((el) => `${el.tagName.toLowerCase()}${el.className ? '.' + String(el.className).trim().split(/\s+/).join('.') : ''}${el.id ? '#' + el.id : ''}${el.className ? '' : ` in .${String(el.parentElement?.className).trim().split(/\s+/)[0]}[${el.type}${el.checked ? ' checked' : ''}]`}`));
       }
-      if (!forced) defect('high', `focus ring (${scheme})`, invisible.length === 0, `${invisible.length} of ${checked} focusable controls show no visible focus change: ${invisible.slice(0, 5).join(', ')}`);
+      if (!forced) {
+        const invalid = invisible.filter((name) => name.includes('#f-cap'));
+        const onInverse = invisible.filter((name) => name.includes('toast__'));
+        const sliders = invisible.filter((name) => name.includes('.range['));
+        const rest = invisible.filter((name) => !invalid.includes(name) && !onInverse.includes(name) && !sliders.includes(name));
+        defect('medium', `focus ring (${scheme})`, sliders.length === 0, 'a slider without a value bubble (no data-value) shows keyboard focus only as a 1 px thumb border change plus a 28 % glow; the track has no outline (the bubble hides this in the demo)');
+        defect('high', `focus ring (${scheme})`, rest.length === 0, `${rest.length} of ${checked} focusable controls show no visible focus change: ${rest.slice(0, 5).join(', ')}`);
+        defect('medium', `focus ring (${scheme})`, invalid.length === 0, 'an invalid field (.field.is-invalid) keeps its red border on focus and adds only a --bad-soft halo (about 1.1:1), so keyboard focus is nearly invisible exactly where the user must fix something');
+        defect('medium', `focus ring (${scheme})`, onInverse.length === 0, `the focus ring on buttons inside a toast (${onInverse.join(', ')}) is the plain --accent on --inverse-bg, which is the light surface in the dark theme (2.3:1)`);
+      }
       else notes.push(`forced colours: ${invisible.length} of ${checked} focusable controls show no visible focus change (${[...new Set(invisible.map((s) => s.split('.')[0] + '.' + (s.split('.')[1] ?? '')))].join(', ')})`);
     }
 
@@ -241,10 +250,10 @@ async function reviewIcons() {
       const masks = {};
       for (const name of ICON_NAMES) {
         const { mask } = await ink(name, S);
-        let x0 = S; let y0 = S; let x1 = -1; let y1 = -1; let count = 0;
-        for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) if (mask[y * S + x]) { count++; x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); }
+        let x0 = S; let y0 = S; let x1 = -1; let y1 = -1;
+        for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) if (mask[y * S + x]) { x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); }
         masks[name] = mask;
-        metrics.push({ name, left: x0 / 4, right: (x1 + 1) / 4, top: y0 / 4, bottom: (y1 + 1) / 4, cx: (x0 + x1 + 1) / 8, cy: (y0 + y1 + 1) / 8, coverage: count / (S * S) });
+        metrics.push({ name, left: x0 / 4, right: (x1 + 1) / 4, top: y0 / 4, bottom: (y1 + 1) / 4, cx: (x0 + x1 + 1) / 8, cy: (y0 + y1 + 1) / 8 });
       }
       const pairs = [];
       for (let i = 0; i < ICON_NAMES.length; i++) for (let j = i + 1; j < ICON_NAMES.length; j++) {
@@ -290,7 +299,6 @@ async function reviewIcons() {
         const row = document.createElement('div');
         row.style.cssText = 'display:flex;gap:8px;align-items:center';
         for (const [size, zoom] of [[16, 6], [24, 4]]) {
-          const { canvas } = await ink(name, size);
           const small = document.createElement('canvas');
           small.width = size; small.height = size;
           const sctx = small.getContext('2d');
@@ -303,7 +311,6 @@ async function reviewIcons() {
           bctx.drawImage(small, 0, 0, big.width, big.height);
           big.style.outline = '1px solid #eee';
           row.append(big);
-          void canvas;
         }
         const label = document.createElement('div');
         label.textContent = name;
@@ -322,7 +329,7 @@ async function reviewIcons() {
     defect('medium', 'icons', outside.length === 0, `icons touch the edge of the 24 px grid (live area is 1..23): ${outside.map((m) => m.name).join(', ')}`);
     defect('medium', 'icons', result.pairs[0][2] < 0.97, `two icons are nearly identical: ${result.pairs[0].join(' / ')}`);
     const dense = Object.entries(result.fill).filter(([, v]) => v > 0.15).map(([name, v]) => `${name} ${(v * 100).toFixed(0)} %`);
-    defect('medium', 'icons', dense.length === 0, `strokes closer than ~1 px at 16 px merge into a blob (share of ink gained by closing 1.5-unit gaps; median ${(Object.values(result.fill).sort((a, b) => a - b)[34] * 100).toFixed(1)} %): ${dense.join(', ')}`);
+    defect('medium', 'icons', dense.length === 0, `strokes closer than ~1 px at 16 px merge into a blob (visual review of the 16 px sheet also finds depot (P plus bolt), speedzone, oneway (arrowhead), forklift and export/import (arrow direction) muddy; share of ink gained by closing 1.5-unit gaps; median ${(Object.values(result.fill).sort((a, b) => a - b)[34] * 100).toFixed(1)} %): ${dense.join(', ')}`);
     notes.push(`icons: closest pair ${result.pairs[0].slice(0, 2).join('/')} IoU ${result.pairs[0][2].toFixed(2)}; contact sheet ${png('icons-16-and-24px')}`);
   });
 }
@@ -390,7 +397,7 @@ const CHART_CASES = [
   ['line: constant series', 'line', `{ x: [1, 2, 3], series: [${series('A', '[7, 7, 7]')}] }`, [320], 'guard', 'high'],
   ['line: time axis, one point at 3617 s', 'line', `{ x: [3617], xAxis: 'time', series: [${series('A', '[5]')}] }`, [320], 'guard', 'high'],
   ['line: time axis, 4 days', 'line', `{ x: [0, 345600], xAxis: 'time', series: [${series('A', '[1, 2]')}] }`, [320], 'guard', 'high'],
-  ['line: nine series with long names', 'line', `{ x: [1, 2, 3], series: ${many(9, `{ name: 'Series number ' + (i + 1) + ' with a really long descriptive name', y: [i, i + 1, i + 2] }`)} }`, [300], 'the legend sticks out of its container (legend items use a -4 px side margin)', 'low'],
+  ['line: nine series with long names', 'line', `{ x: [1, 2, 3], series: ${many(9, `({ name: 'Series number ' + (i + 1) + ' with a really long descriptive name', y: [i, i + 1, i + 2] })`)} }`, [300], 'the legend sticks out of its container (legend items use a -4 px side margin)', 'low'],
   ['line: x tick labels from a long xFormat', 'line', `{ x: ${many(10, 'i + 1')}, xFormat: (v) => 'Demand factor ' + (v / 4).toFixed(2) + 'x', series: [${series('A', many(10, 'i + 1'))}] }`, [560], 'x tick labels collide: the tick count ignores the label width', 'medium'],
   ['line: documented axis titles on a phone', 'line', `{ x: [1, 2, 3], yLabel: 'Throughput (units/h), mean and min-max of 5 runs', xLabel: 'Number of AGVs in the fleet and the shift model', series: [${series('A', '[1, 2, 3]')}] }`, [300], 'guard', 'low'],
   ['line: reference line far above the data', 'line', `{ x: [1, 2, 3], series: [${series('A', '[1, 5, 3]')}], refLines: [{ axis: 'y', value: 100, label: 'Target' }] }`, [320], 'a target line outside the y range is drawn off the canvas: the scale does not grow to show it, so the target silently disappears', 'low'],
@@ -419,12 +426,12 @@ const CHART_CASES = [
   ['spark: huge', 'spark', '{ values: [1e300, 2e300] }', [120], 'guard', 'high'],
   ['spark: negative', 'spark', '{ values: [-5, -3, -4] }', [120], 'guard', 'high'],
   // gauges
-  ['gauge: default 0..1 dial with a percent scale', 'gauge', `{ value: 0.5, label: 'Fleet utilization', thresholds: [{ to: 1, color: 'good', label: 'Healthy' }] }`, [320], 'the "100 %" scale label at the right end of the dial is clipped by the canvas edge', 'medium'],
+  ['gauge: default 0..1 dial with a percent scale', 'gauge', `{ value: 0.5, label: 'Fleet utilization', thresholds: [{ to: 1, color: 'good', label: 'Healthy' }] }`, [320], 'the "100 %" scale label at the right end of the dial is clipped by the canvas edge (the "%" is cut off in the demo too)', 'medium'],
   ['gauge: large values with units', 'gauge', `{ value: 123456, min: 0, max: 200000, unit: 'units' }`, [320], 'the scale labels ("200,000 units") are wider than the dial and clipped', 'medium'],
   ['gauge: NaN value', 'gauge', '{ value: NaN, label: "x" }', [320], 'no exception', 'high'],
   ['gauge: value outside the range', 'gauge', '{ value: 5, label: "x" }', [320], 'no exception', 'high'],
   ['gauge: min equals max', 'gauge', '{ value: 1, min: 1, max: 1 }', [320], 'no exception', 'high'],
-  ['gauge: small dial (size 24)', 'gauge', '{ value: 0.5, size: 24 }', [320], 'drawing throws IndexSizeError (negative arc radius) on every frame for a dial narrower than about 30 px', 'low'],
+  ['gauge: small dial (size 20)', 'gauge', '{ value: 0.5, size: 20 }', [320], 'drawing throws IndexSizeError (negative arc radius) on every frame for a dial narrower than about 30 px', 'low'],
   ['gauge: size larger than the container', 'gauge', '{ value: 0.5, size: 400 }', [300], 'a fixed-size gauge overflows a narrower container', 'low'],
 ];
 
@@ -442,7 +449,7 @@ async function reviewChartCases() {
         for (const e of r.errors) problems.push(`exception: ${e}`);
         for (const t of r.texts) {
           if (/NaN|undefined|Infinity|\[object|null/.test(t.text)) problems.push(`text "${t.text}"`);
-          if (t.x0 < -0.5 || t.x1 > t.W + 0.5 || t.y0 < -1 || t.y1 > t.H + 1) problems.push(`"${t.text}" is cut off by the canvas (${t.x0.toFixed(0)}..${t.x1.toFixed(0)} of ${t.W})`);
+          if (t.x0 < -0.5 || t.x1 > t.W + 0.5 || t.y0 < -1 || t.y1 > t.H + 1) problems.push(`"${t.text}" is cut off by the canvas (x ${t.x0.toFixed(0)}..${t.x1.toFixed(0)} of ${t.W}, y ${t.y0.toFixed(0)}..${t.y1.toFixed(0)} of ${t.H})`);
         }
         const seen = new Set();
         for (let i = 0; i < r.texts.length; i++) for (let j = i + 1; j < r.texts.length; j++) {
@@ -796,12 +803,18 @@ for (const [name, run] of Object.entries(steps)) {
 }
 
 const order = { high: 0, medium: 1, low: 2 };
-findings.sort((a, b) => order[a.severity] - order[b.severity]);
+// the same problem found in several themes or widths is one finding
+const merged = new Map();
+for (const f of findings) {
+  const key = `${f.severity}|${f.message}`;
+  if (merged.has(key)) merged.get(key).areas.push(f.area); else merged.set(key, { ...f, areas: [f.area] });
+}
+const report = [...merged.values()].sort((a, b) => order[a.severity] - order[b.severity]);
 for (const n of notes) console.log(`note: ${n}`);
-if (findings.length) {
-  const counts = findings.reduce((acc, f) => ({ ...acc, [f.severity]: (acc[f.severity] || 0) + 1 }), {});
-  console.error(`\n${findings.length} defect(s): ${Object.entries(counts).map(([k, v]) => `${v} ${k}`).join(', ')}`);
-  for (const f of findings) console.error(`  [${f.severity}] ${f.area}: ${f.message}`);
+if (report.length) {
+  const counts = report.reduce((acc, f) => ({ ...acc, [f.severity]: (acc[f.severity] || 0) + 1 }), {});
+  console.error(`\n${report.length} defect(s): ${Object.entries(counts).map(([k, v]) => `${v} ${k}`).join(', ')}`);
+  for (const f of report) console.error(`  [${f.severity}] ${[...new Set(f.areas)].join(' / ')}: ${f.message}`);
   process.exitCode = 1;
 } else {
   console.log('\nUI kit review: no defects. Screenshots: e2e-output/uikit-review-*.png');

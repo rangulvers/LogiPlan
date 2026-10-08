@@ -93,6 +93,21 @@ test('less than five simulated minutes yield a single info insight', () => {
   assert.equal(find(generateInsights(healthyReport(layout, { duration: MIN_DATA_SECONDS }), layout), 'not-enough-data'), undefined);
 });
 
+test('while the warm-up is running nothing is analysed, however long the window already is', () => {
+  const layout = standardPlant();
+  const report = healthyReport(layout, { duration: 3000 });
+  report.window.warmingUp = true;
+  Object.assign(report.stations.C, { utilization: 0.99, avgIn: 8 }); // a cold plant looks broken: queues build, nothing has arrived yet
+  report.throughput.total = 0;
+  const list = generateInsights(report, layout);
+  assert.deepEqual(ids(list), ['not-enough-data']);
+  assert.equal(list[0].severity, 'info');
+  assert.match(list[0].detail, /warm-up period/);
+  assert.match(list[0].suggestion, /until the warm-up is over/);
+  report.window.warmingUp = false;
+  assert.deepEqual(ids(generateInsights(report, layout)), ['bottleneck:C', 'no-output'], 'the same numbers after the warm-up are real findings');
+});
+
 test('a healthy plant yields exactly one good insight that quotes the headline numbers', () => {
   const layout = standardPlant();
   const list = generateInsights(healthyReport(layout), layout);
@@ -188,26 +203,36 @@ test('bottleneck: a starved successor counts, even behind a buffer', () => {
 
 test('blocked workstation: fires from 20 % and points at the flow that has loads waiting for a vehicle', () => {
   const layout = standardPlant();
-  const list = insightsAfter(layout, (r) => { r.stations.B.blocked = 0.25; r.flows.f3.backlog = 4; });
+  const list = insightsAfter(layout, (r) => { r.stations.B.blocked = 0.25; r.flows.f3.avgBacklog = 4; });
   const b = find(list, 'blocked:B');
   assert.equal(b.title, 'Press is blocked 25 % of the time: its finished loads are not taken away fast enough.');
   assert.equal(b.severity, 'warning');
-  assert.match(b.suggestion, /^4 loads are waiting at Press for a vehicle.*flow Press to Final assembly/);
+  assert.equal(b.suggestion, 'On average 4 loads wait at Press for a vehicle, although the vehicles have time to spare: check the room at Final assembly, the minimum batch of the flow Press to Final assembly and that its vehicles can reach both docks.');
   assert.deepEqual(b.refs, { stationIds: ['B'], flowIds: ['f3'] });
   assert.equal(find(insightsAfter(layout, (r) => { r.stations.B.blocked = 0.45; }), 'blocked:B').severity, 'critical');
   assert.equal(find(insightsAfter(layout, (r) => { r.stations.B.blocked = 0.19; }), 'blocked:B'), undefined);
   assert.match(find(insightsAfter(layout, (r) => { r.stations.B.blocked = 0.25; }), 'blocked:B').suggestion, /^Final assembly cannot take the loads fast enough/);
+  const busy = find(insightsAfter(layout, (r) => {
+    r.stations.B.blocked = 0.25;
+    r.flows.f3.avgBacklog = 4;
+    r.fleets.v1.utilization = 0.9;
+    r.fleets.v2.utilization = 0.9;
+  }), 'blocked:B');
+  assert.equal(busy.suggestion, 'On average 4 loads wait at Press for a vehicle and every vehicle that may serve the flow is busy: add a vehicle or raise the priority of the flow Press to Final assembly.');
 });
 
-test('starved workstation: info from 30 %, warning from 50 % unless an upstream bottleneck explains it', () => {
+test('starved workstation: info from 30 %; a warning from 50 % only when loads wait to be moved to it, unless an upstream bottleneck explains it', () => {
   const layout = standardPlant();
   const info = find(insightsAfter(layout, (r) => { r.stations.C.starved = 0.4; }), 'starved:C');
   assert.equal(info.title, 'Final assembly waits for input 40 % of the time.');
   assert.equal(info.severity, 'info');
-  assert.equal(find(insightsAfter(layout, (r) => { r.stations.C.starved = 0.6; }), 'starved:C').severity, 'warning');
   assert.equal(find(insightsAfter(layout, (r) => { r.stations.C.starved = 0.29; }), 'starved:C'), undefined);
+  const supplyLimited = find(insightsAfter(layout, (r) => { r.stations.C.starved = 0.6; }), 'starved:C');
+  assert.equal(supplyLimited.severity, 'info', 'a machine that is simply fed less than it could do is spare capacity, not a fault');
+  assert.equal(find(insightsAfter(layout, (r) => { r.stations.C.starved = 0.6; r.flows.f3.avgBacklog = 3; }), 'starved:C').severity, 'warning', 'ready loads wait to be moved to it');
+  assert.equal(find(insightsAfter(layout, (r) => { r.stations.C.starved = 0.4; r.flows.f3.avgBacklog = 3; }), 'starved:C').severity, 'info');
 
-  const explained = insightsAfter(layout, (r) => { r.stations.C.starved = 0.6; r.stations.B.utilization = 0.95; });
+  const explained = insightsAfter(layout, (r) => { r.stations.C.starved = 0.6; r.flows.f3.avgBacklog = 3; r.stations.B.utilization = 0.95; });
   const s = find(explained, 'starved:C');
   assert.equal(s.severity, 'info', 'the cause is upstream and already reported');
   assert.match(s.suggestion, /^Fix Press first \(busy 95 %\)/);
@@ -216,12 +241,14 @@ test('starved workstation: info from 30 %, warning from 50 % unless an upstream 
 
 test('starved workstation: suggestion names the transport backlog or the slow source', () => {
   const layout = standardPlant();
-  const transport = find(insightsAfter(layout, (r) => { r.stations.C.starved = 0.5; r.flows.f3.backlog = 3; }), 'starved:C');
-  assert.match(transport.suggestion, /^3 loads are ready at Press but not yet moved/);
+  const transport = find(insightsAfter(layout, (r) => { r.stations.C.starved = 0.5; r.flows.f3.avgBacklog = 3; }), 'starved:C');
+  assert.match(transport.suggestion, /^On average 3 loads wait at Press for a vehicle/);
   assert.deepEqual(transport.refs.flowIds, ['f3']);
   const line = lineLayout();
   const source = find(insightsAfter(line, (r) => { r.stations.B.starved = 0.5; }), 'starved:B');
   assert.match(source.suggestion, /^Goods in delivers too slowly/);
+  const generic = find(insightsAfter(layout, (r) => { r.stations.C.starved = 0.5; }), 'starved:C');
+  assert.match(generic.suggestion, /^Check the supply into Final assembly/);
 });
 
 test('buffer: fires on high average fill or time spent completely full', () => {
@@ -247,12 +274,69 @@ test('supply: a source whose output is blocked and whose yard keeps growing', ()
 
   const busyNext = find(insightsAfter(layout, (r) => { makeSupply(r); r.stations.B.utilization = 0.98; }), 'supply:A');
   assert.match(busyNext.suggestion, /^Add capacity at Press \(busy 98 %\)/);
-  const transport = find(insightsAfter(layout, (r) => { makeSupply(r); r.flows.f1.backlog = 4; }), 'supply:A');
-  assert.match(transport.suggestion, /^Add a vehicle or raise the flow priority: 4 loads are ready at Goods in/);
+  const transport = find(insightsAfter(layout, (r) => { makeSupply(r); r.flows.f1.avgBacklog = 4; }), 'supply:A');
+  assert.match(transport.suggestion, /^On average 4 loads wait at Goods in for a vehicle, although the vehicles have time to spare/);
+  const busy = find(insightsAfter(layout, (r) => { makeSupply(r); r.flows.f1.avgBacklog = 4; r.fleets.v1.utilization = 0.92; }), 'supply:A');
+  assert.match(busy.suggestion, /every vehicle that may serve the flow is busy: add a vehicle or raise the priority of the flow Goods in to Press/);
 
   assert.equal(find(insightsAfter(layout, (r) => { makeSupply(r); r.stations.A.yardNow = 40; }), 'supply:A').severity, 'critical');
   assert.equal(find(insightsAfter(layout, (r) => { makeSupply(r); r.stations.A.blocked = 0.1; }), 'supply:A'), undefined);
   assert.equal(find(insightsAfter(layout, (r) => { makeSupply(r); r.stations.A.yardNow = 2; }), 'supply:A'), undefined);
+});
+
+// ---- transport verdict: one statement about vehicles per flow ----------------------------------------------------
+
+/** A report where 4 loads wait on average at Press (flow f3) and Press is blocked, so `blocked:B` carries the transport advice. */
+function waitingAtPress(layout, mutate = () => {}) {
+  return find(insightsAfter(layout, (r) => {
+    r.stations.B.blocked = 0.3;
+    r.flows.f3.avgBacklog = 4;
+    mutate(r);
+  }), 'blocked:B').suggestion;
+}
+
+test('transport advice: "add a vehicle" only when every fleet that may serve the flow is busy and traffic is calm', () => {
+  const layout = standardPlant();
+  const busy = (r) => { r.fleets.v1.utilization = 0.9; r.fleets.v2.utilization = 0.9; };
+  assert.match(waitingAtPress(layout, busy), /every vehicle that may serve the flow is busy: add a vehicle or raise the priority/);
+  assert.match(waitingAtPress(layout, (r) => { busy(r); r.fleets.v2.utilization = 0.4; }), /although the vehicles have time to spare: check the room at Final assembly/, 'one free fleet is enough');
+  assert.match(waitingAtPress(layout), /although the vehicles have time to spare/);
+
+  const restricted = standardPlant();
+  restricted.flows.find((f) => f.id === 'f3').fleetId = 'v1';
+  assert.match(waitingAtPress(restricted, (r) => { r.fleets.v1.utilization = 0.9; }), /add a vehicle or raise the priority/, 'only the fleet that may serve the flow counts');
+});
+
+test('transport advice: congested traffic is answered with "relieve the congestion", never with more vehicles', () => {
+  const layout = standardPlant();
+  const spots = [{ node: 29, cx: 12, cy: 1, wait: 300 }];
+  const plantWide = waitingAtPress(layout, (r) => { r.fleets.v1.utilization = 0.9; r.fleets.v2.utilization = 0.9; r.traffic.waitShare = 0.2; r.traffic.hotspots = spots; });
+  assert.equal(plantWide, 'On average 4 loads wait at Press for a vehicle, but congestion holds the vehicles up around (12, 1): relieve the traffic before adding vehicles.');
+  const ownFleet = waitingAtPress(layout, (r) => { r.fleets.v1.utilization = 0.9; r.fleets.v1.shares.waiting = 0.2; });
+  assert.match(ownFleet, /^On average 4 loads wait at Press for a vehicle, but congestion holds the vehicles up: relieve/, 'the fleet itself loses 36 % of its driving time');
+  assert.doesNotMatch(plantWide + ownFleet, /add a vehicle/);
+});
+
+test('transport advice: a flow that no vehicle may serve says so', () => {
+  const noFleet = standardPlant({ fleets: [] });
+  assert.match(waitingAtPress(noFleet), /^No vehicle may serve the flow Press to Final assembly: add a fleet or remove the fleet restriction/);
+  const emptyFleet = standardPlant({ fleets: [{ count: 0 }] });
+  assert.match(waitingAtPress(emptyFleet), /^No vehicle may serve the flow/);
+  const wrongFleet = standardPlant();
+  wrongFleet.flows.find((f) => f.id === 'f3').fleetId = 'v9';
+  assert.match(waitingAtPress(wrongFleet), /^No vehicle may serve the flow/);
+});
+
+test('waiting loads are judged on the window average, not on the instantaneous backlog', () => {
+  const layout = standardPlant();
+  const instant = insightsAfter(layout, (r) => { r.stations.B.blocked = 0.3; r.flows.f3.backlog = 9; r.stations.C.starved = 0.6; });
+  assert.match(find(instant, 'blocked:B').suggestion, /^Final assembly cannot take the loads fast enough/);
+  assert.match(find(instant, 'starved:C').suggestion, /^Check the supply into Final assembly/);
+  assert.equal(find(instant, 'starved:C').severity, 'info');
+  const below = insightsAfter(layout, (r) => { r.stations.B.blocked = 0.3; r.flows.f3.avgBacklog = 0.9; });
+  assert.match(find(below, 'blocked:B').suggestion, /^Final assembly cannot take/, 'less than one waiting load on average is no transport problem');
+  const hostile = insightsAfter(layout, (r) => { r.stations.B.blocked = 0.3; r.flows.f3.avgBacklog = NaN; });
+  assert.match(find(hostile, 'blocked:B').suggestion, /^Final assembly cannot take/);
 });
 
 // ---- fleets -----------------------------------------------------------------------------------------------------
@@ -288,6 +372,84 @@ test('saturated fleet: when much of the busy time is traffic, the advice is to f
   assert.match(find(list, 'fleet-saturated:v1').suggestion, /around \(12, 1\)/);
 });
 
+test('saturated fleet: a long pickup wait is not blamed on the fleet when the destination has no room', () => {
+  const layout = standardPlant();
+  const slow = (r) => {
+    Object.assign(r.fleets.v1, { utilization: 0.75, avgPickupWait: 231 });
+    r.flows.f3.avgPickupWait = 400; // Press -> Final assembly
+    r.flows.f1.avgPickupWait = 60;
+  };
+  assert.ok(find(insightsAfter(layout, slow), 'fleet-saturated:v1'), 'guard: nothing is wrong at the destinations, the fleet is the limit');
+  const loaded = find(insightsAfter(layout, (r) => { slow(r); Object.assign(r.stations.C, { utilization: 0.97, avgIn: 6 }); }), 'bottleneck:C');
+  assert.ok(loaded, 'precondition: Final assembly is the bottleneck');
+  const withBottleneck = insightsAfter(layout, (r) => { slow(r); Object.assign(r.stations.C, { utilization: 0.97, avgIn: 6 }); });
+  assert.equal(find(withBottleneck, 'fleet-saturated:v1'), undefined, 'the loads wait for room at Final assembly (the other flows wait 20-60 s)');
+  const fullBuffer = insightsAfter(layout, (r) => { slow(r); r.flows.f3.avgPickupWait = 60; r.flows.f1.avgPickupWait = 400; Object.assign(r.stations.S, { avgFill: 0.9, blocked: 0.2 }); });
+  assert.equal(find(fullBuffer, 'fleet-saturated:v1'), undefined, 'a full buffer is a destination without room, too');
+  const mixed = insightsAfter(layout, (r) => {
+    slow(r);
+    r.flows.f2.avgPickupWait = 300; // Supermarket -> Press: a destination with room
+    Object.assign(r.stations.C, { utilization: 0.97, avgIn: 6 });
+  });
+  assert.match(find(mixed, 'fleet-saturated:v1').title, /loads wait 3\.3 min for a pickup/, 'the wait that remains comes from flows with free destinations only');
+  const everything = standardPlant({ fleets: [{ count: 3 }] });
+  const blockedAll = insightsAfter(everything, (r) => {
+    Object.assign(r.fleets.v1, { utilization: 0.75, avgPickupWait: 300 });
+    for (const id of ['B', 'C']) Object.assign(r.stations[id], { utilization: 0.97, avgIn: 6 });
+    Object.assign(r.stations.S, { avgFill: 0.9 });
+  });
+  assert.equal(find(blockedAll, 'fleet-saturated:v1'), undefined, 'nothing is left to judge: no verdict on the fleet');
+});
+
+test('saturated fleet: when traffic is congested the advice is to relieve it, also when only the plant as a whole is affected', () => {
+  const layout = standardPlant();
+  const plant = find(insightsAfter(layout, (r) => {
+    r.fleets.v1.utilization = 0.9;
+    r.traffic.waitShare = 0.17;
+    r.traffic.hotspots = [{ node: 29, cx: 12, cy: 1, wait: 300 }];
+  }), 'fleet-saturated:v1');
+  assert.equal(plant.suggestion, 'Traffic costs 17 % of the driving time across the plant: relieve the congestion around (12, 1) before buying more vehicles.');
+  const consistent = find(insightsAfter(layout, (r) => {
+    // driving 50 %, waiting 10 %: the same 17 % of the driving time that the traffic rule sees
+    r.fleets.v1.utilization = 0.9;
+    Object.assign(r.fleets.v1.shares, { driving: 0.5, waiting: 0.1, loading: 0.15, unloading: 0.15, idle: 0.1, parked: 0 });
+  }), 'fleet-saturated:v1');
+  assert.match(consistent.suggestion, /^A lot of the busy time is spent waiting in traffic \(10 % of the fleet's time\)/);
+});
+
+test('oversized fleet: charging and broken time is not idle time, and loads that wait are not a matter of fleet size', () => {
+  const layout = standardPlant();
+  const oversized = (mutate) => find(insightsAfter(layout, mutate), 'fleet-oversized:v1');
+  const charging = (r) => {
+    Object.assign(r.fleets.v1, { utilization: 0.27 });
+    Object.assign(r.fleets.v1.shares, { driving: 0.2, waiting: 0.01, loading: 0.03, unloading: 0.03, idle: 0, parked: 0.41, charging: 0.32, broken: 0 });
+  };
+  assert.equal(oversized(charging), undefined, '0.27 of the 0.68 that the vehicles could work is 40 %');
+  assert.ok(oversized((r) => { charging(r); r.fleets.v1.utilization = 0.2; }), 'guard: 0.2 of 0.68 is 29 %');
+  assert.equal(oversized((r) => { r.fleets.v1.utilization = 0.2; r.flows.f3.avgBacklog = 2; }), undefined, 'loads wait although vehicles are free');
+  assert.ok(oversized((r) => { r.fleets.v1.utilization = 0.2; r.flows.f3.avgBacklog = 0.5; }), 'less than a load on average does not count');
+  const restricted = standardPlant();
+  restricted.flows.find((f) => f.id === 'f3').fleetId = 'v2';
+  assert.ok(find(insightsAfter(restricted, (r) => { r.fleets.v1.utilization = 0.2; r.flows.f3.avgBacklog = 2; }), 'fleet-oversized:v1'), 'loads of a flow this fleet may not serve do not count');
+  const unused = oversized((r) => { r.fleets.v1.utilization = 0.01; r.flows.f1.avgBacklog = 5; });
+  assert.match(unused.suggestion, /^None of the 3 AGV vehicles did any real work/, 'an unused fleet is always reported');
+});
+
+test('unplaced vehicles: a warning that the simulated fleet is smaller than the planned one', () => {
+  const layout = standardPlant();
+  const list = insightsAfter(layout, (r) => { r.fleets.v1.unplaced = 2; });
+  const u = find(list, 'unplaced:v1');
+  assert.equal(u.title, 'AGV fleet: 2 vehicles of 5 did not fit on the road and are not simulated.');
+  assert.equal(u.severity, 'warning');
+  assert.deepEqual(u.refs, { fleetIds: ['v1'] });
+  assert.match(u.detail, /runs with 3 instead of 5 AGV vehicles/);
+  assert.match(u.suggestion, /Add road length or a depot.*to 3\.$/);
+  assert.equal(find(list, 'good'), undefined, 'a plant with missing vehicles is not "good"');
+  assert.equal(find(insightsAfter(layout, (r) => { r.fleets.v1.unplaced = 1; }), 'unplaced:v1').title, 'AGV fleet: 1 vehicle of 4 did not fit on the road and is not simulated.');
+  assert.equal(find(insightsAfter(layout, (r) => { r.fleets.v1.unplaced = 0; }), 'unplaced:v1'), undefined);
+  assert.equal(find(insightsAfter(layout, () => {}), 'unplaced:v1'), undefined, 'reports without the field stay silent');
+});
+
 test('oversized fleet: info below 35 % utilization with at least two vehicles', () => {
   const layout = standardPlant();
   const f = find(insightsAfter(layout, (r) => { r.fleets.v1.utilization = 0.2; }), 'fleet-oversized:v1');
@@ -300,18 +462,23 @@ test('oversized fleet: info below 35 % utilization with at least two vehicles', 
   assert.equal(find(insightsAfter(single, (r) => { r.fleets.v1.utilization = 0.05; }), 'fleet-oversized:v1'), undefined);
 });
 
-test('empty driving: more than 60 % of the distance without a load, after enough trips', () => {
+test('empty driving: more than 60 % of the distance without a load, after enough trips, while the vehicles are busy', () => {
   const layout = standardPlant();
-  const e = find(insightsAfter(layout, (r) => { r.fleets.v1.emptyShare = 0.7; }), 'empty-driving:v1');
+  const busy = (r, share = 0.7) => { r.fleets.v1.emptyShare = share; r.fleets.v1.utilization = 0.7; };
+  const e = find(insightsAfter(layout, (r) => busy(r)), 'empty-driving:v1');
   assert.equal(e.title, 'AGV vehicles drive empty 70 % of the distance.');
   assert.equal(e.severity, 'info');
   assert.match(e.detail, /1\.4 km were without a load/);
-  assert.match(e.suggestion, /larger vehicles/);
+  assert.match(e.detail, /busy 70 % of the time/);
+  assert.match(e.suggestion, /^Place pickup and drop stations so a vehicle can return with a load/, 'an AGV carries one load: no point in "carry more"');
+  const tugger = standardPlant({ fleets: [{ count: 3, preset: 'tugger' }, { count: 2, preset: 'forklift' }] });
+  assert.match(find(insightsAfter(tugger, (r) => busy(r)), 'empty-driving:v1').suggestion, /carry more per trip/);
   const oldest = standardPlant({ settings: { dispatch: 'oldest' } });
-  assert.match(find(insightsAfter(oldest, (r) => { r.fleets.v1.emptyShare = 0.7; }), 'empty-driving:v1').suggestion, /Nearest job first/);
-  assert.equal(find(insightsAfter(layout, (r) => { r.fleets.v1.emptyShare = 0.6; }), 'empty-driving:v1'), undefined);
-  assert.equal(find(insightsAfter(layout, (r) => { Object.assign(r.fleets.v1, { emptyShare: 0.9, trips: 4 }); }), 'empty-driving:v1'), undefined);
-  assert.equal(find(insightsAfter(layout, (r) => { r.fleets.v1.emptyShare = null; }), 'empty-driving:v1'), undefined);
+  assert.match(find(insightsAfter(oldest, (r) => busy(r)), 'empty-driving:v1').suggestion, /Nearest job first/);
+  assert.equal(find(insightsAfter(layout, (r) => busy(r, 0.6)), 'empty-driving:v1'), undefined);
+  assert.equal(find(insightsAfter(layout, (r) => { busy(r, 0.9); r.fleets.v1.trips = 4; }), 'empty-driving:v1'), undefined);
+  assert.equal(find(insightsAfter(layout, (r) => busy(r, null)), 'empty-driving:v1'), undefined);
+  assert.equal(find(insightsAfter(layout, (r) => { busy(r, 0.9); r.fleets.v1.utilization = 0.4; }), 'empty-driving:v1'), undefined, 'idle vehicles can afford to drive empty');
 });
 
 test('battery: ran flat is critical, a deep dip a warning, heavy charging a hint', () => {
@@ -362,6 +529,44 @@ test('breakdowns: vehicles broken for 5 % of the time or more', () => {
   assert.match(v.detail, /2 min in total waiting behind broken ones/);
   assert.equal(find(insightsAfter(layout, (r) => { Object.assign(r.fleets.v1.shares, { broken: 0.12, idle: 0.18 }); }), 'breakdowns:v1').severity, 'warning');
   assert.equal(find(insightsAfter(layout, (r) => { Object.assign(r.fleets.v1.shares, { broken: 0.04, idle: 0.26 }); }), 'breakdowns:v1'), undefined);
+});
+
+test('breakdowns: a spare vehicle is only recommended when it can help', () => {
+  const layout = standardPlant();
+  const broken = (r) => { Object.assign(r.fleets.v1.shares, { broken: 0.08, idle: 0.22 }); };
+  assert.match(find(insightsAfter(layout, broken), 'breakdowns:v1').suggestion, /^Add a spare vehicle to the fleet \(now 3\)/);
+  const idleFleet = find(insightsAfter(layout, (r) => { broken(r); r.fleets.v1.utilization = 0.2; }), 'breakdowns:v1');
+  assert.match(idleFleet.suggestion, /^Reduce the downtime/, 'a mostly idle fleet has spare vehicles already');
+  const jam = find(insightsAfter(layout, (r) => { broken(r); r.traffic.waitShare = 0.2; }), 'breakdowns:v1');
+  assert.match(jam.suggestion, /^Reduce the downtime/, 'more vehicles in a congested plant make it worse');
+});
+
+test('no rule tells the planner to add vehicles while another tells them to use fewer, across a grid of plausible reports', () => {
+  const add = /\badd (?:a |an |[\d.]+ )?(?:spare )?vehicles?\b/i;
+  const cut = /reduce the number of vehicles|fewer vehicles|try [\d.]+ vehicles? instead/i;
+  const layout = standardPlant();
+  let reports = 0;
+  for (const utilization of [0.15, 0.3, 0.6, 0.9]) for (const charging of [0, 0.3]) for (const waiting of [0.02, 0.15]) {
+    for (const plantWait of [0.02, 0.2]) for (const avgBacklog of [0, 3]) for (const broken of [0, 0.08]) for (const wait of [30, 200]) {
+      reports++;
+      const list = insightsAfter(layout, (r) => {
+        const idle = Math.max(0, 1 - utilization - charging - broken);
+        Object.assign(r.fleets.v1, { utilization, avgPickupWait: wait });
+        Object.assign(r.fleets.v1.shares, { driving: utilization * 0.7, waiting: waiting * utilization, loading: utilization * 0.15, unloading: utilization * 0.15 - waiting * utilization + 0.0, idle, parked: 0, charging, broken });
+        Object.assign(r.stations.A, { blocked: 0.5, utilization: 0.5, yardNow: 8, yardMax: 8 });
+        Object.assign(r.stations.B, { blocked: 0.3, starved: 0.3 });
+        Object.assign(r.stations.C, { starved: 0.6 });
+        r.traffic.waitShare = plantWait;
+        r.flows.f1.avgBacklog = avgBacklog;
+        r.flows.f3.avgBacklog = avgBacklog;
+        r.fleets.v2.utilization = utilization;
+      });
+      const adds = list.filter((i) => add.test(i.suggestion || '')).map((i) => i.id);
+      const cuts = list.filter((i) => cut.test(i.suggestion || '')).map((i) => i.id);
+      assert.ok(!(adds.length && cuts.length), `add [${adds}] vs fewer [${cuts}] at utilization ${utilization}, charging ${charging}, waiting ${waiting}, plant wait ${plantWait}, backlog ${avgBacklog}, broken ${broken}, pickup ${wait}`);
+    }
+  }
+  assert.equal(reports, 4 * 2 * 2 * 2 * 2 * 2 * 2);
 });
 
 // ---- traffic and deadlocks ----------------------------------------------------------------------------------------

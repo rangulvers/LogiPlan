@@ -7,13 +7,13 @@
 //   * a vehicle that stands still holds up everything behind it. When a vehicle has been waiting behind an idle
 //     vehicle for YIELD_AFTER seconds, or a parked vehicle cannot leave a depot because an idle vehicle stands on
 //     its gate, the idle vehicle makes room: it parks (if its fleet parks) or drives to a nearby road cell where
-//     it hinders nobody (not a dock, not a junction or dead end, not on a route in use).
+//     it hinders nobody (preferably not a dock, a junction or dead end, or a cell on a route in use: see common.js).
 //
 // Idle vehicles are not dispatched while they drive to a depot or a waiting cell (the traffic system cannot
 // re-route a moving vehicle), which is why parking is delayed by IDLE_GRACE.
 
 import {
-  EPS, IDLE_GRACE, SPOT_PENALTY_CONTROLLED, SPOT_PENALTY_USED, YIELD_AFTER,
+  EPS, IDLE_GRACE, SPOT_PENALTY_BUSY, SPOT_PENALTY_CONTROLLED, SPOT_PENALTY_DOCK, SPOT_PENALTY_USED, YIELD_AFTER, YIELD_RETRY,
 } from './common.js';
 import {
   arrivalEdgeOf, cancelDepotTrip, leaveDepot, needsCharge, setState, startCharging, startLeg,
@@ -31,10 +31,10 @@ function isStandingIdle(vr) {
 /**
  * After dispatch: make room where idle vehicles hold others up, then let the remaining vehicles act on their
  * idle policy.
- * @param {Set<object>} blockedDepots depots whose parked vehicles had work but could not leave
+ * @param {Set<object>} blockedDepots depots where a parked vehicle had work but could not leave in this dispatch round
  */
 export function applyIdlePolicy(lg, t, blockedDepots) {
-  makeRoom(lg, t, blockedDepots);
+  makeRoom(lg, t, confirmedGates(lg, t, blockedDepots));
   for (const vr of lg.vehicles) {
     if (vr.state === 'parked') tendParked(lg, vr, t);
     else if (isStandingIdle(vr)) goIdle(lg, vr, t, false);
@@ -109,6 +109,17 @@ function sendToDepot(lg, vr, t, charge) {
 
 // ---- making room ----------------------------------------------------------------------------------------------------
 
+/** The depots whose parked vehicles with work have been unable to leave for YIELD_AFTER seconds (a passing vehicle blocks a gate for a moment too). */
+function confirmedGates(lg, t, blockedDepots) {
+  const confirmed = new Set();
+  for (const depot of lg.depots) {
+    if (!blockedDepots.has(depot)) { depot.blockedSince = null; continue; }
+    if (depot.blockedSince === null) depot.blockedSince = t;
+    if (t - depot.blockedSince >= YIELD_AFTER - EPS) confirmed.add(depot);
+  }
+  return confirmed;
+}
+
 /** Is the vehicle at, or next to, a dock of the depot? (It then holds up a parked vehicle that wants to leave.) */
 function nearDock(lg, vr, depot) {
   const { graph } = lg;
@@ -140,7 +151,7 @@ function makeRoom(lg, t, blockedDepots) {
   for (const vr of lg.vehicles) if (vr.route && vr.tv.driving) for (const node of vr.route.nodes) busy[node] = 1;
   const taken = new Set(lg.vehicles.filter((vr) => vr.spot >= 0).map((vr) => vr.spot));
   for (const vr of blockers) {
-    if (goIdle(lg, vr, t, true)) continue;
+    if (t < vr.roomRetryAt - EPS || goIdle(lg, vr, t, true)) continue;
     const spot = pickSpot(lg, vr, lg.routes.get(vr.tv.node, arrivalEdgeOf(lg, vr), t), busy, taken);
     if (spot < 0) continue;
     taken.add(spot);
@@ -152,17 +163,18 @@ function makeRoom(lg, t, blockedDepots) {
 }
 
 /**
- * The best road cell to wait on, or -1: reachable, free, not a dock, not on a route in use or promised to another
- * vehicle; the nearest wins, with a surcharge for junction/dead-end cells and for cells that routes have used.
+ * The best road cell to wait on, or -1: reachable, free and not promised to another vehicle. The cheapest route wins, with
+ * surcharges (see common.js) for docks, cells on routes being driven, cells that routes have used and junction/dead-end cells.
  */
 function pickSpot(lg, vr, entry, busy, taken) {
   const { graph } = lg;
   const candidates = [];
   for (const node of graph.nodes) {
-    if (node === vr.tv.node || busy[node] || taken.has(node) || graph.stationsAt.has(node)) continue;
+    if (node === vr.tv.node || taken.has(node)) continue;
     const dist = entry.search.dist(node);
     if (dist === Infinity) continue;
-    const score = dist + (graph.controlled[node] ? SPOT_PENALTY_CONTROLLED : 0) + (lg.routeUse[node] > 0 ? SPOT_PENALTY_USED : 0);
+    const score = dist + (graph.stationsAt.has(node) ? SPOT_PENALTY_DOCK : 0) + (busy[node] ? SPOT_PENALTY_BUSY : 0)
+      + (graph.controlled[node] ? SPOT_PENALTY_CONTROLLED : 0) + (lg.routeUse[node] > 0 ? SPOT_PENALTY_USED : 0);
     candidates.push({ node, score });
   }
   candidates.sort((a, b) => (a.score - b.score) || (a.node - b.node));

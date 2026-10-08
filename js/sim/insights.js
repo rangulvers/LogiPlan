@@ -7,11 +7,19 @@
 //
 // Ordering is deterministic: severity (critical, warning, info, good), then magnitude (the headline metric of
 // the rule on a 0..1 scale, larger first; a deadlock count n maps to 1 - 1/(1 + n)), then id. A 'good' insight is added only when no
-// critical or warning insight fired. With less than MIN_DATA_SECONDS of measured time the only result is a
-// single info insight, because shares and queues of a few minutes are not meaningful.
+// critical or warning insight fired. While the warm-up is running, or with less than MIN_DATA_SECONDS of measured
+// time, the only result is a single info insight: the first minutes of a plant that starts empty, and shares and
+// queues of a few minutes, are not meaningful.
 //
-// Additions beyond the rules named in the spec: `blocked` (a workstation that cannot get rid of its output)
-// and `no-output` (nothing left the plant at all), so a stuck plant is never reported as 'good'.
+// Additions beyond the rules named in the spec: `blocked` (a workstation that cannot get rid of its output),
+// `no-output` (nothing left the plant at all, so a stuck plant is never reported as 'good') and `unplaced`
+// (vehicles that found no room on the road and do not take part in the simulation).
+//
+// Advice about the number of vehicles comes from ONE verdict per flow (transportState), so the rules cannot
+// contradict each other: "add a vehicle" is only said when every fleet that may serve the flow is saturated and
+// traffic is not congested; congested traffic is answered with "relieve the congestion", spare vehicles with
+// "something else holds the loads back". Waiting loads are judged on the window average of the report
+// (flows[].avgBacklog), never on the instantaneous count, so a recommendation does not flicker with a single load.
 
 import { formatDistance, formatDuration, formatNumber, formatPercent, round } from '../util/format.js';
 
@@ -34,9 +42,9 @@ export const FLEET_PICKUP_WAIT_MIN_UTILIZATION = 0.6; // below this a long wait 
 export const FLEET_OVERSIZED_UTILIZATION = 0.35;
 export const FLEET_UNUSED_UTILIZATION = 0.02; // below this a fleet did practically nothing
 export const FLEET_TARGET_UTILIZATION = 0.75;
-export const FLEET_TRAFFIC_SHARE_OF_BUSY = 0.25; // waiting / working above this: fix traffic before adding vehicles
+export const TRANSPORT_BACKLOG = 1; // loads that wait for a vehicle on average before transport is called a problem
 
-// Traffic.
+// Traffic. The wait share is waiting / (driving + waiting) of the plant, and of a single fleet in the same way.
 export const TRAFFIC_WAIT_SHARE = 0.12;
 export const TRAFFIC_CRITICAL_WAIT_SHARE = 0.25;
 export const TRAFFIC_HOTSPOT_CELLS = 3;
@@ -55,8 +63,9 @@ export const STARVED_SHARE = 0.3;
 export const STARVED_WARNING_SHARE = 0.5;
 
 // Driving efficiency, batteries, breakdowns.
-export const EMPTY_DRIVING_SHARE = 0.6;
+export const EMPTY_DRIVING_SHARE = 0.6; // a shuttle between two stations already drives 50 % empty
 export const EMPTY_DRIVING_MIN_TRIPS = 5;
+export const EMPTY_DRIVING_MIN_UTILIZATION = 0.6; // empty kilometres only matter while the vehicles are busy
 export const BATTERY_EMPTY = 0.001;
 export const BATTERY_LOW = 0.1;
 export const CHARGING_SHARE = 0.25;
@@ -117,6 +126,7 @@ function buildContext(report, layout) {
     flowsTo,
     traffic: report.traffic || {},
     flows: report.flows || {},
+    saturation: new Map(),
     name: (id) => (byId.get(id) ? byId.get(id).name : id),
     /** Workstations reached from `id` along flows, passing through storages only. */
     workstationsBeyond: (id, direction) => walkFlows(ctx, id, direction),
@@ -146,6 +156,123 @@ function walkFlows(ctx, id, direction) {
 
 function hotspotCells(ctx, count = TRAFFIC_HOTSPOT_CELLS) {
   return (ctx.traffic.hotspots || []).slice(0, count);
+}
+
+/** " around (12, 1), (13, 1)" for the worst traffic cells, or nothing when there are none. */
+function aroundHotspots(ctx, count) {
+  const spots = hotspotCells(ctx, count);
+  return spots.length ? ` around ${cellList(spots)}` : '';
+}
+
+// ---- transport verdicts: the single source of truth for every "add a vehicle" / "fewer vehicles" statement ------
+
+/** Share of a fleet's driving time spent waiting in traffic: the same measure as traffic.waitShare. */
+function fleetWaitShare(f) {
+  const waiting = f.shares?.waiting || 0;
+  const moving = (f.shares?.driving || 0) + waiting;
+  return moving > 0 ? waiting / moving : 0;
+}
+
+/** True when more vehicles would only add to the traffic: the plant, or the fleet itself, loses too much time waiting. */
+const congested = (ctx, f) => ctx.traffic.waitShare >= TRAFFIC_WAIT_SHARE || fleetWaitShare(f) >= TRAFFIC_WAIT_SHARE;
+
+/**
+ * Fleet with several vehicles that works only a small part of the time it could work. Vehicles that charge or
+ * are broken cannot work, so they do not count as idle time.
+ */
+function oversized(f) {
+  const available = 1 - (f.shares?.charging || 0) - (f.shares?.broken || 0);
+  return f.count >= 2 && available > 0 && f.utilization / available < FLEET_OVERSIZED_UTILIZATION;
+}
+
+/** The flows (layout definitions) a fleet may serve. */
+const servedFlows = (ctx, f) => (ctx.layout.flows || []).filter((flow) => !flow.fleetId || flow.fleetId === f.id);
+
+/** A load that arrives at this station has to wait for room: a saturated workstation or a (nearly) full buffer. */
+function destinationConstrained(ctx, id) {
+  const s = ctx.byId.get(id);
+  if (!s) return false;
+  if (s.type === 'process') return saturation(s) >= BOTTLENECK_UTILIZATION;
+  return s.type === 'storage' && (s.avgFill >= BUFFER_AVG_FILL || s.blocked >= BUFFER_FULL_SHARE);
+}
+
+/**
+ * Mean time loads waited for a pickup by this fleet. Flows that deliver into a saturated workstation or a full
+ * buffer are left out: there a load waits for room at the destination (the dispatcher only sends a vehicle when
+ * the load fits), and more vehicles do not create room. null when nothing is left to judge.
+ */
+function pickupWait(ctx, f) {
+  const flows = servedFlows(ctx, f);
+  const open = flows.filter((flow) => !destinationConstrained(ctx, flow.to));
+  if (open.length === flows.length) return f.avgPickupWait;
+  let trips = 0;
+  let total = 0;
+  for (const flow of open) {
+    const r = ctx.flows[flow.id];
+    if (r && r.trips > 0 && r.avgPickupWait != null) {
+      trips += r.trips;
+      total += r.avgPickupWait * r.trips;
+    }
+  }
+  return trips > 0 ? total / trips : null;
+}
+
+/** Is the fleet the limit of the plant? Busy all the time, or busy enough while loads wait long for it. */
+function saturationOf(ctx, f) {
+  if (!ctx.saturation.has(f.id)) {
+    const wait = f.count >= 1 ? pickupWait(ctx, f) : null;
+    const longWait = wait != null && wait >= FLEET_PICKUP_WAIT;
+    const saturated = f.count >= 1 && (f.utilization >= FLEET_SATURATED_UTILIZATION
+      || (longWait && f.utilization >= FLEET_PICKUP_WAIT_MIN_UTILIZATION));
+    ctx.saturation.set(f.id, { saturated, longWait, wait });
+  }
+  return ctx.saturation.get(f.id);
+}
+
+/**
+ * What limits the transport of a flow:
+ *  'none' no vehicle may serve it, 'traffic' congestion holds the vehicles up, 'vehicles' every fleet that may serve
+ *  it is saturated, 'free' the vehicles have time to spare (so something else holds the loads back).
+ */
+function transportState(ctx, flow) {
+  const serving = ctx.fleets.filter((f) => f.count >= 1 && (!flow.fleetId || flow.fleetId === f.id));
+  if (serving.length === 0) return 'none';
+  if (serving.some((f) => congested(ctx, f))) return 'traffic';
+  return serving.every((f) => saturationOf(ctx, f).saturated) ? 'vehicles' : 'free';
+}
+
+/** The flow with the highest average backlog (the first one when none waits), with that backlog. */
+function busiestFlow(ctx, flows) {
+  let best = null;
+  for (const flow of flows) {
+    const backlog = ctx.flows[flow.id]?.avgBacklog || 0;
+    if (!best || backlog > best.backlog) best = { flow, backlog };
+  }
+  return best;
+}
+
+/** busiestFlow, but only when loads wait for transport on average. */
+function waitingFlow(ctx, flows) {
+  const best = busiestFlow(ctx, flows);
+  return best && best.backlog >= TRANSPORT_BACKLOG ? best : null;
+}
+
+/** The advice for loads that wait at the start of a flow, from the transport verdict of that flow. */
+function transportAdvice(ctx, { flow, backlog }) {
+  const from = ctx.name(flow.from);
+  const to = ctx.name(flow.to);
+  const route = `${from} to ${to}`;
+  const waiting = `On average ${amount(backlog)} ${isOne(backlog) ? 'load waits' : 'loads wait'} at ${from} for a vehicle`;
+  switch (transportState(ctx, flow)) {
+    case 'vehicles':
+      return `${waiting} and every vehicle that may serve the flow is busy: add a vehicle or raise the priority of the flow ${route}.`;
+    case 'traffic':
+      return `${waiting}, but congestion holds the vehicles up${aroundHotspots(ctx)}: relieve the traffic before adding vehicles.`;
+    case 'none':
+      return `No vehicle may serve the flow ${route}: add a fleet or remove the fleet restriction of the flow.`;
+    default:
+      return `${waiting}, although the vehicles have time to spare: check the room at ${to}, the minimum batch of the flow ${route} and that its vehicles can reach both docks.`;
+  }
 }
 
 // ---- rules: stations -----------------------------------------------------------------------------------------
@@ -191,17 +318,15 @@ function blockedWorkstations(ctx) {
   const out = [];
   for (const s of ctx.stations) {
     if (s.type !== 'process' || !(s.blocked >= BLOCKED_SHARE)) continue;
-    const outgoing = ctx.flowsFrom.get(s.id) || [];
-    const backlogged = outgoing
-      .map((f) => ({ flow: f, backlog: ctx.flows[f.id]?.backlog || 0 }))
-      .sort((a, b) => b.backlog - a.backlog)[0];
+    const outgoing = busiestFlow(ctx, ctx.flowsFrom.get(s.id) || []);
+    const waiting = outgoing && outgoing.backlog >= TRANSPORT_BACKLOG ? outgoing : null;
     const refs = { stationIds: [s.id] };
     let suggestion;
-    if (backlogged && backlogged.backlog >= 1) {
-      suggestion = `${plural(backlogged.backlog, 'load is', 'loads are')} waiting at ${s.name} for a vehicle: add a vehicle or raise the priority of the flow ${s.name} to ${ctx.name(backlogged.flow.to)}.`;
-      refs.flowIds = [backlogged.flow.id];
-    } else if (backlogged) {
-      suggestion = `${ctx.name(backlogged.flow.to)} cannot take the loads fast enough: enlarge its input buffer or speed up the work there.`;
+    if (waiting) {
+      suggestion = transportAdvice(ctx, waiting);
+      refs.flowIds = [waiting.flow.id];
+    } else if (outgoing) {
+      suggestion = `${ctx.name(outgoing.flow.to)} cannot take the loads fast enough: enlarge its input buffer or speed up the work there.`;
     } else {
       suggestion = `Enlarge the output buffer of ${s.name}.`;
     }
@@ -218,24 +343,24 @@ function starvedWorkstations(ctx) {
   for (const s of ctx.stations) {
     if (s.type !== 'process' || !(s.starved >= STARVED_SHARE)) continue;
     const bottleneck = ctx.workstationsBeyond(s.id, 'up').filter((u) => saturation(u) >= BOTTLENECK_UTILIZATION)[0];
-    const waiting = (ctx.flowsTo.get(s.id) || [])
-      .map((f) => ({ flow: f, backlog: ctx.flows[f.id]?.backlog || 0 }))
-      .sort((a, b) => b.backlog - a.backlog)[0];
+    const waiting = waitingFlow(ctx, ctx.flowsTo.get(s.id) || []);
     const supplier = (ctx.flowsTo.get(s.id) || []).map((f) => ctx.byId.get(f.from)).find((u) => u && u.type === 'source');
     const refs = { stationIds: [s.id] };
     let suggestion;
     if (bottleneck) {
       suggestion = `Fix ${bottleneck.name} first (${loadText(bottleneck)}): ${s.name} can only work as fast as it is fed.`;
       refs.stationIds.push(bottleneck.id);
-    } else if (waiting && waiting.backlog >= 1) {
-      suggestion = `${plural(waiting.backlog, 'load is', 'loads are')} ready at ${ctx.name(waiting.flow.from)} but not yet moved: add a vehicle or raise the priority of the flow ${ctx.name(waiting.flow.from)} to ${s.name}.`;
+    } else if (waiting) {
+      suggestion = transportAdvice(ctx, waiting);
       refs.flowIds = [waiting.flow.id];
     } else if (supplier) {
       suggestion = `${supplier.name} delivers too slowly: shorten its arrival interval or raise the demand factor in the Simulate tab.`;
     } else {
       suggestion = `Check the supply into ${s.name}: its suppliers produce or deliver less often than it could work.`;
     }
-    const severity = s.starved >= STARVED_WARNING_SHARE && !bottleneck ? 'warning' : 'info';
+    // A workstation that simply gets less work than it could do is spare capacity (info). It becomes a problem when
+    // ready loads are waiting to be moved to it.
+    const severity = s.starved >= STARVED_WARNING_SHARE && waiting && !bottleneck ? 'warning' : 'info';
     out.push(candidate('starved', s.id, severity, s.starved,
       `${s.name} waits for input ${pct(s.starved)} of the time.`,
       `Over ${formatDuration(ctx.duration)}, ${s.name} was idle for lack of input loads ${pct(s.starved)} of the time and worked ${pct(s.utilization)}.${bottleneck ? ` Its supplier ${bottleneck.name} is the bottleneck.` : ''}`,
@@ -257,7 +382,7 @@ function bufferProblems(ctx) {
         ? `${s.name} is nearly full: ${pct(s.avgFill)} on average and completely full ${pct(full)} of the time.`
         : `${s.name} is nearly full: ${pct(s.avgFill)} on average, peaking at ${pct(s.maxFill)}.`,
       `Over ${formatDuration(ctx.duration)}, ${s.name} held ${pct(s.avgFill)} of its capacity on average. While it is full, everything upstream has to wait.`,
-      `Raise the capacity of ${s.name} ${raise}, or take loads out faster by adding vehicles or raising the priority of the flow leaving it.`,
+      `Raise the capacity of ${s.name} ${raise}, or let the next step take loads faster: speed up the workstation behind it or raise the priority of the flow leaving it.`,
       { stationIds: [s.id] }));
   }
   return out;
@@ -269,12 +394,12 @@ function supplyExceedsCapacity(ctx) {
     if (s.type !== 'source' || !(s.blocked >= SUPPLY_BLOCKED_SHARE && s.yardNow >= SUPPLY_MIN_YARD)) continue;
     const next = (ctx.flowsFrom.get(s.id) || []).map((f) => ctx.byId.get(f.to)).filter(Boolean)
       .sort((a, b) => Math.max(b.utilization, b.avgFill) - Math.max(a.utilization, a.avgFill))[0];
-    const backlog = sum((ctx.flowsFrom.get(s.id) || []).map((f) => ctx.flows[f.id]?.backlog || 0));
+    const waiting = waitingFlow(ctx, ctx.flowsFrom.get(s.id) || []);
     let suggestion;
     if (next && next.type === 'process' && saturation(next) >= BOTTLENECK_UTILIZATION) {
       suggestion = `Add capacity at ${next.name} (${loadText(next)}): ${s.name} delivers faster than the line can take.`;
-    } else if (backlog >= 1) {
-      suggestion = `Add a vehicle or raise the flow priority: ${plural(backlog, 'load is', 'loads are')} ready at ${s.name} but not yet moved.`;
+    } else if (waiting) {
+      suggestion = transportAdvice(ctx, waiting);
     } else {
       suggestion = `Slow the supply down (demand factor below 1 in the Simulate tab) or enlarge the output buffer of ${s.name}.`;
     }
@@ -309,31 +434,38 @@ function stationBreakdowns(ctx) {
 function saturatedFleets(ctx) {
   const out = [];
   for (const f of ctx.fleets) {
-    if (!(f.count >= 1)) continue;
-    const longWait = f.avgPickupWait != null && f.avgPickupWait >= FLEET_PICKUP_WAIT;
-    const busy = f.utilization >= FLEET_SATURATED_UTILIZATION;
-    if (!busy && !(longWait && f.utilization >= FLEET_PICKUP_WAIT_MIN_UTILIZATION)) continue;
+    const { saturated, longWait, wait } = saturationOf(ctx, f);
+    if (!saturated) continue;
 
-    const trafficShare = f.utilization > 0 ? (f.shares?.waiting || 0) / f.utilization : 0;
     const extra = Math.max(1, Math.ceil((f.count * f.utilization) / FLEET_TARGET_UTILIZATION) - f.count);
-    const spot = hotspotCells(ctx, 1)[0];
-    const suggestion = trafficShare >= FLEET_TRAFFIC_SHARE_OF_BUSY
-      ? `A lot of the busy time is spent waiting in traffic (${pct(f.shares.waiting)} of the fleet's time): relieve the congestion${spot ? ` around ${cellText(spot)}` : ''} before buying more vehicles.`
-      : `Add ${plural(extra, 'vehicle', 'vehicles')} to the ${f.name} fleet (now ${f.count}): at the current workload that brings utilization down to about ${pct((f.utilization * f.count) / (f.count + extra))}. Faster vehicles or shorter routes help too.`;
+    const own = fleetWaitShare(f) >= TRAFFIC_WAIT_SHARE;
+    let suggestion;
+    if (own) {
+      suggestion = `A lot of the busy time is spent waiting in traffic (${pct(f.shares.waiting)} of the fleet's time): relieve the congestion${aroundHotspots(ctx, 1)} before buying more vehicles.`;
+    } else if (congested(ctx, f)) {
+      suggestion = `Traffic costs ${pct(ctx.traffic.waitShare)} of the driving time across the plant: relieve the congestion${aroundHotspots(ctx, 1)} before buying more vehicles.`;
+    } else {
+      suggestion = `Add ${plural(extra, 'vehicle', 'vehicles')} to the ${f.name} fleet (now ${f.count}): at the current workload that brings utilization down to about ${pct((f.utilization * f.count) / (f.count + extra))}. Faster vehicles or shorter routes help too.`;
+    }
     out.push(candidate('fleet-saturated', f.id, f.utilization >= FLEET_CRITICAL_UTILIZATION ? 'critical' : 'warning', f.utilization,
-      `${f.name} fleet is saturated: its ${plural(f.count, 'vehicle is', 'vehicles are')} busy ${pct(f.utilization)} of the time${longWait ? `, and loads wait ${formatDuration(f.avgPickupWait)} for a pickup` : ''}.`,
+      `${f.name} fleet is saturated: its ${plural(f.count, 'vehicle is', 'vehicles are')} busy ${pct(f.utilization)} of the time${longWait ? `, and loads wait ${formatDuration(wait)} for a pickup` : ''}.`,
       `Over ${formatDuration(ctx.duration)}, a ${f.name} vehicle spent ${pct(f.shares?.driving || 0)} of its time driving, ${pct(f.shares?.waiting || 0)} waiting in traffic and ${pct((f.shares?.loading || 0) + (f.shares?.unloading || 0))} loading or unloading, and made ${amount(f.tripsPerVehicleHour)} trips per hour.${f.avgPickupWait != null ? ` Loads waited ${formatDuration(f.avgPickupWait)} for pickup on average.` : ''}`,
       suggestion, { fleetIds: [f.id] }));
   }
   return out;
 }
 
+/** A load that this fleet may carry is waiting for transport on average. */
+const loadsWaitFor = (ctx, f) => servedFlows(ctx, f).some((flow) => (ctx.flows[flow.id]?.avgBacklog || 0) >= TRANSPORT_BACKLOG);
+
 function oversizedFleets(ctx) {
   const out = [];
   for (const f of ctx.fleets) {
-    if (!(f.count >= 2 && f.utilization < FLEET_OVERSIZED_UTILIZATION)) continue;
+    if (!oversized(f)) continue;
+    const unused = f.utilization < FLEET_UNUSED_UTILIZATION;
+    if (!unused && loadsWaitFor(ctx, f)) continue; // loads wait although vehicles are free: not a matter of fleet size
     const fewer = Math.max(1, Math.ceil((f.count * f.utilization) / FLEET_TARGET_UTILIZATION));
-    const suggestion = f.utilization < FLEET_UNUSED_UTILIZATION
+    const suggestion = unused
       ? `None of the ${f.count} ${f.name} vehicles did any real work: check that a flow allows this fleet (fleet restriction) and that its vehicles can reach the docks, or remove the fleet.`
       : `Try ${plural(fewer, 'vehicle', 'vehicles')} instead of ${f.count}: utilization would rise to about ${pct((f.utilization * f.count) / fewer)}, and fewer vehicles also mean less traffic.`;
     out.push(candidate('fleet-oversized', f.id, 'info', 1 - f.utilization,
@@ -348,14 +480,34 @@ function emptyDriving(ctx) {
   const out = [];
   const dispatch = ctx.layout.settings?.dispatch;
   for (const f of ctx.fleets) {
-    if (!(f.emptyShare > EMPTY_DRIVING_SHARE && f.trips >= EMPTY_DRIVING_MIN_TRIPS)) continue;
-    const suggestion = dispatch === 'oldest'
-      ? 'Switch the dispatch strategy from "Oldest job first" to "Nearest job first" in the Simulate tab so vehicles pick up close to where they just delivered.'
-      : 'Let vehicles carry more per trip (higher batch minimum or larger vehicles) or place pickup and drop stations so a vehicle can return with a load.';
+    if (!(f.emptyShare > EMPTY_DRIVING_SHARE && f.trips >= EMPTY_DRIVING_MIN_TRIPS && f.utilization >= EMPTY_DRIVING_MIN_UTILIZATION)) continue;
+    const carriesMore = ctx.fleetDefs.get(f.id)?.capacity > 1;
+    let suggestion;
+    if (dispatch === 'oldest') {
+      suggestion = 'Switch the dispatch strategy from "Oldest job first" to "Nearest job first" in the Simulate tab so vehicles pick up close to where they just delivered.';
+    } else if (carriesMore) {
+      suggestion = 'Let vehicles carry more per trip (a higher batch minimum for the flows) or place pickup and drop stations so a vehicle can return with a load.';
+    } else {
+      suggestion = 'Place pickup and drop stations so a vehicle can return with a load, for example a drop-off next to the next pickup.';
+    }
     out.push(candidate('empty-driving', f.id, 'info', f.emptyShare,
       `${f.name} vehicles drive empty ${pct(f.emptyShare)} of the distance.`,
-      `Of ${formatDistance(f.distance)} driven by the fleet, ${formatDistance(f.distance * f.emptyShare)} were without a load, over ${formatNumber(f.trips)} trips.`,
+      `Of ${formatDistance(f.distance)} driven by the fleet, ${formatDistance(f.distance * f.emptyShare)} were without a load, over ${formatNumber(f.trips)} trips. The vehicles are busy ${pct(f.utilization)} of the time, so every empty kilometre costs capacity.`,
       suggestion, { fleetIds: [f.id] }));
+  }
+  return out;
+}
+
+function unplacedVehicles(ctx) {
+  const out = [];
+  for (const f of ctx.fleets) {
+    if (!(f.unplaced >= 1)) continue;
+    const planned = f.count + f.unplaced;
+    out.push(candidate('unplaced', f.id, 'warning', f.unplaced / planned,
+      `${f.name} fleet: ${plural(f.unplaced, 'vehicle', 'vehicles')} of ${planned} did not fit on the road and ${isOne(f.unplaced) ? 'is' : 'are'} not simulated.`,
+      `At the start the road network had no free cell for ${plural(f.unplaced, 'vehicle', 'vehicles')}, so the simulation runs with ${f.count} instead of ${planned} ${f.name} vehicles. The results describe the smaller fleet.`,
+      `Add road length or a depot where vehicles can park, or lower the vehicle count of the ${f.name} fleet to ${f.count}.`,
+      { fleetIds: [f.id] }));
   }
   return out;
 }
@@ -394,6 +546,9 @@ function batteryProblems(ctx) {
   return out;
 }
 
+/** A spare vehicle only makes sense when the fleet is not mostly idle already and traffic is not congested. */
+const moreVehiclesHelp = (ctx, f) => !congested(ctx, f) && !oversized(f);
+
 function vehicleBreakdowns(ctx) {
   const out = [];
   for (const f of ctx.fleets) {
@@ -402,7 +557,9 @@ function vehicleBreakdowns(ctx) {
     out.push(candidate('breakdowns', f.id, broken >= BREAKDOWN_WARNING_SHARE ? 'warning' : 'info', broken,
       `${f.name} vehicles are broken down ${pct(broken)} of the time.`,
       `A broken vehicle blocks its lane until it is repaired${ctx.traffic.brokenWait > 0 ? `; other vehicles lost ${formatDuration(ctx.traffic.brokenWait)} in total waiting behind broken ones` : ''}.`,
-      `Add a spare vehicle to the fleet (now ${f.count}) and give the busiest aisles a bypass so one breakdown does not stop the traffic behind it.`,
+      moreVehiclesHelp(ctx, f)
+        ? `Add a spare vehicle to the fleet (now ${f.count}) and give the busiest aisles a bypass so one breakdown does not stop the traffic behind it.`
+        : `Reduce the downtime (maintenance, quicker repairs) and give the busiest aisles a bypass so one breakdown does not stop the traffic behind it.`,
       { fleetIds: [f.id] }));
   }
   return out;
@@ -483,18 +640,23 @@ function goodNews(ctx) {
 
 const RULES = [
   bottlenecks, blockedWorkstations, starvedWorkstations, bufferProblems, supplyExceedsCapacity, stationBreakdowns,
-  saturatedFleets, oversizedFleets, emptyDriving, batteryProblems, vehicleBreakdowns, trafficCongestion, deadlocks, noOutput,
+  saturatedFleets, oversizedFleets, emptyDriving, unplacedVehicles, batteryProblems, vehicleBreakdowns, trafficCongestion, deadlocks,
+  noOutput,
 ];
 
 function notEnoughData(report) {
   const seconds = report && report.window && Number.isFinite(report.window.duration) ? report.window.duration : 0;
-  const warming = report && report.window && report.window.warmingUp;
+  const warming = Boolean(report && report.window && report.window.warmingUp);
   return {
     id: 'not-enough-data',
     severity: 'info',
     title: 'Not enough data yet',
-    detail: `Only ${formatDuration(seconds)} of simulated time have been measured${warming ? ' (the warm-up period is not counted)' : ''}. Queues and shares of such a short run are not reliable.`,
-    suggestion: `Let the simulation run for at least ${formatDuration(MIN_DATA_SECONDS)} of measured time, then look at the insights again.`,
+    detail: warming
+      ? 'The simulation is still in its warm-up period. The plant starts empty, so its first minutes would give a misleading picture and are not counted.'
+      : `Only ${formatDuration(seconds)} of simulated time have been measured. Queues and shares of such a short run are not reliable.`,
+    suggestion: warming
+      ? `Let the simulation run until the warm-up is over and for at least ${formatDuration(MIN_DATA_SECONDS)} after it, then look at the insights again.`
+      : `Let the simulation run for at least ${formatDuration(MIN_DATA_SECONDS)} of measured time, then look at the insights again.`,
     refs: {},
   };
 }
@@ -507,7 +669,8 @@ function notEnoughData(report) {
  *   suggestion?: string, refs: { stationIds?: string[], fleetIds?: string[], flowIds?: string[], cells?: number[][] } }>}
  */
 export function generateInsights(report, layout) {
-  if (!report || !report.window || !(report.window.duration >= MIN_DATA_SECONDS)) return [notEnoughData(report)];
+  const window = report && report.window;
+  if (!window || window.warmingUp || !(window.duration >= MIN_DATA_SECONDS)) return [notEnoughData(report)];
   const ctx = buildContext(report, layout);
   const found = RULES.flatMap((rule) => rule(ctx));
   if (!found.some((c) => c.insight.severity === 'critical' || c.insight.severity === 'warning')) found.push(goodNews(ctx));

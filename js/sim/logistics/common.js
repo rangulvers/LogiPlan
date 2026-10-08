@@ -32,9 +32,18 @@ export const REASSIGN_AFTER = 30;
 export const PRIORITY_AGING = 900;
 /** After a departure from a depot was blocked the dispatcher looks again after this long (s). */
 export const BLOCKED_RETRY = 0.2;
-/** A waiting place for a vehicle that makes room: extra distance (m) charged for a junction/dead-end cell and for a cell already used by routes. */
+/**
+ * Choosing a waiting cell for a vehicle that makes room: the route cost (m) plus these surcharges, in metres, for a junction or
+ * dead-end cell, a cell that routes have used so far, a cell on a route that is being driven right now, and a dock.
+ * Nothing is excluded for these reasons (in a plant with a single aisle every cell has one of them), but the surcharges
+ * make a cell that hinders nobody win.
+ */
 export const SPOT_PENALTY_CONTROLLED = 40;
 export const SPOT_PENALTY_USED = 20;
+export const SPOT_PENALTY_BUSY = 100;
+export const SPOT_PENALTY_DOCK = 300;
+/** A vehicle that found no waiting cell looks again after this long (s). */
+export const YIELD_RETRY = 5;
 /** Upper bound of back-to-back cycles one machine may complete within a single tick. */
 export const MAX_CYCLES_PER_STEP = 1000;
 /** Upper bound of parallel machines per workstation and of vehicles per fleet (memory guard). */

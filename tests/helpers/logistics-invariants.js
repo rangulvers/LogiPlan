@@ -14,7 +14,9 @@
 //   Claims         the claimed loads of a queue are exactly its first `claimed` entries; every claimed load belongs to exactly
 //                  one active order and every load of an active order is claimed; a picked-up order's loads ride with its vehicle.
 //   Vehicles       load only while toDrop/unloading (or broken/dead in those states) and then exactly the order's loads;
-//                  an order belongs to exactly one vehicle; battery in 0..1; on the road exactly when not parked/charging.
+//                  an order belongs to exactly one vehicle; a dead vehicle holds no order; battery in 0..1; on the road exactly when
+//                  not parked/charging; a leg to a waiting cell (spot) exists only in state toPark, without a station as target;
+//                  loaded + empty + depot driving add up to the odometer (within one tick of driving).
 //   Depots         parked + charging + reserved slots <= slots; charging + reserved chargers <= chargers; reservations equal
 //                  the vehicles driving there; list membership matches vehicle state.
 //   Machines       blocked <=> holding outputs; idle holds nothing; busy has a positive cycle time.
@@ -232,6 +234,12 @@ function checkVehicles(lg, fail) {
     if (!inDepot && !ON_ROAD_FREE.has(vr.state)) fail(`${vr.id} has unknown state ${vr.state}`);
     if (!Number.isFinite(vr.x) || !Number.isFinite(vr.y)) fail(`${vr.id} pose is not finite`);
     if (vr.state === 'dead' && !vr.tv.disabled) fail(`${vr.id} is dead but not disabled`);
+    if (vr.state === 'dead' && vr.order) fail(`${vr.id} is dead but still holds order ${vr.order.id}`);
+    if (vr.spot >= 0 && (vr.state !== 'toPark' && !(vr.state === 'broken' && vr.resumeState === 'toPark'))) fail(`${vr.id} has a waiting cell but is ${vr.state}`);
+    if (vr.spot >= 0 && vr.targetId !== null) fail(`${vr.id} drives to a waiting cell and to ${vr.targetId}`);
+    const unbooked = vr.tv.odometer - (vr.loadedDistance + vr.emptyDistance + vr.parkDistance);
+    const lastTick = vr.cfg.body.speed * Math.max(1, lg.runtime.speedFactor) * (lg.now - lg.time);
+    if (unbooked < -1e-6 || unbooked > lastTick + 1e-6) fail(`${vr.id}: odometer ${vr.tv.odometer} but only ${vr.loadedDistance + vr.emptyDistance + vr.parkDistance} m booked`);
     if (vr.state === 'broken' && !vr.tv.disabled) fail(`${vr.id} is broken but not disabled`);
   }
 }

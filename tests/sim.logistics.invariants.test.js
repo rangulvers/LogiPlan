@@ -85,6 +85,14 @@ test('invariants: vehicle and depot violations are reported', () => {
   corrupt((lg) => { const v = lg.vehicles[0]; v.state = 'dead'; }, /dead but not disabled|onRoad|visible/);
 });
 
+test('invariants: order hand-back, waiting-cell and distance-booking violations are reported', () => {
+  corrupt((lg) => { const v = lg.vehicles.find((x) => x.order); v.state = 'dead'; v.tv.disabled = true; v.tv.onRoad = true; v.visible = true; }, /dead but still holds order/);
+  corrupt((lg) => { lg.vehicles.find((x) => x.state === 'toPickup' || x.state === 'toDrop' || x.state === 'idle').spot = 3; }, /waiting cell but is/);
+  corrupt((lg) => { const v = lg.vehicles[0]; v.state = 'toPark'; v.visible = true; v.tv.onRoad = true; v.spot = 3; v.targetId = 'P'; }, /waiting cell and to P|reserves/);
+  corrupt((lg) => { lg.vehicles[0].emptyDistance += 5; }, /odometer .* booked/);
+  corrupt((lg) => { lg.vehicles[0].tv.odometer += 500; }, /odometer .* booked/);
+});
+
 test('invariants: machine violations are reported', () => {
   corrupt((lg) => { const m = lg.stationById.get('B').machines[0]; m.state = 'blocked'; m.holding.length = 0; }, /blocked but holds nothing/);
   corrupt((lg) => { const m = lg.stationById.get('B').machines[0]; m.state = 'idle'; m.inputs = 1; }, /idle but holds/);

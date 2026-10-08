@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  Stats, SampleSet, percentile, SERIES_INTERVAL, SERIES_MAX_POINTS, LEAD_SAMPLE_CAP, HOTSPOT_COUNT, DEADLOCK_EVENT_CAP,
+  Stats, SampleSet, percentile, SERIES_INTERVAL, SERIES_MAX_POINTS, LEAD_SAMPLE_CAP, HOTSPOT_COUNT, DEADLOCK_EVENT_CAP, BACKLOG_INTERVAL,
 } from '../js/sim/stats.js';
 import { createFakeSim, standardPlant, syntheticLayout } from './helpers/fake-sim.js';
 
@@ -40,29 +40,75 @@ test('percentile interpolates linearly between ranks and clamps p', () => {
   assert.equal(percentile(v, -1), 10);
 });
 
-test('SampleSet: exact count/mean/min/max, sorted copy cached until a new sample arrives, non-finite ignored', () => {
+test('SampleSet: exact moments and percentiles below the cap; the cache follows every new sample; non-finite ignored', () => {
   const s = new SampleSet();
   for (const x of [5, 1, 9, 3]) s.add(x);
-  assert.deepEqual([...s.sorted()], [1, 3, 5, 9]);
-  const first = s.sorted();
-  assert.equal(s.sorted(), first, 'same instance while nothing changed');
   assert.equal(s.percentile(0.5), 4);
+  assert.equal(s.percentile(0.5), 4, 'asking twice changes nothing');
   s.add(0);
-  assert.notEqual(s.sorted(), first);
-  assert.deepEqual([...s.sorted()], [0, 1, 3, 5, 9]);
+  assert.equal(s.percentile(0.5), 3, 'a new sample is part of the next answer');
+  assert.equal(s.percentile(0), 0);
+  assert.equal(s.percentile(1), 9);
   assert.equal(s.add(NaN), false);
   assert.equal(s.add(Infinity), false);
   assert.equal(s.count, 5);
+  assert.equal(s.size, 5);
   assert.deepEqual([s.sum, s.min, s.max], [18, 0, 9]);
+  assert.equal(new SampleSet().percentile(0.5), null);
+  s.clear();
+  assert.deepEqual([s.count, s.size, s.percentile(0.5)], [0, 0, null]);
 });
 
-test('SampleSet thins by a doubling stride once the cap is reached (deterministic)', () => {
+test('SampleSet compacts a full level by keeping every second sample of the sorted level (deterministic, hand-derived)', () => {
   const s = new SampleSet(4);
   for (let i = 0; i < 10; i++) s.add(i);
-  assert.deepEqual(s.items, [0, 4, 8]);
-  assert.equal(s.stride, 4);
+  // 0..4 overflow level 0: sorted pairs (0,1) (2,3) keep 0 and 2 (weight 2), 4 stays; 4..8 again: keep 5 and 7, 8 stays; then 9
+  // retained: 0 2 5 7 (weight 2 each) and 8 9 (weight 1) = 10 observations standing for 0 0 2 2 5 5 7 7 8 9
   assert.equal(s.count, 10);
-  assert.equal(s.max, 9, 'extremes stay exact even though 9 was not retained');
+  assert.equal(s.size, 6);
+  assert.deepEqual([s.min, s.max, s.sum], [0, 9, 45], 'moments stay exact even though most samples were compacted');
+  assert.equal(s.percentile(0), 0);
+  assert.equal(s.percentile(1), 9);
+  assert.equal(s.percentile(0.5), 5);
+  close(s.percentile(0.9), 8.1);
+});
+
+test('SampleSet percentiles do not depend on the order in which the samples arrive', () => {
+  const n = 20000;
+  const orders = {
+    ascending: (i) => i,
+    descending: (i) => n - 1 - i,
+    zigzag: (i) => (i % 2 === 0 ? i / 2 : n - 1 - (i - 1) / 2),
+    scattered: (i) => (i * 7919) % n, // a permutation of 0..n-1
+    blocks: (i) => ((i % 8) * (n / 8)) + Math.floor(i / 8), // 8 interleaved ranges
+  };
+  for (const [name, at] of Object.entries(orders)) {
+    const s = new SampleSet(500);
+    for (let i = 0; i < n; i++) s.add(at(i));
+    assert.equal(s.count, n, name);
+    assert.ok(s.size <= 500 * 1.5 * 7, `${name}: bounded memory (${s.size})`);
+    for (const p of [0.01, 0.1, 0.5, 0.9, 0.95, 0.99]) {
+      const exact = p * (n - 1);
+      assert.ok(Math.abs(s.percentile(p) - exact) <= 0.01 * n, `${name}: p${p * 100} is ${s.percentile(p)}, exact ${exact}`);
+    }
+  }
+});
+
+test('SampleSet keeps every class of a periodic arrival pattern (two products alternating)', () => {
+  const s = new SampleSet(100);
+  for (let i = 0; i < 20000; i++) s.add(i % 2 === 0 ? 100 : 500);
+  assert.equal(s.percentile(0.1), 100);
+  assert.equal(s.percentile(0.9), 500);
+  assert.equal(s.percentile(0.95), 500);
+  close(s.sum / s.count, 300);
+  for (const period of [3, 4, 8, 16]) {
+    const t = new SampleSet(64);
+    for (let i = 0; i < 16000; i++) t.add((i % period) * 10);
+    const top = (period - 1) * 10;
+    assert.equal(t.percentile(1), top, `period ${period}`);
+    assert.ok(t.percentile(0.99) >= top - 10, `period ${period}: the slowest class survives, p99 = ${t.percentile(0.99)}`);
+    assert.ok(t.percentile(0.01) <= 10, `period ${period}: the fastest class survives`);
+  }
 });
 
 test('SampleSet at the default cap: bounded memory, exact moments, percentiles stay representative', () => {
@@ -73,15 +119,25 @@ test('SampleSet at the default cap: bounded memory, exact moments, percentiles s
     return s;
   };
   const s = build();
-  assert.ok(s.items.length <= LEAD_SAMPLE_CAP);
+  assert.ok(s.size <= LEAD_SAMPLE_CAP * 3, `retained ${s.size}`);
   assert.equal(s.count, 120000);
   assert.equal(s.sum / s.count, 59999.5);
   assert.deepEqual([s.min, s.max], [0, 119999]);
-  assert.equal(s.stride, 4);
-  assert.ok(s.items.every((x) => x % 4 === 0), 'retained samples are exactly the arrivals at the current stride');
   assert.ok(Math.abs(s.percentile(0.5) - 59999.5) <= 4);
   assert.ok(Math.abs(s.percentile(0.95) - 113999.05) <= 4);
-  assert.deepEqual([...s.sorted()], [...build().sorted()], 'same input, same retained set');
+  for (const p of [0.1, 0.5, 0.9]) assert.equal(s.percentile(p), build().percentile(p), 'same input, same answer');
+});
+
+test('SampleSet: reading percentiles of a large compacted set is cheap and repeatable', () => {
+  const s = new SampleSet();
+  for (let i = 0; i < 400000; i++) s.add((i * 7919) % 100003);
+  const t0 = performance.now();
+  const first = [0.5, 0.9, 0.95].map((p) => s.percentile(p));
+  s.add(1);
+  const second = [0.5, 0.9, 0.95].map((p) => s.percentile(p));
+  const ms = performance.now() - t0;
+  assert.ok(ms < 1500, `two sets of percentiles took ${ms.toFixed(0)} ms`);
+  first.forEach((v, i) => assert.ok(Math.abs(v - second[i]) <= 50, 'one extra sample moves nothing'));
 });
 
 // ---- window, warm-up, reset -----------------------------------------------------------------------------
@@ -112,7 +168,7 @@ test('a zero-length window reports zeros and nulls, never NaN or Infinity, and s
   assert.deepEqual([r.throughput.total, r.throughput.perHour, r.wip.mean], [0, 0, 0]);
   assert.deepEqual(r.throughput.bySink.D, { name: 'Shipping', count: 0, perHour: 0 });
   assert.equal(r.fleets.v1.utilization, 0);
-  assert.equal(sum(r.fleets.v1.shares), 0);
+  assert.deepEqual(r.fleets.v1.shares, { driving: 0, waiting: 0, loading: 0, unloading: 0, idle: 1, parked: 0, charging: 0, broken: 0 });
   assert.equal(r.fleets.v1.minBattery, null);
   assert.equal(r.fleets.v1.emptyShare, null);
   assert.equal(r.traffic.waitShare, 0);
@@ -216,6 +272,15 @@ test('workstation shares are exact machine-time fractions and every outage is co
   assert.equal(b.name, 'Press');
 });
 
+test('a workstation without machines is down for the whole window, like the engine says, and its shares add up to 1', () => {
+  const { sim, stats } = setup({ params: { B: { machines: 0 } } });
+  assert.equal(sim.st('B').state, 'down', 'precondition: logistics reports a workstation without machines as down');
+  sim.advance(10);
+  const b = stats.report().stations.B;
+  assert.deepEqual([b.utilization, b.starved, b.blocked, b.down, b.breakdowns], [0, 0, 0, 1, 0]);
+  assertClean(stats.report());
+});
+
 test('a machine that is already down when the window starts is not a new breakdown', () => {
   const { sim, stats } = setup();
   sim.setMachines('B', ['down']);
@@ -299,7 +364,7 @@ test('loadCompleted: lead time falls back to t - createdAt; unknown stations sti
   assert.deepEqual([r.leadTime.count, r.leadTime.min, r.leadTime.max], [2, 10, 60]);
 });
 
-test('orderDelivered feeds order, fleet and flow averages; backlog counts ready loads only', () => {
+test('orderDelivered feeds order, fleet and flow averages; backlog counts loads that are ready', () => {
   const { sim, stats } = setup();
   sim.deliver('v1#1', 'f3', { qty: 1, waitForPickup: 10, transit: 20 });
   sim.deliver('v1#2', 'f3', { qty: 3, waitForPickup: 30, transit: 40 });
@@ -311,9 +376,42 @@ test('orderDelivered feeds order, fleet and flow averages; backlog counts ready 
   assert.deepEqual(r.orders, { completed: 3, avgPickupWait: 30, avgTransit: 40 });
   assert.deepEqual([r.fleets.v1.avgPickupWait, r.fleets.v1.avgTransit], [20, 30]);
   assert.deepEqual([r.fleets.v2.avgPickupWait, r.fleets.v2.avgTransit], [50, 60]);
-  assert.deepEqual(r.flows.f3, { from: 'B', to: 'C', delivered: 4, trips: 2, avgPickupWait: 20, avgTransit: 30, backlog: 3 });
+  assert.deepEqual(r.flows.f3, { from: 'B', to: 'C', delivered: 4, trips: 2, avgPickupWait: 20, avgTransit: 30, backlog: 3, avgBacklog: 3 });
   assert.deepEqual([r.flows.f4.delivered, r.flows.f4.trips], [2, 1]);
-  assert.deepEqual([r.flows.f1.trips, r.flows.f1.avgPickupWait, r.flows.f1.backlog], [0, null, 0]);
+  assert.deepEqual([r.flows.f1.trips, r.flows.f1.avgPickupWait, r.flows.f1.backlog, r.flows.f1.avgBacklog], [0, null, 0, 0]);
+});
+
+test('backlog counts loads that are ready and that no vehicle has claimed; claimed loads already have a vehicle on the way', () => {
+  const { sim, stats } = setup();
+  sim.addReadyLoads('f3', 2);
+  sim.addReadyLoads('f3', 3, { claimed: true });
+  sim.addReadyLoads('f3', 4, { readyAt: 9999 }); // still in dwell
+  sim.advance(1);
+  assert.equal(stats.report().flows.f3.backlog, 2);
+  sim.st('B').outQ.get('f3').forEach((load) => { load.claimed = true; }); // a vehicle takes the last two
+  assert.equal(stats.report().flows.f3.backlog, 0);
+});
+
+test('avgBacklog is the mean of the readings taken every BACKLOG_INTERVAL seconds, and a short window falls back to the live value', () => {
+  assert.equal(BACKLOG_INTERVAL, 5);
+  const { sim, stats } = setup();
+  sim.addReadyLoads('f3', 2);
+  sim.advance(2);
+  const early = stats.report().flows.f3;
+  assert.deepEqual([early.backlog, early.avgBacklog], [2, 2], 'no reading yet: the live value');
+  // readings at 5, 10 (two loads) and 15, 20 s (six loads)
+  sim.advance(18, (s, i) => {
+    if (i === 8) {
+      s.clearReadyLoads('f3');
+      s.addReadyLoads('f3', 6);
+    }
+  });
+  const r = stats.report().flows.f3;
+  assert.deepEqual([r.backlog, r.avgBacklog], [6, 4]);
+  stats.reset();
+  sim.advance(5);
+  assert.equal(stats.report().flows.f3.avgBacklog, 6, 'a new window starts its own average');
+  assert.equal(stats.report().flows.f1.avgBacklog, 0);
 });
 
 test('orderDelivered: waits are derived from the order when the payload omits them; junk payloads do not throw', () => {
@@ -395,6 +493,29 @@ test('a fleet without vehicles is idle by definition, so its shares still sum to
   assert.equal(f.utilization, 0);
   assert.equal(f.tripsPerVehicleHour, 0);
   assertClean(stats.report());
+});
+
+test('unplaced vehicles (no room on the road) are counted per fleet and are not part of count', () => {
+  const { sim, stats } = setup({ fleets: [{ count: 2 }, { count: 1 }] });
+  sim.logistics.unplaced = ['v1#3', 'v1#4', 'v2#2', 'ghost#1', 17];
+  sim.advance(5);
+  const f = stats.report().fleets;
+  assert.deepEqual([f.v1.count, f.v1.unplaced, f.v2.count, f.v2.unplaced], [2, 2, 1, 1]);
+  const none = setup({ fleets: [{ count: 1 }] });
+  none.sim.advance(1);
+  assert.equal(none.stats.report().fleets.v1.unplaced, 0);
+});
+
+test('before the first tick the fleet shares are the current vehicle states, so they already sum to 1', () => {
+  const { sim, stats } = setup({ fleets: [{ count: 4 }, { count: 0 }] });
+  ['toPickup', 'toDrop', 'loading', 'parked'].forEach((state, i) => { sim.veh(`v1#${i + 1}`).state = state; });
+  sim.veh('v1#2').tv.waiting = true;
+  const f = stats.report().fleets;
+  assert.deepEqual(f.v1.shares, { driving: 0.25, waiting: 0.25, loading: 0.25, unloading: 0, idle: 0, parked: 0.25, charging: 0, broken: 0 });
+  assert.equal(f.v1.utilization, 0.75);
+  assert.equal(f.v2.shares.idle, 1);
+  sim.advance(10);
+  assert.equal(stats.report().fleets.v1.shares.waiting, 0.25, 'once time has been sampled the shares come from the samples');
 });
 
 test('minBattery is the lowest charge seen in the window, null when batteries are off', () => {
@@ -479,6 +600,45 @@ test('deadlock events are capped but the counter keeps counting', () => {
   assert.equal(t.deadlockEvents.length, DEADLOCK_EVENT_CAP);
   assert.equal(t.deadlocks, DEADLOCK_EVENT_CAP + 10);
   assert.equal(t.deadlockEvents[0].nodes[0], 0, 'the first events are kept');
+});
+
+test('a deadlock that traffic reports twice is one entry; a new deadlock of the same vehicles is another', () => {
+  const { sim, stats } = setup();
+  const cycle = ['v1#1', 'v1#2'];
+  sim.deadlock({ nodes: [3, 4], vehicles: cycle, resolved: false }); // counter 1
+  sim.advance(2);
+  // the follow-up report when relocation finally worked: same vehicles in another order, the counter does not move
+  sim.emit('deadlock', { t: sim.time, nodes: [3, 4], vehicles: cycle.map((id) => sim.veh(id)).reverse(), resolved: true, victim: null });
+  sim.deadlock({ nodes: [9], vehicles: ['v1#3'], resolved: false }); // counter 2
+  sim.deadlock({ nodes: [3, 4], vehicles: cycle, resolved: true }); // counter 3: the same vehicles jam again later
+  const t = stats.report().traffic;
+  assert.equal(t.deadlocks, 3);
+  assert.deepEqual(t.deadlockEvents.map((e) => [e.vehicles, e.resolved, e.t]), [
+    [cycle, true, 0],
+    [['v1#3'], false, 2],
+    [cycle, true, 2],
+  ]);
+  assert.ok(t.deadlockEvents.length <= t.deadlocks);
+});
+
+test('the follow-up of an unresolved deadlock is applied even when the event list is full; unmatched resolutions are new entries', () => {
+  const { sim, stats } = setup();
+  for (let i = 0; i < DEADLOCK_EVENT_CAP; i++) sim.deadlock({ nodes: [i], vehicles: [`x#${i}`], resolved: false });
+  sim.emit('deadlock', { nodes: [0], vehicles: ['x#0'], resolved: true });
+  const events = stats.report().traffic.deadlockEvents;
+  assert.equal(events.length, DEADLOCK_EVENT_CAP);
+  assert.deepEqual([events[0].resolved, events[1].resolved], [true, false]);
+  sim.emit('deadlock', { nodes: [1], vehicles: ['someone-else'], resolved: true });
+  assert.equal(stats.report().traffic.deadlockEvents.length, DEADLOCK_EVENT_CAP, 'full: the new entry is dropped, the counter still counts');
+});
+
+test('deadlock nodes are non-negative integers inside the graph; junk values are dropped, not turned into node 0', () => {
+  const { sim, stats } = setup();
+  const outside = sim.graph.nodeCount;
+  stats.onEvent('deadlock', { nodes: [null, '', true, [], 7, 'x', undefined, -3, 4.5, NaN, Infinity, outside, 3], vehicles: [], resolved: true });
+  stats.onEvent('deadlock', { nodes: 'abc', vehicles: [], resolved: true });
+  stats.onEvent('deadlock', { nodes: 12, vehicles: [], resolved: true });
+  assert.deepEqual(stats.report().traffic.deadlockEvents.map((e) => e.nodes), [[7, 3], [], []]);
 });
 
 test('the report does not alias internal state', () => {
