@@ -8,7 +8,7 @@
 // e2e-output/int-perf.json. Every section asserts that the page logged no console error or warning.
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, appendFileSync } from 'node:fs';
 import { withBrowser, OUT } from './browser.mjs';
 import { EXAMPLES } from '../../js/model/examples.js';
 import { importProject, decodeShare } from '../../js/model/serialize.js';
