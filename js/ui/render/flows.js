@@ -1,11 +1,16 @@
 // Material flows as curved arrows between station bricks. A->B and B->A bow to opposite sides (see
 // flowCurve), thickness follows the weight (edit mode) or the delivered loads (simulation), and the
 // selected / hovered flow is highlighted. Drawn in CSS-pixel space between the static layer and the bricks.
+// Flows between bricks that touch (no room for an arrow) are drawn as small direction badges on top of the
+// bricks instead (drawFlowMarkers), so no valid flow is ever invisible or unselectable.
 
 import { quadAngle, quadSpeed } from './geometry.js';
-import { fontOf, measure, fillPill } from './draw.js';
+import { TAU, fontOf, measure, fillPill } from './draw.js';
 
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+
+/** Radius in CSS px of a flow marker badge: grows a little with the cell size, stays tappable. */
+export const markerRadius = (fr) => clamp(fr.cs * fr.zoom * 0.42, 7, 11);
 
 /** Does `flow` belong to the current selection / hover? */
 const isPicked = (fr, flow) => (fr.selKind === 'flow' && fr.selIds.includes(flow.id)) || (fr.hoverKind === 'flow' && fr.hoverId === flow.id);
@@ -37,11 +42,61 @@ export function drawFlows(ctx, fr) {
   for (let pass = 0; pass < 2; pass++) { // picked flows last, so they sit on top
     const highlighted = pass === 1;
     for (const e of flows) {
-      if (isPicked(fr, e.flow) !== highlighted) continue;
+      if (e.marker || isPicked(fr, e.flow) !== highlighted) continue;
       drawArrow(ctx, fr, e, widthOf(fr, e, maxWeight, maxDelivered), highlighted);
     }
   }
-  if (fr.zoom >= 10) for (const e of flows) drawChip(ctx, fr, e);
+  if (fr.zoom >= 10) for (const e of flows) if (!e.marker) drawChip(ctx, fr, e);
+}
+
+/**
+ * Direction badges of the flows between touching bricks: a round chip with an arrow, centred on the shared
+ * edge. Drawn after the bricks (they would hide it otherwise). Expects the CSS-pixel transform.
+ */
+export function drawFlowMarkers(ctx, fr) {
+  if (fr.overlays.flows === false) return;
+  const r = markerRadius(fr);
+  const theme = fr.theme;
+  for (let pass = 0; pass < 2; pass++) {
+    for (const e of fr.scene.flows) {
+      const m = e.marker;
+      if (!m || isPicked(fr, e.flow) !== (pass === 1)) continue;
+      const x = fr.ox + m.x * fr.zoom;
+      const y = fr.oy + m.y * fr.zoom;
+      if (x < -r || y < -r || x > fr.w + r || y > fr.h + r) continue;
+      const color = pass === 1 ? theme.flowSelected : theme.flow;
+      ctx.beginPath();
+      ctx.arc(x, y, r + 1.5, 0, TAU);
+      ctx.fillStyle = theme.flowHalo;
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, TAU);
+      ctx.fillStyle = theme.flowChip;
+      ctx.fill();
+      ctx.lineWidth = pass === 1 ? 2 : 1.5;
+      ctx.strokeStyle = color;
+      ctx.stroke();
+      drawMarkerArrow(ctx, x, y, r, m.angle, color);
+    }
+  }
+}
+
+/** Filled arrow of length ~1.2 r pointing along `angle`, centred on (x, y). */
+function drawMarkerArrow(ctx, x, y, r, angle, color) {
+  const c = Math.cos(angle) * r;
+  const s = Math.sin(angle) * r;
+  // local coordinates (forward, sideways) in units of r: tip, barbs, shaft
+  ctx.beginPath();
+  ctx.moveTo(x + c * 0.62, y + s * 0.62);
+  ctx.lineTo(x - c * 0.06 + s * 0.5, y - s * 0.06 - c * 0.5);
+  ctx.lineTo(x - c * 0.06 + s * 0.2, y - s * 0.06 - c * 0.2);
+  ctx.lineTo(x - c * 0.62 + s * 0.2, y - s * 0.62 - c * 0.2);
+  ctx.lineTo(x - c * 0.62 - s * 0.2, y - s * 0.62 + c * 0.2);
+  ctx.lineTo(x - c * 0.06 - s * 0.2, y - s * 0.06 + c * 0.2);
+  ctx.lineTo(x - c * 0.06 - s * 0.5, y - s * 0.06 + c * 0.5);
+  ctx.closePath();
+  ctx.fillStyle = color;
+  ctx.fill();
 }
 
 /** Curve control points converted to CSS px, written into the reusable object `c`. */

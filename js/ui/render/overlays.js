@@ -1,6 +1,8 @@
 // Overlays drawn between the bricks and the interaction layer: dock notches, traffic / waiting heatmap with
 // its legend, pulsing deadlock rings and the scale bar. Heat data is sampled from sim.heat() at ~4 Hz and
-// converted into a flat rectangle list, so the per-frame cost is one fillRect per coloured lane segment.
+// converted into a flat list of lane rectangles sorted by heat level. They are drawn as one path per level, so
+// a stretch of road with a constant level is one uniform colour (overlapping translucent strips would show as
+// stripes); strips of consecutive edges in a straight lane abut instead of overlapping.
 
 import { perimeterCells, DX, DY } from '../../util/grid.js';
 import { formatDuration, formatNumber } from '../../util/format.js';
@@ -54,7 +56,10 @@ export function drawDocks(ctx, fr) {
 
 /** Mutable cache of the converted heat data; owned by the renderer. */
 export function createHeatState() {
-  return { sim: null, layout: null, mode: 'off', at: -Infinity, count: 0, rects: new Float32Array(256), levels: new Uint8Array(64), title: '', maxLabel: '' };
+  return {
+    sim: null, layout: null, mode: 'off', at: -Infinity, count: 0, rects: new Float32Array(256), levels: new Uint8Array(64),
+    order: new Uint32Array(64), title: '', maxLabel: '',
+  };
 }
 
 function pushRect(state, x, y, w, h, level) {
@@ -72,6 +77,16 @@ function pushRect(state, x, y, w, h, level) {
   state.rects[o + 2] = w;
   state.rects[o + 3] = h;
   state.levels[state.count++] = level;
+}
+
+/** Counting sort of the rectangle indices by level into `state.order` (ascending: the hottest is painted last). */
+function sortByLevel(state) {
+  const n = state.count;
+  if (state.order.length < n) state.order = new Uint32Array(state.levels.length);
+  const start = new Int32Array(HEAT_LEVELS + 1);
+  for (let i = 0; i < n; i++) start[state.levels[i] + 1]++;
+  for (let l = 0; l < HEAT_LEVELS; l++) start[l + 1] += start[l];
+  for (let i = 0; i < n; i++) state.order[start[state.levels[i]]++] = i;
 }
 
 const levelOf = (value, max) => (value > 0 && max > 0 ? clamp(Math.ceil((value / max) * (HEAT_LEVELS - 1)), 1, HEAT_LEVELS - 1) : 0);
@@ -108,6 +123,7 @@ export function refreshHeat(state, fr, mode, force = false) {
   if (!heat) return;
   if (mode === 'traffic') buildTraffic(state, fr, graph, heat);
   else buildWaiting(state, fr, graph, heat);
+  sortByLevel(state);
 }
 
 /** Centre of a node in world metres. */
@@ -119,7 +135,20 @@ function nodeCenter(fr, graph, id, out) {
   out[1] = (Math.floor(id / cols) + 0.5) * cs;
 }
 
-/** Add the lane strip of one directed edge. */
+/** Does `node` have an edge in `list` (graph.out or graph.in of the node) that continues the lane of `edge` straight on? */
+function continues(graph, list, edge) {
+  if (!list) return false;
+  for (let i = 0; i < list.length; i++) {
+    const other = graph.edges[list[i]];
+    if (other && other.dir === edge.dir && (other.rev >= 0) === (edge.rev >= 0)) return true;
+  }
+  return false;
+}
+
+/**
+ * Add the lane strip of one directed edge. It spans the edge from node centre to node centre; at an end where the
+ * lane does not continue straight (a turn, a dead end, a fork) it reaches half a strip width further, so corners stay filled.
+ */
 function pushEdge(state, fr, graph, edge, level, side) {
   const cs = graph.cellSize || fr.cs;
   const a = fr.tmpA;
@@ -131,21 +160,23 @@ function pushEdge(state, fr, graph, edge, level, side) {
   const twoWay = edge.rev >= 0;
   const off = twoWay ? side * LANE_OFFSET * cs : 0;
   const t = cs * (twoWay ? 0.3 : 0.44);
-  const ox = -dy * off;
-  const oy = dx * off;
-  if (dx !== 0) pushRect(state, Math.min(a[0], b[0]) - t / 2, a[1] + oy - t / 2, cs + t, t, level);
-  else pushRect(state, a[0] + ox - t / 2, Math.min(a[1], b[1]) - t / 2, t, cs + t, level);
+  const back = continues(graph, graph.in && graph.in[edge.from], edge) ? 0 : t / 2;
+  const fwd = continues(graph, graph.out && graph.out[edge.to], edge) ? 0 : t / 2;
+  if (dx !== 0) {
+    const x0 = dx > 0 ? a[0] - back : b[0] - fwd;
+    const x1 = dx > 0 ? b[0] + fwd : a[0] + back;
+    pushRect(state, x0, a[1] + dx * off - t / 2, x1 - x0, t, level);
+  } else {
+    const y0 = dy > 0 ? a[1] - back : b[1] - fwd;
+    const y1 = dy > 0 ? b[1] + fwd : a[1] + back;
+    pushRect(state, a[0] - dy * off - t / 2, y0, t, y1 - y0, level);
+  }
 }
-
-const handedSide = (fr) => {
-  const h = (fr.sim && fr.sim.settings && fr.sim.settings.handedness) || (fr.layout && fr.layout.settings && fr.layout.settings.handedness);
-  return h === 'left' ? -1 : 1;
-};
 
 function buildTraffic(state, fr, graph, heat) {
   const edges = graph.edges;
   const max = maxOf(heat.edgePasses, edges.length);
-  const side = handedSide(fr);
+  const side = fr.hand;
   for (let i = 0; i < edges.length; i++) {
     const level = levelOf(heat.edgePasses ? heat.edgePasses[i] : 0, max);
     if (level > 0) pushEdge(state, fr, graph, edges[i], level, side);
@@ -158,7 +189,7 @@ function buildWaiting(state, fr, graph, heat) {
   const edges = graph.edges;
   const nodeCount = graph.nodeCount || fr.scene.cols * fr.scene.rows;
   const max = Math.max(maxOf(heat.edgeWait, edges.length), maxOf(heat.nodeWait, nodeCount));
-  const side = handedSide(fr);
+  const side = fr.hand;
   for (let i = 0; i < edges.length; i++) {
     const level = levelOf(heat.edgeWait ? heat.edgeWait[i] : 0, max);
     if (level > 0) pushEdge(state, fr, graph, edges[i], level, side);
@@ -175,13 +206,26 @@ function buildWaiting(state, fr, graph, heat) {
   state.maxLabel = max > 0 ? `${formatDuration(max)} (vehicle time)` : 'no waiting yet';
 }
 
-/** Draw the converted heat rectangles. Expects the world (metres) transform. */
-export function drawHeat(ctx, state) {
+/**
+ * Draw the converted heat rectangles, one filled path per level. Expects the world (metres) transform.
+ * @param {number} bleed metres by which every rectangle is widened (about a quarter device pixel): strips of
+ *   different levels that abut then leave no hairline gap between them
+ */
+export function drawHeat(ctx, state, bleed = 0) {
   const r = state.rects;
-  for (let i = 0; i < state.count; i++) {
-    ctx.fillStyle = heatColor(state.levels[i] / (HEAT_LEVELS - 1));
-    ctx.fillRect(r[i * 4], r[i * 4 + 1], r[i * 4 + 2], r[i * 4 + 3]);
+  const { order, levels } = state;
+  let level = -1;
+  for (let k = 0; k < state.count; k++) {
+    const i = order[k];
+    if (levels[i] !== level) {
+      if (level >= 0) ctx.fill();
+      level = levels[i];
+      ctx.fillStyle = heatColor(level / (HEAT_LEVELS - 1));
+      ctx.beginPath();
+    }
+    ctx.rect(r[i * 4] - bleed, r[i * 4 + 1] - bleed, r[i * 4 + 2] + 2 * bleed, r[i * 4 + 3] + 2 * bleed);
   }
+  if (level >= 0) ctx.fill();
 }
 
 /** Legend panel (bottom-left, above the scale bar). Expects the CSS-pixel transform. */

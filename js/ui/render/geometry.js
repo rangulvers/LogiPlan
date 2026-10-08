@@ -74,14 +74,37 @@ function bisect(inside, lo, hi) {
 }
 
 const SCAN = 64;
+/** Arrows shorter than this (metres of visible curve) are drawn as a marker badge instead. */
+const MIN_ARROW_M = 0.25;
+/** Half length (metres) of the short curve piece that stands for a marker, used for picking. */
+const MARKER_HALF_M = 0.15;
+
+/** Length of the visible part (t0..t1) of curve `c`, by 16 chords. */
+function visibleLength(c) {
+  let len = 0;
+  let prevX = 0;
+  let prevY = 0;
+  const p = [0, 0];
+  for (let k = 0; k <= 16; k++) {
+    quadPoint(c, c.t0 + ((c.t1 - c.t0) * k) / 16, p);
+    if (k > 0) len += Math.hypot(p[0] - prevX, p[1] - prevY);
+    prevX = p[0];
+    prevY = p[1];
+  }
+  return len;
+}
 
 /**
  * Curved arrow geometry from rectangle `a` to rectangle `b` (both {x, y, w, h} in metres): a quadratic
  * Bezier between the rectangle centres, bowed to the right of the travel direction so that A->B and B->A
  * run on opposite sides and never overlap. Only the part between the two rectangle borders is visible
  * (`t0..t1`); `gapA` / `gapB` keep a little air between the arrow and the bricks.
- * @returns {{ ax, ay, qx, qy, bx, by, t0, t1, length } | null} null when the rectangles coincide, or touch so
- *   closely that less than 0.25 m of arrow would remain
+ *
+ * When the bricks touch or are closer than ~0.25 m there is no room for an arrow. The flow is then a
+ * `marker`: t0..t1 is a short piece (about 0.3 m) of the curve centred on the gap between the two borders,
+ * which the renderer draws as a small direction badge on top of the bricks. A valid flow is never dropped.
+ * @returns {{ ax, ay, qx, qy, bx, by, t0, t1, length, marker } | null} null only when the rectangles coincide
+ *   or one swallows the other's centre line (stations never overlap in a valid layout)
  */
 export function flowCurve(a, b, gapA = 0.1, gapB = 0.18) {
   const ax = a.x + a.w / 2;
@@ -93,27 +116,29 @@ export function flowCurve(a, b, gapA = 0.1, gapB = 0.18) {
   const len = Math.hypot(dx, dy);
   if (!(len > 1e-6)) return null;
   const bow = 2 * clamp(len * 0.07, 0.3, 2);
-  const c = { ax, ay, qx: (ax + bx) / 2 - (dy / len) * bow, qy: (ay + by) / 2 + (dx / len) * bow, bx, by, t0: 0, t1: 1, length: 0 };
+  const c = { ax, ay, qx: (ax + bx) / 2 - (dy / len) * bow, qy: (ay + by) / 2 + (dx / len) * bow, bx, by, t0: 0, t1: 1, length: 0, marker: false };
   const insideA = (t) => { const p = quadPoint(c, t); return insideRect(p[0], p[1], a, gapA); };
   const insideB = (t) => { const p = quadPoint(c, t); return insideRect(p[0], p[1], b, gapB); };
   let i = 0;
   while (i <= SCAN && insideA(i / SCAN)) i++;
   let j = SCAN;
   while (j >= 0 && insideB(j / SCAN)) j--;
-  if (i > SCAN || j < 0 || j <= i - 1) return null;
-  c.t0 = i === 0 ? 0 : bisect(insideA, (i - 1) / SCAN, i / SCAN);
-  c.t1 = j === SCAN ? 1 : bisect(insideB, j / SCAN, (j + 1) / SCAN);
-  if (c.t1 <= c.t0) return null;
-  let prevX = 0;
-  let prevY = 0;
-  const p = [0, 0];
-  for (let k = 0; k <= 16; k++) {
-    quadPoint(c, c.t0 + ((c.t1 - c.t0) * k) / 16, p);
-    if (k > 0) c.length += Math.hypot(p[0] - prevX, p[1] - prevY);
-    prevX = p[0];
-    prevY = p[1];
+  if (i > SCAN || j < 0) return null;
+  const exit = i === 0 ? 0 : bisect(insideA, (i - 1) / SCAN, i / SCAN);
+  const entry = j === SCAN ? 1 : bisect(insideB, j / SCAN, (j + 1) / SCAN);
+  if (entry > exit) {
+    c.t0 = exit;
+    c.t1 = entry;
+    c.length = visibleLength(c);
+    if (c.length >= MIN_ARROW_M) return c;
   }
-  return c.length >= 0.25 ? c : null;
+  const tm = clamp((exit + entry) / 2, 0, 1);
+  const half = clamp(MARKER_HALF_M / Math.max(quadSpeed(c, tm), 1e-6), 0, Math.min(tm, 1 - tm));
+  c.t0 = tm - half;
+  c.t1 = tm + half;
+  c.length = visibleLength(c);
+  c.marker = true;
+  return c;
 }
 
 /** Shortest distance from (px, py) to the visible part (t0..t1) of a flow curve, same units as the curve. */

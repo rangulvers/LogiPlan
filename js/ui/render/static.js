@@ -1,20 +1,22 @@
-// Static layer of the plant: baseplate, studs, grid, obstacles, roads (lane markings, one-way chevrons,
-// speed-zone hatching and badges) and free text labels. Everything that only changes when the layout, theme,
-// zoom bucket or a toggle changes. The renderer draws it into a cached bitmap and blits that every frame;
-// toDataURL() draws it straight into the export canvas.
+// Static layer of the plant: baseplate, studs, grid, obstacles, roads (lane markings, one-way chevrons and
+// speed-zone hatching). Everything that only changes when the layout, theme, zoom bucket or a toggle changes.
+// The renderer draws it into a cached bitmap and blits that every frame; toDataURL() draws it straight into
+// the export canvas. Text (free labels, speed-zone badges) is not part of it: labels.js draws it per frame,
+// above flows and bricks.
 //
 // The caller sets the context transform to "world metres -> bitmap pixels" before calling drawStatic().
 
 import { DX, DY } from '../../util/grid.js';
 import { OCC_ROAD, OCC_STATION, OCC_OBSTACLE } from './scene.js';
-import { TAU, roundRectPath, fontOf, haloText, fillPill } from './draw.js';
+import { TAU, roundRectPath } from './draw.js';
 
-/** Font height of a free label of size 1, in metres. */
-const LABEL_FONT_M = 0.8;
-const MIN_LABEL_PX = 7;
+/** Margin around the baseplate that the static layer also covers (shadow and plate thickness), in CSS px. */
+const PLATE_MARGIN_PX = 14;
+/** ... but never less than this many metres, so the plate edge stays covered when the bitmap is scaled. */
+const PLATE_MARGIN_MIN_M = 2.5;
 
-/** Metres of margin around the baseplate that the static layer also covers (shadow and plate thickness). */
-export const PLATE_MARGIN_M = 2.5;
+/** Metres of margin around the baseplate that the static layer covers at `zoom` px per metre. */
+export const plateMargin = (zoom) => Math.max(PLATE_MARGIN_MIN_M, PLATE_MARGIN_PX / zoom);
 
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
@@ -23,7 +25,7 @@ const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
  * @param {CanvasRenderingContext2D} ctx transform: world metres -> bitmap px
  * @param {object} scene from getScene()
  * @param {object} theme from getTheme()
- * @param {{ k: number, zoom: number, win: {x0,y0,x1,y1}, studs: boolean, grid: boolean, labels: boolean }} o
+ * @param {{ k: number, zoom: number, win: {x0,y0,x1,y1}, studs: boolean, grid: boolean }} o
  *   k = bitmap px per metre; zoom = CSS px per metre (drives level of detail); win = world window being drawn
  */
 export function drawStatic(ctx, scene, theme, o) {
@@ -39,10 +41,6 @@ export function drawStatic(ctx, scene, theme, o) {
   drawRoads(ctx, scene, theme, o, u);
   drawSpeedZones(ctx, scene, theme, o.win, u);
   drawMarkings(ctx, scene, theme, o.win, u, cellPx);
-  if (o.labels) {
-    drawZoneBadges(ctx, scene, theme, u, cellPx);
-    drawLabels(ctx, scene, theme, o.win, o.zoom, u);
-  }
 }
 
 /** Cell index ranges overlapping the window, clamped to the grid. */
@@ -351,51 +349,4 @@ function drawMarkings(ctx, scene, theme, win, u, cellPx) {
     ctx.lineTo(mx - dx * s + dy * s * 1.1, my - dy * s + dx * s * 1.1);
   }
   ctx.stroke();
-}
-
-/** "50 %" badges on speed zones (one per connected zone). */
-function drawZoneBadges(ctx, scene, theme, u, cellPx) {
-  if (cellPx < 16) return;
-  const px = clamp(cellPx * 0.22, 8, 13);
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  for (const z of scene.zones) {
-    const text = `${Math.round(z.limit * 100)} %`;
-    ctx.save();
-    ctx.translate((z.cx + 0.5) * scene.cs, (z.cy + 0.5) * scene.cs);
-    ctx.scale(u, u);
-    ctx.font = fontOf(theme, 700, px);
-    const w = ctx.measureText(text).width + 8;
-    const h = px + 5;
-    fillPill(ctx, -w / 2, -h / 2, w, h, theme.zoneBadge);
-    ctx.fillStyle = theme.zoneBadgeInk;
-    ctx.fillText(text, 0, 0.5);
-    ctx.restore();
-  }
-}
-
-// ---- free text labels --------------------------------------------------------------------------------------
-
-/** Font size in CSS px of label `l` at the given zoom. */
-export function labelFontPx(l, zoom) {
-  return LABEL_FONT_M * (l.size > 0 ? l.size : 1) * zoom;
-}
-
-function drawLabels(ctx, scene, theme, win, zoom, u) {
-  const cs = scene.cs;
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  for (const l of scene.layout.labels || []) {
-    const px = labelFontPx(l, zoom);
-    if (px < MIN_LABEL_PX || !l.text) continue;
-    const x = l.x * cs;
-    const y = l.y * cs;
-    if (!overlaps(win, x - 20 * cs, y - 4 * cs, 40 * cs, 8 * cs)) continue;
-    ctx.save();
-    ctx.translate(x, y);
-    ctx.scale(u, u);
-    ctx.font = fontOf(theme, 600, px);
-    haloText(ctx, l.text, 0, 0, theme.label, theme.labelHalo, Math.max(2.5, px * 0.28));
-    ctx.restore();
-  }
 }

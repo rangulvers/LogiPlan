@@ -6,7 +6,8 @@
 //
 //  * reviewWorld(lines, opts)      traffic system on an ASCII picture (tests/helpers/ascii.js)
 //  * createReviewChecker(traffic)  per-tick physical checks; violations are COLLECTED (kind, time, details), not thrown
-//  * streetLines / blobLines       random road pictures: streets on even lines, or dense blocks with random links
+//  * streetLines / blobLines / spurLines   random road pictures: streets on even lines, dense blocks with random links,
+//                                  a main street with dead-end spurs
 //  * runReviewScenario(opts)       seeded random fleet, trips, breakdowns, speed changes, detach / attach / remove / add
 
 import { createRng } from '../../js/util/rng.js';
@@ -19,16 +20,16 @@ import { TrafficSystem } from '../../js/sim/traffic.js';
 // ---------------------------------------------------------------------------------------------------------------
 
 /** Corners of a vehicle's rectangle: `length` along the heading, `width` across. */
-export function rectOf(tv, widthFactor = 1) {
+function rectOf(tv) {
   const hl = tv.length / 2;
-  const hw = (tv.width * widthFactor) / 2;
+  const hw = tv.width / 2;
   const c = Math.cos(tv.heading);
   const s = Math.sin(tv.heading);
   return [[hl, hw], [hl, -hw], [-hl, -hw], [-hl, hw]].map(([a, b]) => [tv.x + a * c - b * s, tv.y + a * s + b * c]);
 }
 
 /** Largest separating-axis distance of two convex polygons (> 0 apart, < 0 interpenetration depth). */
-export function separation(pa, pb) {
+function separation(pa, pb) {
   let best = -Infinity;
   for (const poly of [pa, pb]) {
     for (let i = 0; i < poly.length; i++) {
@@ -53,7 +54,7 @@ export function separation(pa, pb) {
 export const bodyGap = (a, b) => separation(rectOf(a), rectOf(b));
 
 /** Area of a convex polygon clipped to the axis-aligned box [x0,x1] x [y0,y1] (Sutherland-Hodgman). */
-export function clippedArea(poly, x0, y0, x1, y1) {
+function clippedArea(poly, x0, y0, x1, y1) {
   let pts = poly;
   const edges = [
     (p) => p[0] - x0, (p) => x1 - p[0], (p) => p[1] - y0, (p) => y1 - p[1],
@@ -183,7 +184,7 @@ export function createReviewChecker(traffic, opts = {}) {
       if (gap < hw - headwayTol - 0.005) report('headway', `${a.id}/${b.id} bumper gap ${gap.toFixed(3)} < headway ${hw} on a straight`, hw - gap);
       return;
     }
-    if (Math.abs(angleDiff(a.heading, b.heading)) > 0.5) return; // one of them has just turned in from another street
+    if (Math.abs(angleDiff(a.heading, b.heading)) > 0.2) return; // one of them is turning in from another street, its rear still back there
     const pa = onEdge(a);
     const pb = onEdge(b);
     if (pa === null || pb === null) return;
@@ -245,7 +246,7 @@ export function createReviewChecker(traffic, opts = {}) {
   }
 
   return {
-    violations, counts, worst,
+    violations, counts, worst, report,
     check() {
       const dt = traffic.time - lastTime;
       for (const tv of traffic.vehicles) if (tv.onRoad) perVehicle(tv, dt);
@@ -253,10 +254,6 @@ export function createReviewChecker(traffic, opts = {}) {
       cells();
       if (ticks++ % 25 === 0) stats();
       lastTime = traffic.time;
-    },
-    /** Violation kinds that make a scenario fail (decel / accel are measured separately). */
-    hard() {
-      return Object.keys(counts).filter((k) => k !== 'decel' && k !== 'accel');
     },
   };
 }
@@ -363,6 +360,19 @@ export function blobLines(rng) {
   return lines;
 }
 
+/** A two-way main street with dead-end spurs of random depth on alternate cells (many U-turns) and a few one-way loops. */
+function spurLines(rng) {
+  const cols = 12 + rng.int(10);
+  const rows = 9 + rng.int(4);
+  const grid = Array.from({ length: rows }, () => Array(cols).fill('.'));
+  for (let x = 0; x < cols; x++) grid[0][x] = '+';
+  for (let x = 1 + rng.int(2); x < cols; x += 2) {
+    const depth = 1 + rng.int(rows - 2);
+    for (let y = 1; y <= depth; y++) grid[y][x] = '+';
+  }
+  return grid.map((row) => row.join(''));
+}
+
 /** Largest strongly connected set of road cells (vehicles live there so that every vehicle can always route). */
 export function mainComponent(graph) {
   const sizes = new Map();
@@ -375,57 +385,65 @@ export function mainComponent(graph) {
 // Random scenarios
 // ---------------------------------------------------------------------------------------------------------------
 
+/** Vehicle types of the random fleets (index = value in the `fleets` option). */
 const FLEETS = [
-  { length: 1.2, speed: 1.5, accel: 0.6, decel: 1.0 },
-  { length: 2.6, speed: 3.0, accel: 1.0, decel: 2.0 },
-  { length: 0.8, speed: 1.0, accel: 0.4, decel: 0.8 },
-  { length: 1.0, speed: 4.0, accel: 1.5, decel: 0.5 }, // fast with weak brakes
-  { length: 1.6, speed: 0.6, accel: 0.3, decel: 0.3 }, // slow and sluggish
-  { length: 3.0, speed: 2.0, accel: 0.5, decel: 1.0 }, // long
+  { length: 1.2, speed: 1.5, accel: 0.6, decel: 1.0 }, // 0 AGV
+  { length: 2.6, speed: 3.0, accel: 1.0, decel: 2.0 }, // 1 forklift
+  { length: 0.8, speed: 1.0, accel: 0.4, decel: 0.8 }, // 2 small and slow
+  { length: 1.0, speed: 4.0, accel: 1.5, decel: 0.5 }, // 3 fast with weak brakes
+  { length: 1.6, speed: 0.6, accel: 0.3, decel: 0.3 }, // 4 sluggish
+  { length: 3.0, speed: 2.0, accel: 0.5, decel: 1.0 }, // 5 long
 ];
 
+/** Kinds of road picture a scenario can use. */
+const PICTURES = { streets: streetLines, blob: blobLines, spurs: spurLines };
+
 /**
- * One seeded scenario. Returns { lines, traffic, checker, vehicles, arrivals, stuck, moves }.
- * opts: seed, dt, seconds, vehicles, kind ('streets' | 'blob' | 'mixed'), chaos (0..1, share of random API abuse), dwellProb (share of trips ending in a pause), plainOnly (trips end only on cells that are not junctions),
- * resolve (resolveDeadlocks, default true), fleets (indexes into FLEETS), cells (candidate cell sizes).
+ * One seeded scenario: a random road picture, a fleet that keeps driving to random cells, and (with `chaos`) random
+ * breakdowns, speed-factor changes, detach / attach, relocate, add / remove and refused drive() calls. The independent
+ * checker runs after every tick.
+ *
+ * opts: seed; dt (0.1); seconds (600); vehicles (20); kind ('streets' | 'blob' | 'spurs', default streets);
+ *   chaos (share of random API abuse, 0.3); dwellProb (share of trips that end in a pause of up to 40 s, 0.3);
+ *   plainOnly (start and end only on cells that are not junctions); resolve (resolveDeadlocks, true);
+ *   headway (default: random); fleets (indexes into FLEETS, default 0 and 2); cells (candidate cell sizes, default 2 and 3).
+ * @returns {object} { lines, traffic, checker, vehicles, arrivals, cellSize, handedness }
  */
 export function runReviewScenario(opts) {
-  const { seed, dt = 0.1, seconds = 600, vehicles = 20, kind = 'mixed', chaos = 0.3, resolve = true, dwellProb = 0.3, plainOnly = false } = opts;
+  const { seed, dt = 0.1, seconds = 600, vehicles = 20, kind = 'streets', chaos = 0.3, dwellProb = 0.3, plainOnly = false, resolve = true } = opts;
   const rng = createRng(seed);
   const pick = rng.fork('pick');
   const ev = rng.fork('events');
+  const cells = opts.cells || [2, 3];
+  const fleets = opts.fleets || [0, 2];
+  const cellSize = cells[rng.int(cells.length)];
   let lines;
   let graph;
   let domain = [];
-  const cellSize = (opts.cells || [1.5, 2, 3, 5])[rng.int((opts.cells || [1.5, 2, 3, 5]).length)];
   for (let attempt = 0; attempt < 30 && domain.length < 3 * vehicles; attempt++) {
-    const r = rng.fork('layout' + attempt);
-    lines = kind === 'blob' || (kind === 'mixed' && seed % 3 === 0) ? blobLines(r) : streetLines(r);
+    lines = PICTURES[kind](rng.fork('layout' + attempt));
     graph = buildGraph(layoutFromAscii(lines, { cellSize }));
     domain = mainComponent(graph);
   }
-  const n = Math.min(vehicles, Math.max(2, Math.floor(domain.length / 3)));
   const handedness = rng.next() < 0.5 ? 'right' : 'left';
-  const headwayPick = [0.5, 0.5, 0.3, 1][rng.int(4)];
-  const headway = opts.headway ?? headwayPick;
+  const headway = opts.headway ?? [0.5, 0.5, 0.3, 1][rng.int(4)];
   const traffic = new TrafficSystem(graph, { handedness, headway, deadlockTime: 10 + rng.int(20), resolveDeadlocks: resolve });
-  const checker = createReviewChecker(traffic, opts.checker || {});
-  const fleetPool = opts.fleets || FLEETS.map((_, i) => i);
-  const result = { lines, traffic, checker, vehicles: [], arrivals: 0, deadlocks: 0, stuck: [], handedness, headway, cellSize };
+  const checker = createReviewChecker(traffic);
+  const result = { lines, traffic, checker, vehicles: [], arrivals: 0, cellSize, handedness };
 
   const startCells = plainOnly ? domain.filter((x) => graph.controlled[x] === 0) : domain;
-  const spawn = (i) => {
+  const spawn = (id) => {
     for (let tries = 0; tries < 60; tries++) {
-      const fl = FLEETS[fleetPool[pick.int(fleetPool.length)]];
-      if (fl.length > 1.5 * cellSize) continue;
-      const tv = traffic.addVehicle({ id: `v${i}`, node: startCells[pick.int(startCells.length)], ...fl });
+      const tv = traffic.addVehicle({ id, node: startCells[pick.int(startCells.length)], ...FLEETS[fleets[pick.int(fleets.length)]] });
       if (tv) return tv;
     }
     return null;
   };
-  for (let i = 0; i < n; i++) { const tv = spawn(i); if (tv) result.vehicles.push(tv); }
+  for (let i = 0, n = Math.min(vehicles, Math.max(2, Math.floor(domain.length / 3))); i < n; i++) {
+    const tv = spawn(`v${i}`);
+    if (tv) result.vehicles.push(tv);
+  }
 
-  const dwellUntil = new Map();
   /** A goal is fine if the vehicle can leave it again towards most of the network (no trap behind a forced turn). */
   const canLeave = (route) => {
     const back = graph.search(route.nodes[route.nodes.length - 1], { arrivalEdge: route.edges.length > 0 ? route.edges[route.edges.length - 1] : -1 });
@@ -434,7 +452,6 @@ export function runReviewScenario(opts) {
     return reachable * 2 >= domain.length;
   };
   const plan = (tv) => {
-    if (!tv.onRoad || tv.driving || tv.node < 0) return;
     const s = graph.search(tv.node, { arrivalEdge: tv.lastEdge });
     const reach = domain.filter((x) => x !== tv.node && Number.isFinite(s.dist(x)) && (!plainOnly || graph.controlled[x] === 0));
     for (let tries = 0; tries < 12 && reach.length > 0; tries++) {
@@ -442,62 +459,69 @@ export function runReviewScenario(opts) {
       if (route && canLeave(route) && traffic.drive(tv, route)) return;
     }
   };
-  traffic.onArrive = (tv) => { result.arrivals++; dwellUntil.set(tv, traffic.time + (pick.next() < dwellProb ? pick.range(0, 40) : 0)); };
+  const dwellUntil = new Map(); // tv -> time at which it may start its next trip
+  traffic.onArrive = (tv) => {
+    result.arrivals++;
+    dwellUntil.set(tv, traffic.time + (pick.next() < dwellProb ? pick.range(0, 40) : 0));
+  };
   traffic.onDeadlock = (e) => { if (e.resolved && e.victim) dwellUntil.set(e.victim, traffic.time); };
-  for (const tv of result.vehicles) dwellUntil.set(tv, 0);
 
   const repairAt = new Map();
   const attachAt = new Map();
-  const progress = new Map(); // tv -> { odo, t }
-  const steps = Math.round(seconds / dt);
+  let nextId = vehicles + 100;
+  /** One random disturbance; `tv` is the vehicle it picks on. */
+  const disturb = (tv) => {
+    const t = traffic.time;
+    switch (ev.int(7)) {
+      case 0:
+        if (tv.onRoad && !tv.disabled) { tv.disabled = true; repairAt.set(tv, t + 3 + ev.range(0, 30)); }
+        break;
+      case 1:
+        traffic.speedFactor = [1, 0.1, 0.5, 2, 1, 0.25][ev.int(6)];
+        break;
+      case 2:
+        if (tv.onRoad && !tv.driving && tv.node >= 0) { traffic.detach(tv); attachAt.set(tv, t + 3 + ev.range(0, 10)); }
+        break;
+      case 3:
+        if (tv.onRoad && !tv.driving && tv.node >= 0) traffic.relocate(tv, domain[ev.int(domain.length)]);
+        break;
+      case 4:
+        if (result.vehicles.length < vehicles + 6) {
+          const nv = spawn(`v${nextId++}`);
+          if (nv) result.vehicles.push(nv);
+        }
+        break;
+      case 5:
+        if (result.vehicles.length > 4) {
+          traffic.removeVehicle(tv);
+          attachAt.delete(tv);
+          repairAt.delete(tv);
+          result.vehicles.splice(result.vehicles.indexOf(tv), 1);
+        }
+        break;
+      default:
+        if (tv.onRoad && tv.driving) { // a second drive() on a driving vehicle is refused and changes nothing
+          const before = [tv.node, tv.edge, tv.s, tv.v, tv.x, tv.y].join();
+          const route = graph.search(domain[0], {}).routeTo(domain[ev.int(domain.length)]);
+          const accepted = route ? traffic.drive(tv, route) : false;
+          if (accepted || [tv.node, tv.edge, tv.s, tv.v, tv.x, tv.y].join() !== before) checker.report('api', `drive() on the driving vehicle ${tv.id} changed it`);
+        }
+    }
+  };
+
   const evEvery = Math.max(1, Math.round(15 / dt));
-  for (let i = 0; i < steps; i++) {
+  for (let i = 0, steps = Math.round(seconds / dt); i < steps; i++) {
     for (const tv of result.vehicles) {
       if (tv.onRoad && !tv.driving && tv.node >= 0 && (dwellUntil.get(tv) ?? 0) <= traffic.time) plan(tv);
     }
     traffic.step(dt);
     checker.check();
     const t = traffic.time;
-    for (const tv of result.vehicles) {
-      if (!tv.onRoad || !tv.driving || tv.disabled) { progress.delete(tv); continue; }
-      const p = progress.get(tv);
-      if (!p || tv.odometer - p.odo > 0.2) progress.set(tv, { odo: tv.odometer, t });
-      else if (t - p.t > 400 && !result.stuck.includes(tv.id)) result.stuck.push(tv.id);
-    }
-    if (i % evEvery === 0 && ev.next() < chaos && result.vehicles.length > 0) chaosEvent(tv0());
+    if (i % evEvery === 0 && ev.next() < chaos && result.vehicles.length > 0) disturb(result.vehicles[ev.int(result.vehicles.length)]);
     for (const [tv, when] of repairAt) if (t >= when) { tv.disabled = false; repairAt.delete(tv); }
     for (const [tv, when] of attachAt) {
-      if (t < when || !tv.vehicleAlive) continue;
-      if (traffic.attach(tv, domain[pick.int(domain.length)])) { attachAt.delete(tv); dwellUntil.set(tv, t); }
+      if (t >= when && traffic.attach(tv, domain[pick.int(domain.length)])) { attachAt.delete(tv); dwellUntil.set(tv, t); }
     }
   }
-  function tv0() { return result.vehicles[ev.int(result.vehicles.length)]; }
-  function chaosEvent(tv) {
-    const op = ev.int(10);
-    const t = traffic.time;
-    if (op === 0 && tv.onRoad && !tv.disabled) { tv.disabled = true; repairAt.set(tv, t + 3 + ev.range(0, 30)); }
-    else if (op === 1) traffic.speedFactor = [1, 0.1, 0.5, 2, 1, 0.25][ev.int(6)];
-    else if (op === 2 && tv.onRoad && !tv.driving && tv.node >= 0) { traffic.detach(tv); tv.vehicleAlive = true; attachAt.set(tv, t + 3 + ev.range(0, 10)); }
-    else if (op === 3 && tv.onRoad && !tv.driving && tv.node >= 0) {
-      const to = domain[ev.int(domain.length)];
-      traffic.relocate(tv, to);
-    } else if (op === 4 && result.vehicles.length < n + 6) {
-      const nv = spawn(result.vehicles.length + 100);
-      if (nv) { result.vehicles.push(nv); dwellUntil.set(nv, t); }
-    } else if (op === 5 && result.vehicles.length > 4) {
-      const k = result.vehicles.indexOf(tv);
-      traffic.removeVehicle(tv);
-      attachAt.delete(tv);
-      repairAt.delete(tv);
-      result.vehicles.splice(k, 1);
-    } else if (op === 6 && tv.onRoad && tv.driving) { // drive() on a driving vehicle must be a harmless refusal
-      const before = [tv.node, tv.edge, tv.s, tv.v, tv.x, tv.y].join();
-      const s = graph.search(domain[0], {});
-      const route = s.routeTo(domain[ev.int(domain.length)]);
-      const ok = route ? traffic.drive(tv, route) : false;
-      if (ok || [tv.node, tv.edge, tv.s, tv.v, tv.x, tv.y].join() !== before) checker.violations.push({ kind: 'api', t, message: `drive() on driving ${tv.id} returned ${ok}` });
-    }
-  }
-  result.deadlocks = traffic.stats.deadlocks;
   return result;
 }

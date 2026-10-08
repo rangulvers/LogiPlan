@@ -1240,7 +1240,7 @@ simTest('DEFECT MODEL-9 (medium): the congestion lab congests - waiting in traff
   const lab = EXAMPLES.find((e) => e.id === 'congestion-lab');
   assert.ok(lab.description.toLowerCase().includes('queues'), 'the catalogue promises queues');
   assert.ok(report.traffic.waitShare >= engine.trafficWaitShare,
-    `vehicles wait only ${(report.traffic.waitShare * 100).toFixed(1)} % of their driving time (the Results tab flags congestion from ${engine.trafficWaitShare * 100} %): 7 AGVs on the one-way loop do not queue`);
+    `vehicles wait only ${(report.traffic.waitShare * 100).toFixed(1)} % of their driving time (the Results tab flags congestion from ${engine.trafficWaitShare * 100} %): the AGVs on the one-way loop do not queue`);
   assert.ok(!insights.some((i) => i.severity === 'good'), `the Results tab says: ${insights.filter((i) => i.severity === 'good').map((i) => i.title)}`);
   assert.ok(insights.some((i) => i.id.startsWith('traffic') || /congest/i.test(i.id + i.title)), `insights: ${insights.map((i) => i.id).join(', ')}`);
 });
@@ -1307,8 +1307,8 @@ test('examples: the texts agree with the numbers (notes, tips and descriptions q
   const perHour = 3600 / byName(twoLines, 'Goods receiving').params.interArrival.mean;
   assert.ok(Math.abs((perHour * (2 / 3)) / press.perCycle - (perHour * (1 / 3)) / machining.perCycle) < 1e-9, 'pressed and machined parts arrive in the 2:1 ratio the assembly consumes');
 
-  assert.match(lab.notes, /7 AGVs/);
-  assert.equal(lab.fleets[0].count, 7);
+  assert.match(lab.notes, /9 AGVs/);
+  assert.equal(lab.fleets[0].count, 9);
   assert.ok(EXAMPLES[2].tips.some((t) => t.includes(`(${lab.fleets[0].count} now)`)), 'the tip quotes the real vehicle count');
 
   const tabs = new Set(['Fleet', 'Flows', 'Simulate', 'Results', 'Experiments', 'Properties', 'Checks']);

@@ -171,14 +171,15 @@ test('perCycle-exceeds-inCap: the workstation could never start', () => {
   assert.ok(!codes(check(l)).includes('perCycle-exceeds-inCap'));
 });
 
-test('batch-exceeds-capacity: the minimum batch can never be ready', () => {
+test('batch-exceeds-capacity: a minimum batch that can never be ready is a warning (the simulation sends smaller batches)', () => {
   const l = healthy();
   L.updateFlow(l, 'f1', { batchMin: 2 });
   const byVehicle = find(check(l), 'batch-exceeds-capacity');
-  assert.deepEqual([byVehicle.severity, byVehicle.id], ['error', 'batch-exceeds-capacity:f1']);
-  assert.match(byVehicle.message, /vehicles carry at most 1/);
+  assert.deepEqual([byVehicle.severity, byVehicle.id], ['warning', 'batch-exceeds-capacity:f1']);
+  assert.match(byVehicle.message, /vehicles carry at most 1.*leave with 1 or fewer/);
+  assert.ok(!check(l).some((i) => i.severity === 'error'), 'the plan still runs, so the Checks tab shows no error');
   L.updateFlow(l, 'f1', { maxWait: 90 });
-  assert.equal(find(check(l), 'batch-exceeds-capacity').severity, 'warning', 'a maxWait releases partial batches');
+  assert.equal(find(check(l), 'batch-exceeds-capacity').severity, 'warning', 'with a maxWait too');
   L.updateFleet(l, 'v1', { capacity: 6 });
   assert.ok(!codes(check(l)).includes('batch-exceeds-capacity'));
   L.updateFlow(l, 'f1', { batchMin: 5, maxWait: 0 });
@@ -364,6 +365,30 @@ test('the internal reachability search agrees with a brute-force oracle on 300 r
     tally[expected]++;
   }
   assert.ok(tally.ok > 20 && tally.unreachable > 20 && tally['no-return'] > 5, `the random networks cover all outcomes: ${JSON.stringify(tally)}`);
+});
+
+test('layouts that are not normalized are checked, not crashed on: missing names, parameters, settings or road records; null options', () => {
+  const broken = {
+    'a station without a name': (l) => { delete l.stations[1].name; },
+    'a station with a blank name': (l) => { l.stations[1].name = '   '; },
+    'stations without parameters': (l) => { for (const s of l.stations) delete s.params; },
+    'a layout without settings': (l) => { delete l.settings; },
+    'a fleet without a name': (l) => { delete l.fleets[0].name; },
+    'a road record that is null': (l) => { l.roads['2,1'] = null; },
+    'a road record without exits': (l) => { l.roads['3,1'] = {}; },
+  };
+  for (const [what, damage] of Object.entries(broken)) {
+    const l = healthy();
+    damage(l);
+    assert.doesNotThrow(() => check(l), what);
+    assert.doesNotThrow(() => check(l, null), `${what}, null options`);
+    for (const i of check(l)) assert.ok(!/undefined|NaN|\[object|“”/.test(i.message + i.hint), `${what}: ${i.message}`);
+  }
+  const nameless = healthy();
+  delete nameless.stations[0].name;
+  L.updateFlow(nameless, 'f1', { batchMin: 5 });
+  assert.match(find(check(nameless), 'batch-exceeds-capacity').message, /“A” → “B”/, 'a nameless item is called by its id');
+  assert.deepEqual(check(healthy(), null), [], 'null options behave like none');
 });
 
 test('every issue code of the spec was produced, each with a message, a hint and valid references', () => {

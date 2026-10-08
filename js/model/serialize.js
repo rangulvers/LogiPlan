@@ -9,7 +9,8 @@
 // Input is never trusted: no eval, `__proto__`/`constructor`/`prototype` keys are stripped while parsing, sizes are
 // capped (also when decompressing), and every layout is rebuilt field by field by normalizeLayout.
 // Readings of the spec: importProject returns { name, scenarios, activeId } and adds `warnings` (string[]) only when
-// there is something to warn about; unnamed scenarios are called "A", "B", … ; at most 20 scenarios are kept.
+// there is something to warn about (a newer format, skipped scenarios, scenarios beyond MAX_SCENARIOS); unnamed
+// scenarios are called "A", "B", … ; `active` is an index into the file's own scenario list.
 
 import { SCHEMA_VERSION } from './defaults.js';
 import { normalizeLayout, cleanText, cleanId } from './layout.js';
@@ -17,11 +18,12 @@ import { nextId } from '../util/ids.js';
 
 const APP = 'logiplan';
 const NAME_MAX = 80;
-const MAX_SCENARIOS = 20;
+const MAX_SCENARIOS = 100;
 const MAX_TEXT_CHARS = 25e6;
 const MAX_INFLATED_BYTES = 64 * 1024 * 1024;
 const LAYOUT_KEYS = ['grid', 'roads', 'stations', 'flows', 'fleets', 'obstacles'];
 const DAMAGED_LINK = 'This share link is damaged or from a newer version.';
+const UPDATE_BROWSER = 'This share link is compressed, but this browser cannot open it. Please update your browser.';
 
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 
@@ -64,12 +66,20 @@ function parseJson(text) {
   }
 }
 
-/** The raw scenario list of parsed JSON: a project's scenarios or a bare layout wrapped as one scenario. */
+/** The raw scenario entries of parsed JSON: a project's list as it is (their positions matter for `active`) or a bare layout as one entry. */
 function rawScenarios(data) {
   if (!isObj(data)) throw new Error('This file does not look like a LogiPlan project or layout.');
-  if (Array.isArray(data.scenarios)) return data.scenarios.filter(isObj).slice(0, MAX_SCENARIOS);
+  if (Array.isArray(data.scenarios)) return data.scenarios;
   if (LAYOUT_KEYS.some((key) => Object.hasOwn(data, key))) return [{ layout: data }];
   throw new Error('This file does not look like a LogiPlan project or layout.');
+}
+
+/** Position (in the kept list) of the scenario the file says was active; 0 plus a warning if that one was not kept. */
+function activeScenarioIndex(data, keptFrom, entryCount, warnings) {
+  if (!Number.isInteger(data.active) || data.active < 0 || data.active >= entryCount) return 0;
+  const kept = keptFrom.indexOf(data.active);
+  if (kept < 0) warnings.push('The scenario that was open when this file was saved could not be opened, so the first scenario is shown instead.');
+  return Math.max(kept, 0);
 }
 
 /**
@@ -80,13 +90,14 @@ function rawScenarios(data) {
  */
 export function importProject(text) {
   const data = parseJson(text);
-  const sources = rawScenarios(data);
+  const entries = rawScenarios(data);
   const warnings = [];
   const scenarios = [];
+  const keptFrom = []; // position in the file of each kept scenario
   const usedIds = new Set();
   let newest = Number.isFinite(data.schema) ? data.schema : 0;
-  sources.forEach((src, i) => {
-    if (!isObj(src.layout)) {
+  entries.slice(0, MAX_SCENARIOS).forEach((src, i) => {
+    if (!isObj(src) || !isObj(src.layout)) {
       warnings.push(`Scenario ${i + 1} contains no layout and was skipped.`);
       return;
     }
@@ -95,12 +106,14 @@ export function importProject(text) {
     if (!id || usedIds.has(id)) id = nextId('sc', usedIds);
     usedIds.add(id);
     scenarios.push({ id, name: cleanText(src.name, NAME_MAX, scenarioLetter(scenarios.length)), layout: normalizeLayout(src.layout) });
+    keptFrom.push(i);
   });
+  if (entries.length > MAX_SCENARIOS) warnings.push(`This file holds ${entries.length} scenarios; only the first ${MAX_SCENARIOS} were opened.`);
   if (!scenarios.length) throw new Error('This file contains no layout to open.');
   if (newest > SCHEMA_VERSION) {
     warnings.unshift(`This file was saved by a newer version of LogiPlan (format ${newest}; this version reads format ${SCHEMA_VERSION}). It was opened anyway, but newer details may be missing.`);
   }
-  const activeIndex = Number.isInteger(data.active) && data.active >= 0 && data.active < scenarios.length ? data.active : 0;
+  const activeIndex = activeScenarioIndex(data, keptFrom, entries.length, warnings);
   const project = {
     name: cleanText(data.name, NAME_MAX, scenarios[0].layout.name),
     scenarios,
@@ -193,29 +206,41 @@ export async function encodeShare(project) {
   return `p.${toBase64Url(bytes)}`;
 }
 
-/** Accept the bare payload, `p=<payload>`, `#p=<payload>` or a full URL containing it. */
+/**
+ * Accept the bare payload, `p=<payload>`, `#p=<payload>` or a full URL containing it. Whitespace (mail clients wrap long
+ * links) and punctuation around the link (a trailing full stop, brackets, quotes) are ignored.
+ */
 function sharePayload(str) {
   let s = String(str).trim();
   const hash = s.indexOf('#');
   if (hash >= 0) s = s.slice(hash + 1);
+  s = s.replace(/\s+/g, '').replace(/^["'<([]+/, '').replace(/[.,;:!?)\]}>"']+$/, '');
   return s.startsWith('p=') ? s.slice(2) : s;
+}
+
+/** A deflate-raw decompressor, or the "please update your browser" error where the browser has none. */
+function createInflater() {
+  try {
+    return new DecompressionStream('deflate-raw');
+  } catch {
+    throw new Error(UPDATE_BROWSER);
+  }
 }
 
 /**
  * Inverse of encodeShare.
  * @returns {Promise<object>} the project (see importProject)
- * @throws {Error} "This share link is damaged or from a newer version." for anything that is not a valid link
+ * @throws {Error} "This share link is damaged or from a newer version." for anything that is not a valid link;
+ *   a different message for a compressed link in a browser that cannot decompress it
  */
 export async function decodeShare(str) {
   const payload = sharePayload(str);
   const kind = payload.slice(0, 2);
-  if (kind === 'z.' && typeof DecompressionStream !== 'function') {
-    throw new Error('This share link is compressed, but this browser cannot open it. Please update your browser.');
-  }
+  if (kind !== 'z.' && kind !== 'p.') throw new Error(DAMAGED_LINK);
+  const inflater = kind === 'z.' ? createInflater() : null;
   try {
-    if (kind !== 'z.' && kind !== 'p.') throw new Error('unknown prefix');
     let bytes = fromBase64Url(payload.slice(2));
-    if (kind === 'z.') bytes = await pump(bytes, new DecompressionStream('deflate-raw'), MAX_INFLATED_BYTES);
+    if (inflater) bytes = await pump(bytes, inflater, MAX_INFLATED_BYTES);
     return importProject(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
   } catch {
     throw new Error(DAMAGED_LINK);
