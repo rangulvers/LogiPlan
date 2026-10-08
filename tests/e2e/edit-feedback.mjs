@@ -702,6 +702,9 @@ await withBrowser(async ({ browser, url, errors }) => {
     await page.evaluate((layout) => { window.__logiplan.store.newProject(layout, 'Big plant'); }, big);
     await page.locator('.simbar__speed').selectOption('600');
     if (!(await page.evaluate(() => window.__logiplan.runner.playing))) await page.locator('.simbar').getByRole('button', { name: 'Run simulation' }).click();
+    // The big plant replaces the previous example after the runner's 250 ms debounce, as a cold start. The clock of the OLD simulation may already be past 400 s,
+    // so wait for the simulation OF THE BIG PLANT first: an edit that lands before the swap is built cold (no pre-roll, no 'warm' rebuild) and the measurement waits for nothing.
+    await page.waitForFunction(() => { const r = window.__logiplan.runner; return r.sim && r.sim.layout.name === 'Big plant' && !r.priming; }, null, { timeout: 60000 });
     await waitSim(page, 400);
     const bigRounds = await measurePriming(page, 2);
     const bigSummary = summarize(bigRounds);

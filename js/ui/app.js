@@ -48,6 +48,7 @@ import { resolveThemeMode } from './theme.js';
 import { createRunner, SPEEDS } from './runner.js';
 import { Editor } from './editor.js';
 import { TOOL_KEYS, SPEED_ZONE_FACTORS, toolHint, obstacleName } from './editor/tools.js';
+import { DRAW_MODES } from './editor/strokes.js';
 import { isTypingTarget, dialogOpen } from './editor/keys.js';
 import { createDialogs, isTouchOnly } from './dialogs.js';
 import { downloadReport, printReport, exportLayoutPng, exportLayoutJson } from './report.js';
@@ -673,28 +674,46 @@ function createPalette(nav, { editor }) {
   };
 }
 
-/** The options of the slow-zone and obstacle tools, over the bottom of the plan; hidden for every other tool. */
+/** What the three draw modes of the stroke tools are called and what each one does (store.ui.toolOptions.drawMode). */
+const DRAW_MODE_LABELS = Object.freeze({
+  smart: ['Smart', 'Follows the pointer but stays straight: a small wobble is ignored, a clear turn makes one corner.'],
+  straight: ['Straight', 'Every stroke is one straight line, as if Shift were held.'],
+  free: ['Free', 'Follows the pointer exactly, cell by cell.'],
+});
+/** Tools that paint along a dragged path and so have a draw mode. */
+const STROKE_TOOLS = new Set(['road', 'oneway', 'speedzone', 'erase']);
+
+/** The options of the slow-zone, obstacle and drawing tools, over the bottom of the plan; hidden for every other tool. */
 function createToolOptions(region, { editor }) {
   const choice = (label, entries, choose) => {
-    const buttons = entries.map(([value, text]) => h('button', { class: 'segmented__item', type: 'button', dataset: { value: String(value) }, onclick: () => choose(value) }, text));
+    const buttons = entries.map(([value, text, tip]) => h('button', { class: 'segmented__item', type: 'button', title: tip, dataset: { value: String(value) }, onclick: () => choose(value) }, text));
     const el = h('div', { class: 'segmented segmented--sm', role: 'group', 'aria-label': label }, buttons);
     return { el, set: (v) => buttons.forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.value === String(v)))) };
   };
   const zone = choice('Speed limit of the slow zone', [...SPEED_ZONE_FACTORS].sort((a, b) => a - b).map((f) => [f, `${Math.round(f * 100)} %`]), (factor) => editor.setToolOptions({ factor }));
   const kind = choice('Obstacle type', OBSTACLE_KINDS.map((k) => [k, obstacleName(k)]), (value) => editor.setToolOptions({ kind: value }));
+  const mode = choice('Draw mode', DRAW_MODES.map((m) => [m, ...DRAW_MODE_LABELS[m]]), (drawMode) => editor.setToolOptions({ drawMode }));
   const titles = { speedzone: 'Speed limit', obstacle: 'Type' };
   const title = h('span', { class: 'overlays__label' });
-  region.append(h('div', { class: 'toolbar toolbar--panel stagebar', role: 'group', 'aria-label': 'Tool options' }, title, zone.el, kind.el));
+  const sep = h('div', { class: 'toolbar__sep', role: 'separator' });
+  const hint = h('span', { class: 'drawmode__hint' }, h('kbd', { class: 'kbd' }, 'Shift'), ' = straight line');
+  const draw = h('div', { class: 'drawmode', role: 'group', 'aria-label': 'How the stroke follows the pointer' }, h('span', { class: 'overlays__label' }, 'Draw'), mode.el, hint);
+  region.append(h('div', { class: 'toolbar toolbar--panel stagebar', role: 'group', 'aria-label': 'Tool options' }, title, zone.el, kind.el, sep, draw));
   return {
     update(state) {
       const { tool, toolOptions } = state.ui;
-      region.hidden = !Object.hasOwn(titles, tool);
+      const strokes = STROKE_TOOLS.has(tool);
+      region.hidden = !strokes && !Object.hasOwn(titles, tool);
       if (region.hidden) return;
-      title.textContent = titles[tool];
+      title.hidden = !Object.hasOwn(titles, tool);
+      title.textContent = titles[tool] || '';
       zone.el.hidden = tool !== 'speedzone';
       kind.el.hidden = tool !== 'obstacle';
+      sep.hidden = tool !== 'speedzone';
+      draw.hidden = !strokes;
       zone.set(toolOptions.factor);
       kind.set(toolOptions.kind);
+      mode.set(toolOptions.drawMode);
     },
   };
 }

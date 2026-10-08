@@ -27,8 +27,11 @@ const MAX_ENTRIES = 512;
 const MIN_ENTRIES = 8;
 /** Size of one search in units of road cells and links: the work it takes and (below) the memory it keeps. */
 const searchSize = (graph) => graph.edges.length + graph.nodes.length;
-/** Bytes a cached search keeps: a Float64 and an Int32 per road cell, an Int32 per link, and the entry itself. */
-const searchBytes = (graph) => 12 * graph.nodes.length + 4 * graph.edges.length + 256;
+/**
+ * Bytes a cached search keeps: a Float64 and an Int32 per road cell, an Int32 per link, and, as long as it has not explored the whole
+ * network (graph.js searches go on only as far as they are asked), a Float64 per link for the costs of the edges it has reached.
+ */
+const searchBytes = (graph) => 12 * graph.nodes.length + 12 * graph.edges.length + 256;
 
 /** New searches per tick for deferrable lookups on this graph: SEARCH_WORK_PER_TICK in units of one search's size, at least one. */
 export function searchBudget(graph) {
@@ -194,10 +197,31 @@ export class RouteCache {
     return list;
   }
 
+  /**
+   * The route from an entry's start to `dock` (a dock of docksOf, or any `{ node }`), kept on the dock: the search of an entry never changes,
+   * so every vehicle that plans from there gets the same route object (nobody modifies a route; the traffic system copies it).
+   */
+  routeOfDock(entry, dock) {
+    if (dock.route === undefined) dock.route = entry.search.routeTo(dock.node);
+    return dock.route;
+  }
+
+  /** Seconds a vehicle needs for the route to `dock` at the speed limits (unit speed; cached on the dock): the plain length of the way, whatever the routing mode. */
+  baseTimeOfDock(entry, dock) {
+    if (dock.base === undefined) {
+      const route = this.routeOfDock(entry, dock);
+      let sum = 0;
+      if (route === null) sum = Infinity;
+      else for (const e of route.edges) sum += this.graph.baseCost[e];
+      dock.base = sum;
+    }
+    return dock.base;
+  }
+
   /** The edge a vehicle driving to `dock` arrives over (the entry's own arrival edge for a zero-length route). */
   arrivalEdgeAt(entry, dock) {
     if (dock.arrivalEdge === undefined) {
-      const route = entry.search.routeTo(dock.node);
+      const route = this.routeOfDock(entry, dock);
       dock.arrivalEdge = route && route.edges.length > 0 ? route.edges[route.edges.length - 1] : entry.arrivalEdge;
     }
     return dock.arrivalEdge;
@@ -223,6 +247,30 @@ export class RouteCache {
       entry.pickups.set(key, found);
     }
     return found;
+  }
+
+  /**
+   * The docks of `stationId` a vehicle at an entry's start may choose between, cheapest first: the reachable ones of the best class (the
+   * returnable ones if there are any, else the others) and, with `toId` (a pickup), only those from which a dock of `toId` can still be
+   * reached. The first one is what bestDock / pickupDock return; docks.js picks among them by the estimated time to start service.
+   * @returns {Array<{ node: number, dist: number, back: boolean, arrivalEdge: number }>}
+   */
+  dockChoices(entry, stationId, toId = null) {
+    const key = toId === null ? stationId : stationId + '>' + toId;
+    if (entry.choices === undefined) entry.choices = new Map();
+    let list = entry.choices.get(key);
+    if (list === undefined) {
+      list = [];
+      let back = null;
+      for (const dock of this.docksOf(entry, stationId)) {
+        if (back !== null && dock.back !== back) break; // sorted: the returnable docks come first
+        if (toId !== null && !this.canReach(dock.node, this.arrivalEdgeAt(entry, dock), toId)) continue;
+        back = dock.back;
+        list.push(dock);
+      }
+      entry.choices.set(key, list);
+    }
+    return list;
   }
 
   /** Route from an entry's start to `node`, or null when unreachable. */

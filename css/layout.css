@@ -306,7 +306,23 @@ body {
   border-radius: var(--radius-xl);
   background: var(--surface);
   box-shadow: var(--shadow-2);
+  /* The card sits in the middle of the plan, where a first stroke or a first wheel turn goes: they must reach the canvas under it
+     (a press on the text did nothing, and the wheel did not zoom). Only its buttons take the pointer. */
+  pointer-events: none;
+}
+
+.stage__empty .empty a,
+.stage__empty .empty button {
   pointer-events: auto;
+}
+
+/* The first road of a plant is drawn right under the card: while a gesture is in progress on the plan (the editor sets data-gesture on the canvas) the card steps aside so the stroke can be seen. */
+.stage__empty .empty {
+  transition: opacity var(--t-fast) var(--ease);
+}
+
+.stage__canvas[data-gesture] ~ .stage__empty .empty {
+  opacity: 0;
 }
 
 .stage__empty .empty__text {

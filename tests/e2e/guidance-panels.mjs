@@ -624,8 +624,16 @@ await withBrowser(async ({ browser, url, errors }) => {
     await tipBox.getByRole('button', { name: 'Next tip' }).click();
     eq(await tipId(), 'dock', 'and the third');
     ok((await tipBox.innerText()).includes('road cell that touches the station'), 'about the dock');
-    await tipBox.getByRole('button', { name: 'Next tip' }).click();
+    // the rest of the round: the tip about drawing straight roads with Shift comes after the dock tip, then it starts again
+    const round = ['second-goods-in', 'vehicles-not-tied', 'dock'];
+    for (let i = 0; i < 8; i++) {
+      await tipBox.getByRole('button', { name: 'Next tip' }).click();
+      const id = await tipId();
+      if (id === 'second-goods-in') break;
+      round.push(id);
+    }
     eq(await tipId(), 'second-goods-in', 'then it starts again');
+    ok(round.includes('shift-straight'), 'one of the tips is about Shift');
     await page.keyboard.press('Escape');
     await dialog.waitFor({ state: 'detached' });
     const seen = [];
@@ -636,7 +644,7 @@ await withBrowser(async ({ browser, url, errors }) => {
       await page.keyboard.press('Escape');
       await dialog.waitFor({ state: 'detached' });
     }
-    eq(seen, ['vehicles-not-tied', 'dock', 'second-goods-in', 'vehicles-not-tied'], 'every visit shows the next tip');
+    eq(seen, [1, 2, 3, 4].map((i) => round[i % round.length]), 'every visit shows the next tip');
 
     // the Help page
     await page.getByRole('button', { name: 'Help' }).first().click();

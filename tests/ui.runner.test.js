@@ -6,6 +6,7 @@ import {
 import { createStore } from '../js/store/store.js';
 import * as L from '../js/model/layout.js';
 import { EXAMPLES } from '../js/model/examples.js';
+import { noteGrowth } from '../js/ui/editor/grow.js';
 
 // ---------------------------------------------------------------------------------------------------------
 // harness: fake animation frames, fake clock, fake Simulation (mimics the engine: whole ticks, rounded up)
@@ -417,6 +418,44 @@ test('a structural change rebuilds the simulation after 250 ms, keeps playing an
   assert.deepEqual(h.of('rebuild').map((e) => e.reason), ['create', 'structural']);
   h.frames(10);
   assert.ok(second.time > 0.5, 'and it keeps running');
+});
+
+test('simShift: growing the plan on its left or top moves the content, and the displayed simulation knows how far until its replacement is in', async () => {
+  const h = makeHarness();
+  h.store.setUi({ warmRestart: false }); // a cold replacement after 250 ms keeps the test short; the warm one swaps in the same way
+  await startPlaying(h);
+  h.frames(10);
+  const first = h.runner.sim;
+  assert.equal(h.runner.simShift, null, 'nothing moved yet');
+  const grow = (sides) => h.store.commit('Extend plan', (d) => { noteGrowth(d, L.growGrid(d, sides)); });
+  grow({ left: 8 });
+  assert.deepEqual(h.runner.simShift, { dx: 8, dy: 0 }, 'at the moment of the edit, before any frame');
+  h.frame(16);
+  assert.deepEqual(h.renderer.simShift, { dx: 8, dy: 0 }, 'the renderer is told with the next frame');
+  grow({ top: 8, left: 8 });
+  assert.deepEqual(h.runner.simShift, { dx: 16, dy: 8 }, 'a second edit before the replacement comes adds up');
+  h.frames(16);
+  assert.notEqual(h.runner.sim, first, 'the replacement is in');
+  assert.equal(h.runner.simShift, null, 'it was built from the plan as it is: no shift');
+  assert.equal(h.renderer.simShift, null);
+  grow({ right: 8, bottom: 8 });
+  assert.equal(h.runner.simShift, null, 'growing on the right or below moves nothing');
+  h.frames(16);
+  const second = h.runner.sim;
+  h.store.undo();
+  assert.equal(h.runner.simShift, null, 'undo of that growth: still nothing moved');
+  h.frames(16);
+  grow({ left: 8 });
+  h.frames(16);
+  const third = h.runner.sim;
+  assert.notEqual(third, second);
+  h.store.undo();
+  assert.deepEqual(h.runner.simShift, { dx: -8, dy: 0 }, 'undo of a growth on the left: the displayed simulation is 8 cells too far along the other way');
+  h.store.redo();
+  assert.equal(h.runner.simShift, null, 'and redo puts it back: the sum is zero');
+  h.store.undo();
+  h.store.loadProject({ name: 'Other', scenarios: [{ id: 'x', name: 'A', layout: L.createLayout({ name: 'Other' }) }], activeId: 'x' });
+  assert.equal(h.runner.simShift, null, 'another plant: nothing of the displayed simulation belongs to it');
 });
 
 test('further structural edits restart the debounce, and only one rebuild happens', async () => {

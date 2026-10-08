@@ -12,7 +12,7 @@
 //
 // Size. The cell-indexed members (isNode, out, in, limit, controlled, ...) are dense: one slot per grid cell, so a lookup by
 // node id is O(1). A route SEARCH, however, costs time and memory in proportion to the ROAD graph only: its per-node results are
-// kept under the compact index `nodeIndex[id]` (position of the node in `nodes`), the Dijkstra scratch buffers are reused, and
+// kept under the compact index `nodeIndex[id]` (position of the node in `nodes`), the search goes on only as far as it is asked, and
 // nothing in it is sized by the grid. A 320 x 320 plant with a few roads searches as fast as a small baseplate with the same roads,
 // and the same plant grown on any side behaves identically (docs/ARCHITECTURE.md 4.6, tests/sim.largegrid.test.js).
 
@@ -75,6 +75,16 @@ export function buildGraph(layout) {
   }
   const baseCost = new Float64Array(edges.length); // default search cost per edge: length / limit (never below 1e-9)
   for (const e of edges) baseCost[e.id] = Math.max(1e-9, e.length / e.limit);
+  // flat copies of the links for the search (compact node index): the edges of a node are consecutive, so its exits are a range of ids
+  const edgeToK = new Int32Array(edges.length);
+  const edgeRev = new Int32Array(edges.length);
+  const outStartK = new Int32Array(nodes.length + 1);
+  for (const e of edges) {
+    edgeToK[e.id] = nodeIndex[e.to];
+    edgeRev[e.id] = e.rev;
+    outStartK[nodeIndex[e.from] + 1]++;
+  }
+  for (let k = 0; k < nodes.length; k++) outStartK[k + 1] += outStartK[k];
   const out = new Array(nodeCount);
   const inn = new Array(nodeCount);
   for (let i = 0; i < nodeCount; i++) { out[i] = outLists[i] || EMPTY; inn[i] = inLists[i] || EMPTY; }
@@ -103,7 +113,7 @@ export function buildGraph(layout) {
   for (const v of nodes) classifyNode(v, edges, out, inn, controlled, deadEnd);
 
   const graph = {
-    cols, rows, cellSize, nodeCount, isNode, nodes, nodeIndex, edges, baseCost, out, in: inn, limit, controlled, deadEnd, docks, stationsAt,
+    cols, rows, cellSize, nodeCount, isNode, nodes, nodeIndex, edges, baseCost, edgeToK, edgeRev, outStartK, out, in: inn, limit, controlled, deadEnd, docks, stationsAt,
     x: (id) => ((id % cols) + 0.5) * cellSize,
     y: (id) => (Math.floor(id / cols) + 0.5) * cellSize,
     cx: (id) => id % cols,
@@ -155,7 +165,7 @@ function classifyNode(v, edges, out, inn, controlled, deadEnd) {
 
 // ---- shortest route search (edge-based Dijkstra with the no-U-turn rule) -----------------------------
 
-/** Binary min-heap of (cost, edge id) in typed arrays, ordered by cost and then by id. One per graph, reused by every search. */
+/** Binary min-heap of (cost, edge id) in typed arrays, ordered by cost and then by id. One per search. */
 class EdgeHeap {
   constructor(capacity) {
     this.cost = new Float64Array(capacity);
@@ -211,62 +221,70 @@ class EdgeHeap {
   }
 }
 
-/** Per-graph scratch buffers of search(): tentative edge costs with a generation stamp (no clearing between searches) and the heap. */
-const scratchOf = new WeakMap();
-
-function scratchFor(graph) {
-  let sc = scratchOf.get(graph);
-  if (sc === undefined) {
-    const n = graph.edges.length;
-    sc = { edgeCost: new Float64Array(n), stamp: new Int32Array(n), gen: 0, heap: new EdgeHeap(Math.max(64, n)) };
-    scratchOf.set(graph, sc);
-  }
-  if (++sc.gen >= 0x7fffffff) { sc.stamp.fill(0); sc.gen = 1; }
-  return sc;
-}
-
 /**
- * Cheapest routes from `from` to every road cell. Cost and memory follow the road graph, not the grid: the result keeps one
- * distance and one edge per ROAD node (compact index) and one predecessor per edge.
+ * Cheapest routes from `from` to the road cells, found as far as somebody asks. Cost and memory follow the road graph, not the grid:
+ * the result keeps one distance and one edge per ROAD node (compact index) and one predecessor per edge.
+ *
+ * Lazy. With the default costs a search does not explore the whole network up front: `dist(node)` and `routeTo(node)` continue the
+ * Dijkstra until that node is settled (its cost is final the moment it is first reached from the heap, whichever way it was asked), so a
+ * question about a dock two aisles away costs two aisles, not the plant. Every answer is the one the full search gives (tests/sim.largegrid.test.js
+ * compares both on random networks, in random order of questions). A search with a cost callback (congestion-aware routing: the costs are a
+ * snapshot that changes later) is run at once instead, as far as `target` when one is given, so it never mixes two snapshots.
  */
 function search(graph, from, opts = {}) {
-  const { edges, out, nodeIndex, nodeCount } = graph;
+  const { edges, nodeIndex, nodeCount, baseCost, edgeToK, edgeRev, outStartK } = graph;
   const arrivalEdge = opts.arrivalEdge ?? -1;
   const customCost = opts.cost || null;
   const target = opts.target ?? -1;
   const roadNodes = graph.nodes.length;
-  const nodeDist = new Float64Array(roadNodes).fill(Infinity); // per compact node: cost of the cheapest arrival
+  const nodeDist = new Float64Array(roadNodes).fill(Infinity); // per compact node: cost of the cheapest arrival (known once it is settled)
   const nodeEdge = new Int32Array(roadNodes).fill(-1); // ... and the edge that arrives that way
   const pred = new Int32Array(edges.length); // edge before e on its cheapest route, -1 for a first edge; only read along settled chains
+  let run = null; // the Dijkstra state while the search can still go on: { edgeCost (0 = not reached: every cost is >= 1e-9), heap }
 
-  if (from >= 0 && from < nodeCount && graph.isNode[from]) {
-    const sc = scratchFor(graph);
-    const { edgeCost, stamp, gen, heap } = sc;
-    const baseCost = graph.baseCost;
-    heap.size = 0;
-    const relax = (e, base, p) => {
-      const c = base + (customCost === null ? baseCost[e] : Math.max(1e-9, customCost(edges[e])));
-      if (c < (stamp[e] === gen ? edgeCost[e] : Infinity)) { edgeCost[e] = c; stamp[e] = gen; pred[e] = p; heap.push(c, e); }
-    };
-    const exits0 = out[from];
-    const arrived = arrivalEdge >= 0 ? edges[arrivalEdge] : undefined;
-    const skip0 = arrived !== undefined && exits0.length > 1 ? arrived.rev : -1; // the reverse of the arrival edge, unless it is the only way out
-    for (let i = 0; i < exits0.length; i++) if (exits0[i] !== skip0) relax(exits0[i], 0, -1);
+  /** Continue until compact node `untilK` is settled (-1: until every reachable node is). Leaves a state that can be continued. */
+  function expand(untilK) {
+    const { edgeCost, heap } = run;
     while (heap.size > 0) {
       const e = heap.pop();
       const c = heap.lastCost;
       if (c > edgeCost[e]) continue;
-      const edge = edges[e];
-      const v = edge.to;
-      const k = nodeIndex[v];
+      const k = edgeToK[e];
       if (c < nodeDist[k] || (c === nodeDist[k] && e < nodeEdge[k])) { nodeDist[k] = c; nodeEdge[k] = e; }
-      if (v === target) break;
-      const exits = out[v];
-      const skip = exits.length > 1 ? edge.rev : -1;
-      for (let i = 0; i < exits.length; i++) if (exits[i] !== skip) relax(exits[i], c, e);
+      const first = outStartK[k];
+      const last = outStartK[k + 1];
+      const skip = last - first > 1 ? edgeRev[e] : -1; // no U-turn, except at a dead end
+      for (let nx = first; nx < last; nx++) {
+        if (nx === skip) continue;
+        const cc = c + (customCost === null ? baseCost[nx] : Math.max(1e-9, customCost(edges[nx])));
+        const known = edgeCost[nx];
+        if (cc < (known === 0 ? Infinity : known)) { edgeCost[nx] = cc; pred[nx] = e; heap.push(cc, nx); }
+      }
+      if (k === untilK) return;
+    }
+    run = null; // nothing left to explore: the buffers can go
+  }
+
+  if (from >= 0 && from < nodeCount && graph.isNode[from]) {
+    run = { edgeCost: new Float64Array(edges.length), heap: new EdgeHeap(256) };
+    // the first edges: every exit of the start, except the way back along the arrival edge unless it is the only way out
+    const k0 = nodeIndex[from];
+    const first = outStartK[k0];
+    const last = outStartK[k0 + 1];
+    const skip0 = arrivalEdge >= 0 && edges[arrivalEdge] !== undefined && last - first > 1 ? edgeRev[arrivalEdge] : -1;
+    for (let e = first; e < last; e++) {
+      if (e === skip0) continue;
+      const c = customCost === null ? baseCost[e] : Math.max(1e-9, customCost(edges[e]));
+      if (c < Infinity) { run.edgeCost[e] = c; pred[e] = -1; run.heap.push(c, e); }
+    }
+    if (customCost !== null) {
+      expand(target >= 0 && target < nodeCount ? nodeIndex[target] : -1);
+      run = null; // as far as asked, and no further: the costs of now are not the costs of later
     }
   }
 
+  /** Make sure compact node k is settled if it can be. */
+  const settle = (k) => { if (nodeEdge[k] < 0 && run !== null) expand(k); };
   const compact = (node) => (node >= 0 && node < nodeCount ? nodeIndex[node] : -1);
   return {
     from,
@@ -274,13 +292,17 @@ function search(graph, from, opts = {}) {
     dist: (node) => {
       if (node === from) return 0;
       const k = compact(node);
-      return k >= 0 ? nodeDist[k] : Infinity;
+      if (!(k >= 0)) return Infinity;
+      settle(k);
+      return nodeDist[k];
     },
     routeTo(node) {
       if (from < 0 || from >= nodeCount || !graph.isNode[from] || node < 0 || node >= nodeCount) return null;
       if (node === from) return { nodes: [from], edges: [], cost: 0 };
       const k = compact(node);
-      if (!(k >= 0) || nodeEdge[k] < 0) return null;
+      if (!(k >= 0)) return null;
+      settle(k);
+      if (nodeEdge[k] < 0) return null;
       const routeEdges = [];
       for (let e = nodeEdge[k]; e >= 0; e = pred[e]) routeEdges.push(e);
       routeEdges.reverse();

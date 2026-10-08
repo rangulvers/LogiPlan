@@ -6,6 +6,7 @@ import {
 } from '../js/ui/editor/strokes.js';
 import { extendStroke } from '../js/ui/editor/paths.js';
 import { createRng } from '../js/util/rng.js';
+import { createStore } from '../js/store/store.js';
 
 // ---- helpers -------------------------------------------------------------------------------------------------------
 
@@ -60,6 +61,18 @@ test('constants: three modes, smart by default, the thresholds of the brief', ()
   assert.ok(DRAW_MODES.every(isDrawMode));
   assert.equal(isDrawMode('diagonal'), false);
   assert.equal(isDrawMode(undefined), false);
+});
+
+test('the store keeps the draw mode in its preferences and accepts exactly the modes of this module', () => {
+  const store = createStore({ storage: undefined });
+  assert.equal(store.getState().ui.toolOptions.drawMode, DEFAULT_DRAW_MODE);
+  for (const mode of DRAW_MODES) {
+    store.setUi({ toolOptions: { drawMode: mode } });
+    assert.equal(store.getState().ui.toolOptions.drawMode, mode, mode);
+  }
+  const before = store.getState().ui.toolOptions;
+  assert.equal(store.setUi({ toolOptions: { drawMode: 'diagonal' } }), false, 'the store refuses what this module does not know');
+  assert.equal(store.getState().ui.toolOptions, before);
 });
 
 test('effectiveMode: Shift is a straight line, otherwise the chosen mode, junk falls back to smart', () => {
@@ -193,6 +206,22 @@ test('smart: a pointer that sits exactly one cell off the line for a long time s
   assert.equal(cornerCount(s.cells), 0);
   assert.equal(s.cells.length, 26);
   assert.ok(s.cells.every((c) => c[1] === 5));
+});
+
+test('a larger turn threshold (a finger on small cells) also needs more movement to pick and to lock an axis', () => {
+  const smart = startAt(10, 10, { turn: 4 });
+  glide(smart, 10.5 + 1.8, 10.5, 0.1);
+  assert.equal(smart.axis, null, '1.8 cells: not yet (a mouse picks at 1)');
+  glide(smart, 10.5 + 2.2, 10.5, 0.1);
+  assert.equal(smart.axis, 'h');
+  const straight = startAt(10, 10, { turn: 4, mode: 'straight' });
+  glide(straight, 10.5 + 2.8, 10.5, 0.1);
+  assert.equal(straight.locked, false, '2.8 cells: not yet (a mouse locks at 1.5)');
+  glide(straight, 10.5 + 3.2, 10.5, 0.1);
+  assert.equal(straight.locked, true);
+  const mouse = startAt(10, 10, { mode: 'straight' });
+  glide(mouse, 10.5 + 1.6, 10.5, 0.1);
+  assert.equal(mouse.locked, true, 'with the default turn the thresholds are the constants');
 });
 
 test('smart: the first guess of the axis is corrected without a stub (one cell sideways, then straight down)', () => {
@@ -401,10 +430,10 @@ function polyline(rng, amp) {
   return { legs, vertices, samples };
 }
 
-test('smart fuzz: 600 deliberate polylines (wobble +-0.45 cell) get exactly the intended corners at the intended places', () => {
+test('smart fuzz: 600 deliberate polylines (wobble +-0.9 cell) get exactly the intended corners at the intended places', () => {
   const rng = createRng(4242);
   for (let i = 0; i < 600; i++) {
-    const p = polyline(rng, 0.45);
+    const p = polyline(rng, 0.9);
     const s = createStroke({ at: [p.vertices[0][0] + 0.5, p.vertices[0][1] + 0.5] });
     for (const q of p.samples) s.move(q[0], q[1]);
     const corners = cornersOf(s.cells);
@@ -419,33 +448,52 @@ test('smart fuzz: 600 deliberate polylines (wobble +-0.45 cell) get exactly the 
   }
 });
 
-test('smart fuzz: deliberate L shapes survive +-0.5 cell of wobble, and 1 cell on the first leg', () => {
-  // The first leg runs in the row of the press cell, so it tolerates a pointer anywhere in the rows next to it. The next legs run in
-  // the cell the pointer was in when it turned, so a wobble of a whole cell across them can reach the turn threshold: 0.5 is the limit.
+test('smart fuzz: the wobble a stroke survives is just under one cell either side of the line (not two: that is a turn)', () => {
+  // The line runs through the centres of the cells and a turn needs the pointer 2 cells off it, measured from there. Every leg after a
+  // corner runs in the cell the pointer was in when it turned, so that cell may itself be a cell off: 0.95 + 1 stays under 2.
   const rng = createRng(909);
-  let shaky = 0;
-  for (let i = 0; i < 600; i++) {
-    const p = polyline(rng, 0.5);
-    if (p.legs !== 2) continue;
+  let ls = 0;
+  for (let i = 0; i < 800; i++) {
+    const p = polyline(rng, 0.95);
     const s = createStroke({ at: [p.vertices[0][0] + 0.5, p.vertices[0][1] + 0.5] });
     for (const q of p.samples) s.move(q[0], q[1]);
-    assert.equal(cornerCount(s.cells), 1, `L ${i}`);
-    shaky++;
+    assert.equal(cornerCount(s.cells), p.legs - 1, `polyline ${i} ${JSON.stringify(p.vertices)}`);
+    if (p.legs === 2) ls++;
   }
-  assert.ok(shaky > 100, 'enough L shapes were generated');
+  assert.ok(ls > 100, 'enough L shapes among them');
+  // and a wobble of 1.5 cells does break some of them: the threshold is real, not a rounding accident
+  let broken = 0;
+  for (let i = 0; i < 300; i++) {
+    const p = polyline(rng, 1.5);
+    const s = createStroke({ at: [p.vertices[0][0] + 0.5, p.vertices[0][1] + 0.5] });
+    for (const q of p.samples) s.move(q[0], q[1]);
+    if (cornerCount(s.cells) !== p.legs - 1) broken++;
+  }
+  assert.ok(broken > 20, `a very shaky hand does make jogs (${broken} of 300)`);
 });
 
-test('smart: a deliberate L (10 right, then 6 down) has exactly one corner, also with a shaky hand (+-0.45 cell)', () => {
+test('smart: a deliberate L (10 right, then 6 down) has exactly one corner, also with a shaky hand (+-0.9 cell)', () => {
   const rng = createRng(5);
   for (let i = 0; i < 200; i++) {
     const s = startAt(20, 20);
-    for (let x = 0; x <= 10; x += 0.5) s.move(20.5 + x, 20.5 + uniform(rng, 0.45));
-    for (let y = 0; y <= 6; y += 0.5) s.move(30.5 + uniform(rng, 0.45), 20.5 + y);
+    for (let x = 0; x <= 10; x += 0.5) s.move(20.5 + x, 20.5 + uniform(rng, 0.9));
+    for (let y = 0; y <= 6; y += 0.5) s.move(30.5 + uniform(rng, 0.9), 20.5 + y);
     assert.equal(cornerCount(s.cells), 1);
-    assert.deepEqual(cornersOf(s.cells), [[30, 20]]);
-    assert.deepEqual(s.end, [30, 26]);
-    assert.equal(s.cells.length, 11 + 6);
+    const [corner] = cornersOf(s.cells);
+    assert.equal(corner[1], 20, 'the corner is on the first leg');
+    assert.ok(Math.abs(corner[0] - 30) <= 1, `the corner is where the pointer turned, +-1 cell (${corner})`);
+    assert.deepEqual(s.end, [corner[0], 26], 'the second leg runs down from the corner to the pointer');
+    assert.equal(s.cells.length, corner[0] - 20 + 1 + 6);
   }
+});
+
+test('smart: a deliberate L without any wobble has its corner exactly where the pointer turned', () => {
+  const s = startAt(20, 20);
+  glideToCell(s, 30, 20);
+  glideToCell(s, 30, 26);
+  assert.deepEqual(cornersOf(s.cells), [[30, 20]]);
+  assert.deepEqual(s.end, [30, 26]);
+  assert.equal(s.cells.length, 11 + 6);
 });
 
 // ---- straight (Shift) ----------------------------------------------------------------------------------------------
@@ -538,6 +586,33 @@ test('Shift released mid-stroke continues smart from the current end', () => {
   glideToCell(s, 14, 12);
   assertContiguous(s.cells);
   assert.equal(s.mode, 'smart');
+});
+
+test('Shift released while the pointer is far from the straight line: the smart stroke catches up with it at once', () => {
+  const s = startAt(10, 10, { mode: 'straight' });
+  glideToCell(s, 20, 10);
+  glideToCell(s, 20, 18); // the lock is horizontal: the line stays at (20, 10)
+  assert.deepEqual(s.end, [20, 10]);
+  s.setMode('smart');
+  assert.deepEqual(s.end, [20, 18], 'no need to wiggle the pointer first');
+  assert.equal(cornerCount(s.cells), 1);
+  const f = startAt(10, 10, { mode: 'straight' });
+  glideToCell(f, 20, 10);
+  glideToCell(f, 24, 14);
+  f.setMode('free');
+  assert.deepEqual(f.end, [24, 14], 'free: the gap to the pointer is filled');
+  assertContiguous(f.cells);
+});
+
+test('Shift pressed: the axis of the new straight line comes from the movement after the press, not from the wobble before it', () => {
+  const s = startAt(10, 10);
+  glideToCell(s, 20, 10);
+  glide(s, 20.5, 11.9, 0.1); // 1.9 cells off the line, still smart: no corner
+  assert.equal(cornerCount(s.cells), 0);
+  s.setMode('straight');
+  assert.equal(s.axis, null);
+  glide(s, 20.5 + 2, 11.9, 0.1);
+  assert.equal(s.axis, 'h', 'the pointer moved sideways: horizontal, however far it sat off the line');
 });
 
 test('Shift pressed and released several times keeps one contiguous stroke with the pointer position of each moment', () => {

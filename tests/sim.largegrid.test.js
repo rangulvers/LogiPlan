@@ -19,12 +19,17 @@ import { blockPlant } from './helpers/engine-review-gen.js';
 
 const MAX = GRID_LIMITS.maxCols;
 
-/** The KPI report without the places it mentions (they move with the plant): positions are compared separately, mapped. */
+/** Keys of a KPI report that name a PLACE (a cell or a node id): they move with the plant, so they are compared separately, mapped. */
+const PLACE_KEYS = new Set(['node', 'nodes', 'cx', 'cy']);
+
+/** The KPI report without the places it mentions, wherever it mentions them (hotspots, deadlock events, the docks of a station). */
 function placeFree(report) {
-  const r = JSON.parse(JSON.stringify(report));
-  for (const h of r.traffic.hotspots) { delete h.node; delete h.cx; delete h.cy; }
-  for (const e of r.traffic.deadlockEvents) { delete e.nodes; }
-  return r;
+  const strip = (value) => {
+    if (Array.isArray(value)) return value.map(strip);
+    if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).filter(([key]) => !PLACE_KEYS.has(key)).map(([key, v]) => [key, strip(v)]));
+    return value;
+  };
+  return strip(JSON.parse(JSON.stringify(report)));
 }
 
 /** Largest relative difference met by sameUpToRounding so far (logged at the end). */
@@ -181,7 +186,7 @@ function referenceSearch(graph, from, opts = {}) {
   };
 }
 
-test('compact route search: distances and routes equal the dense reference on random road networks (seeded)', () => {
+test('lazy compact route search: distances and routes equal the dense reference on random road networks, asked in any order, several searches at once (seeded)', () => {
   const rng = createRng(77);
   let compared = 0;
   for (let n = 0; n < 40; n++) {
@@ -200,21 +205,29 @@ test('compact route search: distances and routes equal the dense reference on ra
     const graph = buildGraph(layout);
     if (graph.nodes.length < 2) continue;
     const weights = Float64Array.from({ length: graph.edges.length }, () => 1 + rng.int(5));
-    for (let q = 0; q < 6; q++) {
+    // several searches alive at once, asked in turns and in any order of nodes (the Dijkstra of each one goes on where it stopped)
+    const pairs = [];
+    for (let q = 0; q < 5; q++) {
       const from = rng.pick(graph.nodes);
       const arrivalEdge = rng.next() < 0.5 || graph.in[from].length === 0 ? -1 : rng.pick(graph.in[from]);
       const opts = { arrivalEdge };
-      if (rng.next() < 0.4) opts.cost = (e) => weights[e.id] * e.length;
-      const target = rng.next() < 0.3 ? rng.pick(graph.nodes) : undefined;
-      if (target !== undefined) opts.target = target;
-      const fast = graph.search(from, opts);
-      const slow = referenceSearch(graph, from, opts);
-      const probes = target !== undefined ? [target] : graph.nodes;
-      for (const node of probes) {
-        assert.equal(fast.dist(node), slow.dist(node), `net ${n} query ${q}: dist to ${node}`);
-        assert.deepEqual(fast.routeTo(node), slow.routeTo(node), `net ${n} query ${q}: route to ${node}`);
-        compared++;
-      }
+      if (rng.next() < 0.3) opts.cost = (e) => weights[e.id] * e.length;
+      if (rng.next() < 0.2) opts.target = rng.pick(graph.nodes);
+      // with the default costs `target` no longer stops anything (the search goes as far as it is asked); with a cost callback it still does
+      const slowOpts = opts.cost ? opts : { arrivalEdge };
+      pairs.push({ opts, fast: graph.search(from, opts), slow: referenceSearch(graph, from, slowOpts), from });
+    }
+    for (let ask = 0; ask < 160; ask++) {
+      const { opts, fast, slow } = rng.pick(pairs);
+      const node = opts.target !== undefined && rng.next() < 0.7 ? opts.target : rng.pick(graph.nodes);
+      // a search that stops at its target (cost callback + target) only answers for what it settled; the reference stops at the same place
+      assert.equal(fast.dist(node), slow.dist(node), `net ${n} ask ${ask}: dist to ${node}`);
+      if (rng.next() < 0.5) assert.deepEqual(fast.routeTo(node), slow.routeTo(node), `net ${n} ask ${ask}: route to ${node}`);
+      compared++;
+    }
+    for (const { fast, slow, opts } of pairs) {
+      if (opts.cost && opts.target !== undefined) continue;
+      for (const node of graph.nodes) assert.equal(fast.dist(node), slow.dist(node), `net ${n}: final dist to ${node}`);
       assert.equal(fast.dist(-1), Infinity);
       assert.equal(fast.dist(graph.nodeCount + 3), Infinity);
       assert.equal(fast.dist(0.5), Infinity, 'a fractional id is no node');
@@ -224,7 +237,7 @@ test('compact route search: distances and routes equal the dense reference on ra
       assert.equal(fast.routeTo(nonRoad), null);
     }
   }
-  assert.ok(compared > 5000, `${compared} distances and routes compared`);
+  assert.ok(compared > 5000, `${compared} distances compared`);
 });
 
 test('compact route search: starting off the road or on a dead cell answers like before; searches do not disturb each other', () => {

@@ -18,7 +18,7 @@ import { emptyLayout } from '../js/model/defaults.js';
 
 const NOOPS = [
   'save', 'restore', 'beginPath', 'closePath', 'moveTo', 'lineTo', 'arcTo', 'stroke', 'clip', 'strokeRect',
-  'clearRect', 'strokeText', 'setLineDash', 'bezierCurveTo', 'translate', 'scale', 'drawImage', 'setTransform', 'ellipse',
+  'clearRect', 'strokeText', 'setLineDash', 'bezierCurveTo', 'translate', 'scale', 'drawImage', 'ellipse',
 ];
 
 class FakeContext {
@@ -31,6 +31,7 @@ class FakeContext {
     this.events = [];
     this.arcs = [];
     this.rotations = [];
+    this.transforms = [];
     this.fillRects = [];
     this.fills = 0;
     this.rects = 0;
@@ -55,6 +56,11 @@ class FakeContext {
   rotate(angle) {
     this.calls++;
     if (this.record) this.rotations.push(angle);
+  }
+
+  setTransform(a, b, c, d, e, f) {
+    this.calls++;
+    if (this.record) this.transforms.push([a, b, c, d, e, f]);
   }
 
   fill() {
@@ -385,6 +391,55 @@ test('hitTest: a rotated vehicle is hit along its body, not in its bounding circ
   const [px, py] = camera.worldToScreen(6, 5);
   assert.equal(renderer.hitTest(px, py + 10).kind, 'vehicle', 'along the (vertical) body');
   assert.notEqual(renderer.hitTest(px + 11, py).kind, 'vehicle', 'beside the body');
+});
+
+test('simShift: while the old simulation waits for its replacement after the plan grew on the left, its vehicles are drawn and hit where the plan is now', () => {
+  const layout = smallPlant(); // 2 m cells
+  const v = fakeVehicle('v1#1', 2, 1);
+  const bodyAt = (ctx, [x, y]) => ctx.transforms.some((t) => Math.abs(t[4] - x) < 1e-6 && Math.abs(t[5] - y) < 1e-6);
+  const plain = setup(layout, { sim: { vehicles: [v] } });
+  plain.ctx.record = true;
+  plain.renderer.render(1);
+  const at = (camera, x, y) => camera.worldToScreen(x, y);
+  assert.ok(bodyAt(plain.ctx, at(plain.camera, 2, 1)), 'no shift: the body is drawn at its own place');
+  // the content moved 3 cells (6 m) to the right: the same vehicle now belongs 6 m further along
+  const moved = setup(layout, { sim: { vehicles: [v] } });
+  moved.renderer.simShift = { dx: 3, dy: 0 };
+  moved.ctx.record = true;
+  moved.renderer.render(1);
+  assert.ok(bodyAt(moved.ctx, at(moved.camera, 8, 1)), 'shifted: the body is drawn 3 cells along');
+  assert.ok(!bodyAt(moved.ctx, at(moved.camera, 2, 1)), 'and not where it was');
+  assert.equal(moved.renderer.hitTest(...at(moved.camera, 8, 1)).kind, 'vehicle', 'the hit test follows it');
+  assert.notEqual(moved.renderer.hitTest(...at(moved.camera, 2, 1)).kind, 'vehicle', 'nothing is left behind');
+  const down = setup(layout, { sim: { vehicles: [v] } });
+  down.renderer.simShift = { dx: 0, dy: -1 };
+  down.ctx.record = true;
+  down.renderer.render(1);
+  assert.ok(bodyAt(down.ctx, at(down.camera, 2, -1)), 'a shift in y moves it in y');
+});
+
+test('simShift: the layers that read the simulation\'s own geometry (deadlock rings, heat) wait for the replacement', () => {
+  const layout = smallPlant();
+  const sim = { vehicles: [], traffic: { activeDeadlocks: [{ nodes: [12, 13] }, 14] } };
+  const rings = (shift) => {
+    const { renderer, ctx } = setup(layout, { sim });
+    renderer.simShift = shift;
+    ctx.record = true;
+    renderer.render(1);
+    return ctx.arcs.length;
+  };
+  assert.ok(rings(null) > rings({ dx: 2, dy: 0 }), 'rings at nodes of the old grid would sit on the wrong cells');
+  assert.equal(rings({ dx: 0, dy: 0 }), rings(null), 'a shift of nothing changes nothing');
+  let heatReads = 0;
+  const heatSim = { vehicles: [], graph: { edges: [], cols: 10, cellSize: 2, nodeCount: 80 }, heat: () => { heatReads++; return { edgePasses: [], edgeWait: [], nodeWait: [], maxEdgePasses: 0, maxEdgeWait: 0, maxNodeWait: 0 }; } };
+  const { renderer } = setup(layout, { sim: heatSim });
+  renderer.view.overlays.heat = 'traffic';
+  renderer.simShift = { dx: 1, dy: 0 };
+  renderer.render(1);
+  assert.equal(heatReads, 0, 'no heat map from a simulation that is not on the plan any more');
+  renderer.simShift = null;
+  renderer.render(1);
+  assert.ok(heatReads > 0, 'and it is back with the replacement');
 });
 
 test('hitTest: resize handles beat labels and stations; the body of a selected item reports move', () => {

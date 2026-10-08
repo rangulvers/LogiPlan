@@ -72,11 +72,12 @@ export function setWelcomeHidden(hidden) {
 /** localStorage key of the tip the welcome screen showed last. */
 export const WELCOME_TIP_KEY = 'logiplan:welcome-tip';
 
-/** The tips the welcome screen rotates through, one per visit: how loads, flows and vehicles belong together. */
+/** The tips the welcome screen rotates through, one per visit: how loads, flows and vehicles belong together, and how to draw straight. */
 export const WELCOME_TIPS = Object.freeze([
   { id: 'second-goods-in', title: 'Adding a second Goods in?', text: 'Give it a flow of its own: select it and pick a destination under “Where do loads go?”. The vehicles you already have serve it automatically.' },
   { id: 'vehicles-not-tied', title: 'Vehicles are not tied to stations', text: 'Every free vehicle serves every flow. To dedicate a fleet to one flow, open the Fleet tab and switch on “Only this fleet” under Jobs this fleet serves.' },
   { id: 'dock', title: 'Every station needs a dock', text: 'A dock is a road cell that touches the station. A station that touches no road is never served, so place it right next to one.' },
+  { id: 'shift-straight', title: 'Straight roads with Shift', text: 'Hold Shift while you drag a road for one perfectly straight line, and Shift+click to carry on from where the last road ended. The Draw switch over the plan chooses Smart, Straight or Free.' },
 ]);
 
 /** The tip after the one shown last time (index `last`; any junk starts at the first), wrapping around. */
@@ -591,10 +592,10 @@ const QUICK_START = [
 const TOOL_HELP = [
   ['select', 'Select', 'Click to select, drag to move, drag the edges of a station to resize it, drag over empty ground to select an area.'],
   ['pan', 'Pan', 'Drag to move the view. Holding Space and dragging, or the middle mouse button, does the same with any tool. The wheel zooms.'],
-  ['road', 'Road', 'Drag to draw a two-way road. Hold Shift for a straight line, Alt to erase.'],
-  ['oneway', 'One-way road', 'Drag in the direction vehicles should drive.'],
-  ['speedzone', 'Slow zone', 'Drag over roads to limit the speed in corners, crossings and busy areas. Press Z again for another limit.'],
-  ['erase', 'Eraser', 'Drag to erase roads, walls and labels. To remove a station, select it and press Delete.'],
+  ['road', 'Road', 'Drag to draw a two-way road. It stays straight on its own (see Drawing roads below); hold Shift for one straight line, Alt to erase.'],
+  ['oneway', 'One-way road', 'Drag in the direction vehicles should drive. Draws like the Road tool.'],
+  ['speedzone', 'Slow zone', 'Drag over roads to limit the speed in corners, crossings and busy areas. Hold Shift for a straight line. Press Z again for another limit.'],
+  ['erase', 'Eraser', 'Drag to erase roads, walls and labels. Hold Shift for a straight line. To remove a station, select it and press Delete.'],
   ['source', 'Goods in', 'Click to place, drag to size. Creates loads on a schedule.'],
   ['process', 'Workstation', 'Click to place, drag to size. Works on loads for a cycle time.'],
   ['storage', 'Storage', 'Click to place, drag to size. Holds loads between steps.'],
@@ -605,7 +606,15 @@ const TOOL_HELP = [
   ['flow', 'Flow', 'Click the sending station, then the receiving one. With Select, drag the round arrow button of a selected station instead.'],
 ];
 
+/** The draw modes of the stroke tools (editor/strokes.js): [name, what it does]. */
+const DRAW_HELP = [
+  ['Smart', 'The default. The road follows your pointer but stays straight: a wobble of a cell is ignored, so a drag along an aisle gives a straight aisle. Move two or more cells sideways to turn a corner. Move back along the road to shorten it. Works with a finger too.'],
+  ['Straight', 'Hold Shift (or choose Straight in the Draw switch). One straight line from where you started; its direction is fixed as soon as you have dragged a cell and a half and does not change when the pointer swings sideways. Shift+click draws a line from the end of the last road to the clicked cell.'],
+  ['Free', 'The road follows every cell the pointer visits, as in a paint program. Use it for diagonals and curves.'],
+];
+
 const KEY_TABLE = [
+  [['Shift'], 'While drawing a road: one straight line from where you started. Shift+click draws a line from the end of the last road to the clicked cell'],
   [['Ctrl', 'Z'], 'Undo'],
   [['Ctrl', 'Shift', 'Z'], 'Redo (Ctrl+Y works too)'],
   [['Ctrl', 'D'], 'Duplicate the selected stations'],
@@ -639,6 +648,12 @@ function toolsTab() {
   return stackOf(20,
     stackOf(8, heading('Tools'),
       table(['Tool', 'Key', 'What it does'], TOOL_HELP.map(([tool, name, text]) => [h('strong', null, name), kbd((keyOf(tool) || '').toUpperCase()), text]))),
+    stackOf(8, heading('Drawing roads'),
+      table(['Draw mode', 'How the road follows your pointer'], DRAW_HELP.map(([name, text]) => [h('strong', null, name), text])),
+      paragraph('The Draw switch over the plan (shown with the Road, One-way, Slow zone and Eraser tools) chooses the mode. A road never goes over a station or wall: it stops in front of it and the rest is shown in red.')),
+    stackOf(8, heading('A bigger plan'),
+      paragraph('The plan grows with your work. Draw a road, place a station or drag something past the edge of the baseplate: a see-through block shows how much room is added, and when you let go the plan grows by whole blocks of 8 cells (up to 320 × 320 cells). The growth and the edit are one undo step, and nothing on the screen moves.'),
+      paragraph('The round + buttons on the four edges add one block, and Properties > Plant settings has the same buttons plus Trim to content. While you drag near the edge of the window, the view scrolls along.')),
     stackOf(8, heading('Other shortcuts'),
       table(['Keys', 'What it does'], KEY_TABLE.map(([keys, text]) => [h('span', { class: 'kbd-group' }, keys.map(kbd)), text]))),
     paragraph('On a touch screen, drag with one finger to use the current tool and with two fingers to pan and pinch to zoom.'));
@@ -652,7 +667,8 @@ const HOW_IT_WORKS = [
     + 'Storage holds loads up to its capacity and releases them after the minimum dwell time. Goods out takes loads out of the plant: they count as throughput.'],
   ['Docks',
     'Every road cell that touches a station is a dock of that station. To load or unload, a vehicle stops on a dock cell and stays there for the loading or unloading time, blocking that cell meanwhile. '
-    + 'A station right on a through road therefore holds up everything behind each stopping vehicle. Give busy stations a short side road (a bay) instead.'],
+    + 'A station right on a through road therefore holds up everything behind each stopping vehicle. Give busy stations a short side road (a bay) instead. '
+    + 'A station with several docks lets several vehicles work at once: each vehicle drives to the dock where it can start soonest (the drive plus the wait for the vehicles already there or on their way), so a free dock is used before a busy one that is a little closer, but not before one that is only slightly busier: the way there and back counts too. Results lists the docks of a station with their visits and how busy they were.'],
   ['One-way roads',
     'On a one-way road vehicles only drive in the direction of the arrows. Vehicles never turn around in the middle of a road: they reverse only at a dead end. '
     + 'So a vehicle must be able to reach a station and also to get back out again; the Checks tab warns about stations that cannot be reached and about one-way dead ends. Two parallel roads are not connected unless you link them.'],
@@ -696,6 +712,7 @@ const TIPS = [
   'While the simulation runs, the Jobs display option draws a line from each vehicle to the station it is heading for (amber to pick up, blue to deliver) and a badge "n waiting" on stations whose loads no vehicle has claimed yet.',
   'Open the Checks tab before you run: it finds stations without a dock, unreachable stations and fleets that cannot charge.',
   'Duplicate the scenario tab before a big change, then compare the variants in the Experiments tab.',
+  'Hold Shift while you draw a road for one straight line. Shift+click carries on from the end of the last road.',
   'Use slow zones (Z) for corners, crossings and areas where people walk.',
   'Raise "Demand" in the Simulate tab to see what happens with 20 % more volume.',
   'Speed the clock up to see hours pass in minutes, and step to watch single moves.',

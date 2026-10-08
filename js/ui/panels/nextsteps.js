@@ -391,9 +391,11 @@ export function createGuidanceHeader(ctx, { checklist = false, hide = null, ...c
   let rescue = false; // the list that held the keyboard focus went away: the card (which may only now show its steps) takes it
   list = checklist ? createChecklistCard(ctx, { onHidden: () => { rescue = true; } }) : null;
   const el = h('div', { class: 'guide-stack', 'data-guidance': '' }, list?.el, card.el);
-  return {
+  let latest = null;
+  const block = {
     el,
     update(state) {
+      latest = state;
       list?.update(state);
       card.update(state);
       el.hidden = card.el.hidden && (!list || list.el.hidden);
@@ -402,8 +404,13 @@ export function createGuidanceHeader(ctx, { checklist = false, hide = null, ...c
         (firstControl(card.el) || card.el.querySelector('.guide__title'))?.focus({ preventScroll: true });
       }
     },
-    destroy() { list?.destroy(); card.destroy(); el.remove(); },
+    destroy() { off(); list?.destroy(); card.destroy(); el.remove(); },
   };
+  // A dismissal ("Hide" on the Getting started list) reaches the card before it reaches the list (the card was built first), so the card still
+  // saw the list on screen and kept the steps the list mirrors to itself: they appeared only with the next refresh of the panel. This listener
+  // was added last, so it runs after both and brings the block up to date at once, in the order update() uses.
+  const off = guidanceFor(ctx).dismissals.subscribe(() => { if (latest) block.update(latest); });
+  return block;
 }
 
 // ---------------------------------------------------------------------------------------------------------

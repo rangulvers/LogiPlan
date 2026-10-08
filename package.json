@@ -10,6 +10,9 @@
     "start": "node scripts/serve.mjs",
     "test": "node --test --test-reporter=spec \"tests/*.test.js\"",
     "test:quiet": "node --test \"tests/*.test.js\"",
+    "test:fast": "node scripts/test-tiers.mjs fast",
+    "test:heavy": "node scripts/test-tiers.mjs heavy",
+    "test:timings": "node scripts/test-tiers.mjs timings",
     "check": "node scripts/check-imports.mjs",
     "test:e2e": "node tests/e2e/run.mjs"
   }

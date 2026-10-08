@@ -62,6 +62,46 @@ export const MAX_FLEET = 1000;
 /** An idle vehicle on the road drains the battery at this share of the working rate. */
 export const IDLE_DRAIN_SHARE = 0.2;
 
+// ---- docks (logistics/docks.js: which dock of a station a vehicle drives to) ---------------------------------------------
+/**
+ * Seconds a dock cell stays taken after service is over: the vehicle reverses out (U-turn at a dead end) or pulls away and the next one
+ * can take its place. Measured on the AGV preset (1.2 m long, 2 m cells): 8.5 s between "leaves" and "stands" on a dead-end spur in a
+ * saturated queue, about 3.4 s on a dock that lies on a through lane. Longer vehicles take longer (turnaround in docks.js scales with the
+ * length relative to DOCK_REFERENCE_LENGTH, the AGV).
+ */
+export const DOCK_TURNAROUND_DEAD_END = 8;
+export const DOCK_TURNAROUND_THROUGH = 3;
+export const DOCK_REFERENCE_LENGTH = 1.2;
+/** Time (s) a vehicle that stands somewhere for no known reason (waiting for a retry, just relocated) is expected to hold the cell. */
+export const DOCK_SHORT_STOP = 2;
+/** What a dead vehicle's dock or lane counts as (s): it never frees up, but the estimates stay finite numbers. */
+export const DOCK_DEAD_WAIT = 7200;
+/** A vehicle drives this share of its top speed on average (corners, junctions, acceleration); turns a route cost into a travel time. */
+export const DOCK_CRUISE_SHARE = 0.75;
+/** A reservation that is expected this much later than a new vehicle (s) still counts as ahead of it in the queue. */
+export const DOCK_AHEAD_SLACK = 1;
+/**
+ * The dock choice (docks.js) ranks the docks by the time until service starts PLUS what the dock costs on the way out:
+ *   * a dock that lies farther than the nearest one is driven to and away from again, so its extra route counts DOCK_EXIT_WEIGHT times
+ *     once more (the estimate holds the way in; 1 = the way out is as long as the way in);
+ *   * a wait for a dock that lies one cell off a junction (a spur of one cell off the main road) is spent ON the junction and holds up everybody
+ *     who wants to pass, so each second of it counts DOCK_BLOCK_WEIGHT seconds; on a spur of two or more cells the vehicle waits out of the way;
+ *   * the cheapest dock is only left for a gain of more than DOCK_MIN_GAIN seconds.
+ * Without the first and the last a dock that was better by a tenth of a second won although it lay 6 m farther away, and the vehicles delivered
+ * up to 10 % less than with the old static dock on plants with deeper spurs; without the second the junction in front of one-cell spurs stays jammed.
+ * The values were found by sweeping 144 comb plants (2, 3 and 5 spurs of 1 to 4 cells, 2 to 8 vehicles, 8 and 20 s loads) against the old rule.
+ */
+export const DOCK_EXIT_WEIGHT = 1;
+export const DOCK_BLOCK_WEIGHT = 2;
+export const DOCK_MIN_GAIN = 3;
+/** A vehicle that still drives to its dock looks for a better one this often (s of sim time)... */
+export const REBIND_INTERVAL = 2;
+/** ...and switches when that saves more than this many seconds AND this share of its own estimate (hysteresis against flapping). */
+export const REBIND_MIN_GAIN = 8;
+export const REBIND_GAIN_SHARE = 0.25;
+/** A vehicle switches docks at most this often per approach (per leg). */
+export const REBIND_MAX_SWITCHES = 1;
+
 export const VEHICLE_STATES = [
   'idle', 'parked', 'toPickup', 'loading', 'toDrop', 'unloading', 'toCharger', 'charging', 'toPark', 'broken', 'dead',
 ];

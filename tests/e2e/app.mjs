@@ -252,7 +252,7 @@ await withBrowser(async ({ browser, url, errors }) => {
     eq(await page.evaluate(() => ['description', 'theme-color', 'viewport'].map((n) => document.querySelectorAll(`meta[name="${n}"]`).length > 0)), [true, true, true], 'meta tags');
     ok(await page.evaluate(() => document.querySelector('meta[property="og:title"]')?.content.includes('LogiPlan')), 'open graph');
     ok(await page.evaluate(() => document.querySelector('link[rel=icon]')?.getAttribute('href') === 'favicon.svg'), 'favicon, relative');
-    eq(await page.evaluate(() => [...document.querySelectorAll('link[rel=stylesheet]')].map((l) => l.getAttribute('href'))), ['css/tokens.css', 'css/components.css', 'css/layout.css', 'css/guidance.css', 'css/impact.css'], 'stylesheets, relative');
+    eq(await page.evaluate(() => [...document.querySelectorAll('link[rel=stylesheet]')].map((l) => l.getAttribute('href'))), ['css/tokens.css', 'css/components.css', 'css/layout.css', 'css/guidance.css', 'css/impact.css', 'css/drawmode.css'], 'stylesheets, relative');
     eq(await page.evaluate(() => [...document.querySelectorAll('script[src]')].map((l) => l.getAttribute('src'))), ['js/main.js'], 'one module script');
     ok(requests.every((r) => r.startsWith('http://127.0.0.1')), `no external requests: ${requests.filter((r) => !r.startsWith('http://127.0.0.1')).join(', ')}`);
     // the empty plant behind the dialog
@@ -474,6 +474,8 @@ await withBrowser(async ({ browser, url, errors }) => {
     eq((await runnerState(page)).speed, 5, '- slower');
     // the sim bar on the live plan
     await page.getByRole('button', { name: 'Reset simulation' }).click();
+    // the clock follows in the frame that builds the fresh simulation: wait for it instead of reading it in the same breath as the click
+    await page.waitForFunction(() => document.querySelector('.simbar__clock')?.textContent === '0:00:00', null, { timeout: 5000 });
     eq([await clock(page), await chip(page)], ['0:00:00', 'Ready'], 'reset: back to the start');
     // results follow the run
     await page.locator('[data-tab=results]').click();
@@ -932,6 +934,10 @@ await withBrowser(async ({ browser, url, errors }) => {
     await page.locator('.stage__options [data-value="rack"]').click();
     eq(await page.evaluate(() => window.__logiplan.store.getState().ui.toolOptions.kind), 'rack', 'the obstacle type is chosen');
     await page.locator('[data-tool=road]').click();
+    await frames(page);
+    ok(await page.locator('.stage__options').isVisible(), 'the road tools: the Draw control (Smart, Straight, Free)');
+    ok(await page.locator('.stage__options [aria-label="Draw mode"]').isVisible() && !(await page.locator('.stage__options [aria-label="Obstacle type"]').isVisible()), 'and nothing of the other tools');
+    await page.locator('[data-tool=select]').click();
     await frames(page);
     ok(!(await page.locator('.stage__options').isVisible()), 'other tools: no options');
     // overlays

@@ -7,17 +7,20 @@
 //   smart     (default) The stroke follows the pointer but is straight by intent. It has an axis (horizontal or
 //             vertical), picked once the pointer is SMART_AXIS_PICK cells away from where it was pressed, and it
 //             runs along that axis to the pointer's projection. A TURN happens only when the pointer is clearly off
-//             the line (TURN_THRESHOLD cells or more): then ONE corner is placed at the projected cell and the stroke
-//             goes on along the other axis. A pointer that wobbles by less than that never makes a jog. Moving the
+//             the line (TURN_THRESHOLD cells or more, measured from the line through the centres of the road cells): then ONE
+//             corner is placed at the projected cell and the stroke goes on along the other axis. A pointer that wobbles by
+//             less than that never makes a jog: a drag along the row of the press survives any wobble inside the rows next to
+//             it, and the legs after a corner a wobble of just under one cell either side (tests/ui.editor.strokes.test.js). Moving the
 //             pointer back along the stroke retracts it, also back through corners, segment by segment; a pointer
 //             that comes back close to the line of the previous segment straightens the corner out again. Fast
-//             jumps are interpolated, so the result depends on where the pointer went, not on how often it was sampled.
+//             jumps are interpolated, so moving along a line gives the same stroke however often the pointer was sampled.
 //   straight  (hold Shift) One straight line from where the stroke started. The axis locks once the pointer is
 //             STRAIGHT_AXIS_LOCK cells away and never changes afterwards, however the pointer swings.
 //   free      The old behaviour: every cell the pointer visits, a gap left by a fast pointer is filled with an L-path.
 //
 // Changing the mode in the middle of a stroke (Shift pressed or released) ends the current run and starts a new one at
-// the current end, in the new mode, with the pointer position of that moment as its reference.
+// the current end, in the new mode (a straight line measures its axis from the pointer position of that moment; smart and
+// free catch up with the pointer at once).
 //
 // A stroke is a list of cells [cx, cy] in which consecutive cells are always 4-neighbours and never equal. A stroke may
 // cross or touch itself (closing a loop on its start cell is allowed: the model paints repeated cells harmlessly).
@@ -135,9 +138,11 @@ function smartRun(origin, originPos, cfg) {
           axis = Math.abs(dx) >= Math.abs(dy) ? 0 : 1;
         }
         const across = 1 - axis;
-        const along = q[axis] - base[axis];
-        const aside = q[across] - base[across];
-        if (Math.abs(aside) < cfg.turn) {
+        const along = q[axis] - base[axis]; // cells from the start of the segment to the pointer's cell: where the stroke ends
+        // how far the pointer is from the line through the centres of the cells, and from the start of the segment, in cells
+        const offLine = u[across] - (base[across] + 0.5);
+        const offStart = u[axis] - (base[axis] + 0.5);
+        if (Math.abs(offLine) < cfg.turn) {
           end = onAxis(base, axis, along); // on the line (or wobbling around it): the end is the pointer's projection
           return;
         }
@@ -145,7 +150,7 @@ function smartRun(origin, originPos, cfg) {
         // segment again: this undoes the corner, whether the pointer went back along it or straight on past it. At the
         // start of the stroke there is no previous segment: the first guess of the axis was wrong, or the stroke
         // bends back on itself right away. Either way no stub of a cell or two is kept.
-        if (Math.abs(along) < cfg.turn) {
+        if (Math.abs(offStart) < cfg.turn) {
           if (vertices.length > 1) vertices.pop();
           axis = across;
           continue;
@@ -214,9 +219,10 @@ function makeRun(mode, origin, originPos, cfg) {
  * Start a stroke.
  * @param {{ at: number[], mode?: string, turn?: number, pick?: number, lock?: number }} opts
  *   at: the pointer position when it was pressed, in fractional cells [ux, uy] (the start cell is its floor)
- *   mode: 'smart' | 'straight' | 'free'; turn / pick / lock: the thresholds above (cells; defaults are the constants)
+ *   mode: 'smart' | 'straight' | 'free'; turn / pick / lock: the thresholds above (cells; the defaults are the constants, and pick and lock
+ *   grow with a larger `turn`: where a finger needs 4 cells to turn it also needs 2 to pick an axis and 3 to lock one)
  */
-export function createStroke({ at, mode = DEFAULT_DRAW_MODE, turn = TURN_THRESHOLD, pick = SMART_AXIS_PICK, lock = STRAIGHT_AXIS_LOCK }) {
+export function createStroke({ at, mode = DEFAULT_DRAW_MODE, turn = TURN_THRESHOLD, pick = Math.max(SMART_AXIS_PICK, turn / 2), lock = Math.max(STRAIGHT_AXIS_LOCK, turn * 0.75) }) {
   const cfg = { turn: Math.max(1, Math.round(turn)), pick, lock };
   let last = [at[0], at[1]]; // the latest pointer position
   const done = []; // cells of the finished runs, without the cell that starts the next one
@@ -241,12 +247,19 @@ export function createStroke({ at, mode = DEFAULT_DRAW_MODE, turn = TURN_THRESHO
       }
       last = [ux, uy];
     },
-    /** Continue in another mode from the current end (Shift pressed or released mid-stroke). True when the mode changed. */
+    /**
+     * Continue in another mode from the current end (Shift pressed or released mid-stroke). True when the mode changed.
+     * A straight line measures its axis from the pointer where it is now (the pointer wobbled a little off the old line: that must
+     * not decide the axis); smart and free measure from the end cell and catch up with the pointer at once, so a pointer that
+     * went far away while Shift was held does not leave the stroke behind.
+     */
     setMode(next) {
       if (!isDrawMode(next) || next === run.mode) return false;
       const cells = run.cells();
       done.push(...cells.slice(0, -1));
-      run = makeRun(next, cells[cells.length - 1], last, cfg);
+      const origin = cells[cells.length - 1];
+      run = makeRun(next, origin, next === 'straight' ? last : [origin[0] + 0.5, origin[1] + 0.5], cfg);
+      if (next !== 'straight') feed(last);
       cached = null;
       return true;
     },

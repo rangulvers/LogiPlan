@@ -717,7 +717,12 @@ test('setUi that changes nothing returns false and notifies nobody', () => {
 test('toolOptions merge one level deep; other keys are stored as given; prototype keys are ignored', () => {
   const { store } = makeStore();
   store.setUi({ toolOptions: { factor: 0.8 } });
-  assert.deepEqual(store.getState().ui.toolOptions, { factor: 0.8, kind: 'wall' });
+  assert.deepEqual(store.getState().ui.toolOptions, { factor: 0.8, kind: 'wall', drawMode: 'smart' });
+  store.setUi({ toolOptions: { drawMode: 'free' } });
+  assert.deepEqual(store.getState().ui.toolOptions, { factor: 0.8, kind: 'wall', drawMode: 'free' }, 'the draw mode of the stroke tools merges like the other options');
+  assert.equal(store.setUi({ toolOptions: { drawMode: 'wobbly' } }), false, 'an unknown draw mode is ignored');
+  store.setUi({ toolOptions: { drawMode: 7 } });
+  assert.equal(store.getState().ui.toolOptions.drawMode, 'free');
   store.setUi({ drawerOpen: true, ['__proto__']: { polluted: true } });
   assert.equal(store.getState().ui.drawerOpen, true);
   assert.equal({}.polluted, undefined);
@@ -1303,13 +1308,17 @@ test('persist and restore round-trip: scenarios, active scenario, names, ui pref
   assert.deepEqual(L.checkInvariants(b.layout), []);
 });
 
-test('only theme, overlays, rightTab and warmRestart are saved as ui preferences, next to a normal project export', () => {
+test('only theme, overlays, rightTab, warmRestart and toolOptions are saved as ui preferences, next to a normal project export', () => {
   const { store, storage } = makeStore();
-  store.setUi({ tool: 'oneway', theme: 'light' });
+  store.setUi({ tool: 'oneway', theme: 'light', toolOptions: { drawMode: 'free' } });
   store.select('cell', ['1,1']);
   store.persist();
   const saved = JSON.parse(storage.data.get('logiplan:v1'));
-  assert.deepEqual(Object.keys(saved.session.ui).sort(), ['overlays', 'rightTab', 'theme', 'warmRestart']);
+  assert.deepEqual(Object.keys(saved.session.ui).sort(), ['overlays', 'rightTab', 'theme', 'toolOptions', 'warmRestart']);
+  assert.equal(saved.session.ui.toolOptions.drawMode, 'free');
+  const back = makeStore({ storage });
+  assert.equal(back.store.restore(), true);
+  assert.equal(back.store.getState().ui.toolOptions.drawMode, 'free', 'the draw mode comes back with the preferences');
   assert.equal(saved.session.dirty, false);
   assert.equal(saved.app, 'logiplan');
   assert.equal(JSON.parse(exportProject(store.getState().project)).scenarios.length, saved.scenarios.length);
@@ -1359,7 +1368,7 @@ test('restore repairs a damaged layout and ignores nonsense ui preferences', () 
   const saved = JSON.parse(storage.data.get('logiplan:v1'));
   saved.scenarios[0].layout.grid.cols = 'many';
   saved.scenarios[0].layout.stations = [{ id: 's1' }, 7];
-  saved.session.ui = { theme: 'neon', overlays: { grid: 'maybe', heat: 'lava' }, rightTab: 7, tool: 'road' };
+  saved.session.ui = { theme: 'neon', overlays: { grid: 'maybe', heat: 'lava' }, rightTab: 7, tool: 'road', toolOptions: { drawMode: 'sideways', factor: 0.25 } };
   storage.data.set('logiplan:v1', JSON.stringify(saved));
   const other = makeStore({ storage });
   assert.equal(other.store.restore(), true);
@@ -1369,6 +1378,8 @@ test('restore repairs a damaged layout and ignores nonsense ui preferences', () 
   assert.equal(s.ui.rightTab, 'properties');
   assert.equal(s.ui.overlays.grid, true);
   assert.equal(s.ui.tool, 'select');
+  assert.equal(s.ui.toolOptions.drawMode, 'smart', 'an unknown draw mode becomes the default');
+  assert.equal(s.ui.toolOptions.factor, 0.25, 'the rest of the options are kept');
 });
 
 test('restore does not trigger a new autosave and cancels a pending one', () => {

@@ -69,6 +69,10 @@ export const INSIGHTS_COLLAPSED = 6;
 export const REORDER_MS = 2500;
 /** Workstation rows shown before "Show all" (the table is sorted, so these are the busiest). */
 export const STATION_ROWS_COLLAPSED = 10;
+/** Seconds per visit that vehicles must have queued for the only dock of a station before the Docks list shows it. */
+export const DOCK_QUEUE_PER_VISIT = 5;
+/** A dock an idle vehicle stood on for at least this share of the window says so next to its busy share. */
+export const DOCK_HELD_SHOWN = 0.1;
 /** Stations that appear in the workstation table. */
 const TABLE_TYPES = Object.freeze(['process', 'storage']);
 export const KPI_IDS = Object.freeze(['throughput', 'leadTime', 'wip', 'fleet', 'traffic', 'deadlocks']);
@@ -390,6 +394,38 @@ export function hotspotRows(report) {
   }));
 }
 
+/**
+ * The docks of every station that has several (or that vehicles queued for): one row per station with its docks, how busy each was (share of
+ * the window a vehicle was served on it; and, when an idle vehicle only stood on it, that share too) and its visits, and how long vehicles
+ * queued for a dock of the station. Longest queue first.
+ */
+export function dockRows(report) {
+  const rows = [];
+  for (const [id, raw] of Object.entries(rec(rec(report).stations))) {
+    const s = rec(raw);
+    const docks = list(s.docks).map(rec);
+    const wait = fin(s.dockWaitTotal) ?? 0;
+    const visits = docks.reduce((n, d) => n + (fin(d.visits) ?? 0), 0);
+    // a single dock says nothing the station's own figures do not, unless vehicles queued for it (5 s or more per visit)
+    if (docks.length === 0 || (docks.length < 2 && !(visits > 0 && wait >= DOCK_QUEUE_PER_VISIT * visits))) continue;
+    rows.push({
+      id,
+      name: text(s.name, id),
+      wait,
+      waitText: wait >= 1 ? `queued ${dur(wait)}` : '',
+      docks: docks.map((d) => {
+        const busy = frac(d.busyShare) ?? 0;
+        const held = frac(d.heldShare) ?? 0;
+        const label = `(${whole(d.cx)}, ${whole(d.cy)})`;
+        const visitsText = plural(fin(d.visits) ?? 0, 'visit', 'visits');
+        const heldText = held >= DOCK_HELD_SHOWN ? `idle vehicle on it ${pct(held)}` : '';
+        return { label, busy, busyText: pct(busy), visitsText, heldText, aria: `Dock ${label}: busy ${pct(busy)} of the time, ${visitsText}${heldText ? `, ${heldText} of the time` : ''}` };
+      }),
+    });
+  }
+  return rows.sort((a, b) => b.wait - a.wait || a.name.localeCompare(b.name) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+}
+
 /** The "where did the waiting come from" figures, in the order of the key/value list. */
 export function trafficBreakdown(report) {
   const t = rec(rec(report).traffic);
@@ -491,6 +527,13 @@ const CSS = `
 .dash-link{min-width:0;padding:0;border:0;background:none;overflow:hidden;color:var(--text);font:inherit;text-align:left;text-overflow:ellipsis;white-space:nowrap;cursor:pointer}
 .dash-link:hover{text-decoration:underline}
 .dash-bar{min-width:64px}
+.dash-docks{display:flex;flex-direction:column;gap:var(--sp-2);margin:0;padding:0;list-style:none}
+.dash-docks__station{display:flex;flex-direction:column;gap:4px;padding:var(--sp-2) var(--sp-3);border:1px solid var(--border);border-radius:var(--radius-md)}
+.dash-docks__head{display:flex;align-items:baseline;justify-content:space-between;gap:var(--sp-2);min-width:0;font-weight:var(--fw-medium)}
+.dash-docks__queue{flex:none;color:var(--warn-text);font-size:var(--fs-xs);font-variant-numeric:tabular-nums}
+.dash-docks__list{display:flex;flex-direction:column;gap:4px;margin:0;padding:0;list-style:none}
+.dash-docks__dock{display:grid;grid-template-columns:56px minmax(48px,1fr) minmax(0,auto);align-items:center;gap:var(--sp-2);font-size:var(--fs-sm)}
+.dash-docks__cell,.dash-docks__val{color:var(--text-dim);font-variant-numeric:tabular-nums;white-space:nowrap}
 .dash-spots{display:flex;flex-direction:column;margin:0;padding:var(--sp-1);list-style:none}
 .dash-spot{display:grid;grid-template-columns:72px minmax(0,1fr) 64px;align-items:center;gap:var(--sp-3);width:100%;padding:6px var(--sp-2);border:0;border-radius:var(--radius-md);background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer}
 .dash-spot:hover{background:var(--hover)}
@@ -1003,6 +1046,43 @@ function buildStations(ctx, section) {
   };
 }
 
+/** Docks per station: a bar for how busy each dock was and how many vehicles it served, so an unused dock beside a busy one shows. */
+function buildDocks(ctx, section) {
+  const list = h('ul', { class: 'dash-docks' });
+  const note = h('p', { class: 'dash-note', hidden: true }, 'No station has several docks, and no single dock has a queue.');
+  section.body.append(note, list);
+  const rows = keyedList(list, {
+    key: (m) => m.id,
+    create(m) {
+      const link = h('button', { class: 'dash-link', type: 'button', onclick: () => ctx.actions?.focus?.({ stationIds: [m.id] }) });
+      const queued = h('span', { class: 'dash-docks__queue' });
+      const body = h('ul', { class: 'dash-docks__list' });
+      return { el: h('li', { class: 'dash-docks__station', dataset: { dockStation: m.id } }, h('div', { class: 'dash-docks__head' }, link, queued), body), link, queued, body, count: -1, bars: [], vals: [] };
+    },
+    update(item, m) {
+      setText(item.link, m.name);
+      setText(item.queued, m.waitText);
+      if (item.count !== m.docks.length) { // the docks of a station do not change while a simulation runs; rebuild only when they do
+        item.count = m.docks.length;
+        item.bars = m.docks.map(() => h('div', { class: 'progress__bar tone-busy' }));
+        item.vals = m.docks.map(() => h('span', { class: 'dash-docks__val' }));
+        item.body.replaceChildren(...m.docks.map((d, i) => h('li', { class: 'dash-docks__dock' },
+          h('span', { class: 'dash-docks__cell' }, d.label), h('div', { class: 'progress dash-bar', role: 'img', dataset: { dock: String(i) } }, item.bars[i]), item.vals[i])));
+      }
+      m.docks.forEach((d, i) => {
+        setVar(item.bars[i], '--w', `${Math.round(d.busy * 100)}%`);
+        setText(item.vals[i], `${d.busyText} · ${d.visitsText}${d.heldText ? ` · ${d.heldText}` : ''}`);
+        setAttr(item.bars[i].parentElement, 'aria-label', d.aria);
+      });
+    },
+  });
+  section.paint = (model) => {
+    rows.sync(model.docks);
+    setHidden(note, model.docks.length > 0);
+    setText(section.aside, model.docks.length ? String(model.docks.length) : '');
+  };
+}
+
 /** Flow table: what was delivered, how long loads waited for a vehicle and how many still wait. */
 function buildFlows(section) {
   const tbody = h('tbody');
@@ -1144,6 +1224,7 @@ export function createDashboard(ctx) {
       charts: createSection('charts', 'Over time'),
       vehicles: createSection('vehicles', 'Vehicles'),
       stations: createSection('stations', 'Workstations & buffers'),
+      docks: createSection('docks', 'Docks'),
       flows: createSection('flows', 'Material flows'),
       traffic: createSection('traffic', 'Traffic hot spots'),
     };
@@ -1151,6 +1232,7 @@ export function createDashboard(ctx) {
     const charts = buildCharts(sections.charts);
     buildVehicles(ctx, sections.vehicles);
     buildStations(ctx, sections.stations);
+    buildDocks(ctx, sections.docks);
     buildFlows(sections.flows);
     buildTraffic(ctx, sections.traffic);
     const impact = createImpactCard(ctx); // "Effect of your change": at the top, only while there is something to compare
@@ -1183,6 +1265,7 @@ export function createDashboard(ctx) {
       notice: noticeModel(report, runState),
       fleets: fleetModels(report),
       stations: stationRows(report, bottleneckIds(insights)),
+      docks: dockRows(report),
       flows: flowRows(report),
       spots: hotspotRows(report),
       breakdown: trafficBreakdown(report),

@@ -58,7 +58,7 @@
 //    silently is worse than a button that does nothing (use newProject to start over).
 //  * dirty: true after any change to project content, false after loadProject / newProject / markClean(). It is saved with
 //    the autosave, so a restored session that had unsaved work still counts as dirty.
-//  * Persistence writes exportProject(project) plus a "session" member { ui: { theme, overlays, rightTab, warmRestart }, dirty } under one
+//  * Persistence writes exportProject(project) plus a "session" member { ui: { theme, overlays, rightTab, warmRestart, toolOptions }, dirty } under one
 //    key, 400 ms (trailing) after the last change that matters but at the latest PERSIST_MAX_WAIT_MS after the first unsaved
 //    change (continuous editing still saves); selection, tool and ephemeral flags are never saved. Call persist() on
 //    pagehide to flush. Storage may be missing or throw (quota, privacy mode): the store keeps working and exposes the
@@ -74,7 +74,8 @@
 //    warnings in lastRestoreWarnings.
 //  * setUi merges `toolOptions` one level deep and `overlays` per flag; `theme`, `heat`, flags and `followSim` are validated
 //    (bad values ignored); `selection` is cleaned against the layout; any other key is stored as given.
-//  * toolOptions starts as { factor: 0.5, kind: 'wall' } (speed zone factor, obstacle kind); rightTab as 'properties'.
+//  * toolOptions starts as { factor: 0.5, kind: 'wall', drawMode: 'smart' } (speed zone factor, obstacle kind, how the road, one-way, speed-zone and
+//    eraser tools follow the pointer: 'smart' | 'straight' | 'free', see ui/editor/strokes.js; any other drawMode is ignored); rightTab as 'properties'.
 
 import { createLayout, normalizeLayout, cloneLayout, layoutChangeKind, checkInvariants, cleanText, cleanId } from '../model/layout.js';
 import { exportProject, importProject } from '../model/serialize.js';
@@ -99,7 +100,9 @@ const NAME_MAX = 80;
 const HEAT_MODES = ['off', 'traffic', 'waiting'];
 const THEMES = ['auto', 'light', 'dark'];
 const OVERLAY_FLAGS = ['grid', 'studs', 'flows', 'docks', 'jobs', 'ids', 'labels'];
-const PREF_KEYS = ['theme', 'overlays', 'rightTab', 'warmRestart'];
+const PREF_KEYS = ['theme', 'overlays', 'rightTab', 'warmRestart', 'toolOptions'];
+/** Draw modes of the stroke tools (the same list as ui/editor/strokes.js DRAW_MODES: the store may not import from ui/). */
+const DRAW_MODES = ['smart', 'straight', 'free'];
 const UNSAFE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 const CELL_KEY_RE = /^\d+,\d+$/;
 const SCENARIO_ID_RE = /^sc(\d+)$/;
@@ -140,7 +143,7 @@ function same(a, b) {
 function defaultUi() {
   return frozen({
     tool: 'select',
-    toolOptions: frozen({ factor: 0.5, kind: 'wall' }),
+    toolOptions: frozen({ factor: 0.5, kind: 'wall', drawMode: 'smart' }),
     selection: NO_SELECTION,
     overlays: frozen({ grid: true, studs: true, flows: true, docks: false, jobs: true, heat: 'off', ids: false, labels: true }),
     rightTab: 'properties',
@@ -212,7 +215,11 @@ function mergeUi(current, patch, layout) {
         if (typeof value === 'boolean') set(key, value);
         break;
       case 'toolOptions':
-        if (isObj(value)) set(key, frozen({ ...current.toolOptions, ...value }));
+        if (isObj(value)) {
+          const options = { ...current.toolOptions, ...value };
+          if (!DRAW_MODES.includes(options.drawMode)) options.drawMode = current.toolOptions.drawMode;
+          set(key, frozen(options));
+        }
         break;
       case 'overlays':
         if (isObj(value)) set(key, mergeOverlays(current.overlays, value));

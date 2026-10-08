@@ -8,6 +8,8 @@
 //                     appears when the plan is zoomed in far enough, or for a hovered vehicle / a selected fleet.
 //   drawWaitingBadges a badge "3 waiting" on every station that has loads ready and not yet claimed by any vehicle;
 //                     it turns red when the output buffer is (nearly) full, because the station then stops producing.
+//   drawDockMarkers   a small mark at the station edge of every dock cell (drawn first, under the lines and vehicles): a hollow dot while the
+//                     dock is free, a ring while a vehicle is on its way to it (reserved), a filled dot while a vehicle stands on it.
 //
 // Both read the live simulation only (vehicles: state, order, route; stations: outLinks), never stats.report(), and allocate
 // nothing per frame once warmed up: positions go through the frame's pose buffer and a reusable line buffer, text widths
@@ -28,6 +30,8 @@ export const CHIP_MIN_ZOOM = 14;
 export const CHIP_FOCUS_MIN_ZOOM = 7;
 /** From this zoom on the waiting badge says "3 waiting"; below it a round badge shows the bare number. */
 export const BADGE_TEXT_MIN_ZOOM = 8;
+/** Dock markers appear from this zoom (px per metre) on. */
+export const DOCK_MARK_MIN_ZOOM = 8;
 /** The badge is red from this share of the output buffer. */
 export const HIGH_FILL = 0.8;
 /** Most characters of a station name in a chip. */
@@ -179,10 +183,71 @@ let lineBuf = new Float64Array(8 * LINE_STRIDE);
 let lineEntries = [];
 const tmpPoint = [0, 0];
 
+// ---- dock markers -------------------------------------------------------------------------------------------------
+
+/** Where the marker of each dock cell sits (metres): on the cell, toward the station it serves, so a vehicle on the cell does not hide it. */
+export function dockMarkerPoints(book, graph, scene) {
+  const pts = [];
+  for (const cell of book.cellList) {
+    const x = graph.x(cell.node);
+    const y = graph.y(cell.node);
+    let ox = 0;
+    let oy = 0;
+    for (const id of graph.stationsAt.get(cell.node) || []) {
+      const e = scene.stationById.get(id);
+      if (!e) continue;
+      ox = x < e.x ? 1 : x > e.x + e.w ? -1 : 0;
+      oy = y < e.y ? 1 : y > e.y + e.h ? -1 : 0;
+      break;
+    }
+    pts.push({ node: cell.node, x: x + ox * 0.36 * graph.cellSize, y: y + oy * 0.36 * graph.cellSize });
+  }
+  return pts;
+}
+
+const markerCache = new WeakMap();
+
+/** The dock markers: free = hollow dot, reserved (a vehicle is on its way) = ring, occupied = filled dot. Expects the CSS-pixel transform. */
+export function drawDockMarkers(ctx, fr, sim) {
+  const book = sim.logistics && sim.logistics.docks;
+  if (!book || !book.cellList || book.cellList.length === 0 || !sim.graph || fr.zoom < DOCK_MARK_MIN_ZOOM) return;
+  let cached = markerCache.get(book);
+  if (cached === undefined || cached.scene !== fr.scene) {
+    cached = { scene: fr.scene, pts: dockMarkerPoints(book, sim.graph, fr.scene) };
+    markerCache.set(book, cached);
+  }
+  const z = fr.zoom;
+  const r = clamp(fr.cs * z * 0.085, 2.6, 6);
+  book.refreshOccupants(true); // the vehicles have moved since the tick began
+  ctx.setLineDash(NO_DASH);
+  for (const m of cached.pts) {
+    const x = fr.ox + m.x * z;
+    const y = fr.oy + m.y * z;
+    if (x < -r || x > fr.w + r || y < -r || y > fr.h + r) continue;
+    const status = book.status(m.node);
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, TAU);
+    if (status === 'occupied') {
+      ctx.fillStyle = STATUS_COLORS.busy;
+      ctx.fill();
+      ctx.lineWidth = 1.2;
+      ctx.strokeStyle = fr.theme.dock;
+    } else if (status === 'reserved') {
+      ctx.lineWidth = 2.4;
+      ctx.strokeStyle = STATUS_COLORS.starved;
+    } else {
+      ctx.lineWidth = 1.2;
+      ctx.strokeStyle = fr.theme.dock;
+    }
+    ctx.stroke();
+  }
+}
+
 /** Dashed lines from vehicles to the docks they drive to, then the chips. Expects the CSS-pixel transform. */
 export function drawJobLines(ctx, fr) {
   const sim = fr.sim;
   if (!sim || fr.overlays.jobs === false || fr.zoom < LINE_MIN_ZOOM) return;
+  drawDockMarkers(ctx, fr, sim);
   const list = sim.vehicles;
   const n = list ? list.length : 0;
   if (n === 0) return;

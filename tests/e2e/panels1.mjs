@@ -118,7 +118,7 @@ await withBrowser(async ({ page, url, errors }) => {
   const cols = label('Columns');
   await type(cols, '5');
   ok(await P().locator('.field.is-invalid .field__error').first().isVisible(), 'invalid grid width shows a message');
-  ok((await P().locator('.field.is-invalid .field__error').first().innerText()).includes('between 8 and 160'));
+  ok((await P().locator('.field.is-invalid .field__error').first().innerText()).includes('between 8 and 320'));
   await cols.press('Enter');
   eq((await lay()).grid.cols, 56, 'invalid width is not applied');
   await cols.blur();

@@ -894,14 +894,14 @@ test('ENG-7d: Two lines tip - Press line repair time 30 min: over ten runs the W
   within(-change(m.twoRepair.throughput, m.twoBaseTenSeeds.throughput), 0.02, 0.09, 'the output falls by about 5 %');
 });
 
-test('ENG-7e: Congestion lab tips - 6 AGVs: same output, wait share down by a third; 10 AGVs: a little more waiting; capacity 2 or 12 s hand-over: down by half or more; a second dock for Packing: down by a third', async () => {
+test('ENG-7e: Congestion lab tips - 6 AGVs: same output, wait share down by a third; 10 AGVs: a little more waiting; capacity 2 or 12 s hand-over: down by half or more; a second dock for Packing: down by about 40 %', async () => {
   const m = await tips();
   const fall = (variant) => -change(variant.waitShare, m.labBase.waitShare);
   for (const [name, variant] of [['6 AGVs', m.labSixAgvs], ['capacity 2', m.labCapacity2], ['12 s hand-over', m.labQuick], ['a second dock', m.labSecondDock], ['10 AGVs', m.labTenAgvs]]) {
     within(change(variant.throughput, m.labBase.throughput), -0.03, 0.03, `${name}: the output stays the same`);
   }
   within(fall(m.labSixAgvs), 0.25, 0.42, '6 AGVs: the wait share falls by about a third');
-  within(fall(m.labSecondDock), 0.22, 0.42, 'a second dock: the wait share falls by about a third');
+  within(fall(m.labSecondDock), 0.3, 0.46, 'a second dock: the wait share falls by about 40 % (a third before vehicles chose the free dock)');
   within(fall(m.labCapacity2), 0.4, 0.65, 'capacity 2: the wait share falls by about half');
   within(fall(m.labQuick), 0.4, 0.7, '12 s hand-over: the wait share falls by more than half');
   within(-fall(m.labTenAgvs), 0, 0.15, 'a 10th AGV only adds a little waiting');

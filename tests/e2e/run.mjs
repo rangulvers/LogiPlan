@@ -31,6 +31,8 @@ const SCRIPTS = Object.freeze([
   { name: 'uikit-visual', what: 'UI kit: components, icons, charts, contrast, themes' },
   { name: 'render-visual', what: 'plant renderer: drawing, hit tests, PNG export' },
   { name: 'editor', what: 'canvas editor: tools, gestures, keyboard, touch' },
+  { name: 'roads-straight', what: 'road draw modes in the real app: smart (jitter, corners, retraction), Shift straight, Shift+click, free, one-way, touch' },
+  { name: 'roads-canvas-combined', what: 'one planner session with smart roads and the growing plan together: jittery aisle, past the edge, Shift branch, brick beyond the left edge, flows, vehicles, play, undo/redo of every step, reload, export/import, share link, simulation equality, touch, dark, keyboard-only plan size, 390 px' },
   { name: 'panels1', what: 'Properties, Simulate and Checks panels' },
   { name: 'panels2', what: 'Fleet and Flows panels, dialogs' },
   { name: 'dashboard', what: 'Results dashboard' },
@@ -40,8 +42,10 @@ const SCRIPTS = Object.freeze([
   { name: 'guidance-logic', what: 'coaching: Next steps, guide chip, Getting started, Checks fixes (the second Goods in journey)' },
   { name: 'guidance-canvas', what: 'canvas guidance: flow handle, connect mode, hint after placing, vehicle jobs and waiting loads' },
   { name: 'guidance-panels', what: 'who serves which flow: station Where do loads go?, Jobs this fleet serves, Served by, Help page and welcome tips' },
+  { name: 'docks', what: 'dock choice: the Jobs overlay marks free / reserved / occupied docks, the Results tab lists the docks of a station, the dock insight, the Help page' },
   { name: 'walkthrough', what: 'first-time planner: the second Goods in end to end, every way to connect, from scratch, breaking it, touch, dark, keyboard, performance', exclusive: true },
   { name: 'edit-feedback', what: 'edit feedback: warm restart after edits, "Effect of your change" card, baseline, fleet status, frame times', exclusive: true },
+  { name: 'canvas-grow', what: 'expandable canvas: roads, bricks and drags beyond the edges grow the plan (one undo step, the view stays), + chips, Plant settings buttons, auto-pan, the 320 x 320 limit, a large plant at speed', exclusive: true },
   { name: 'edit-feedback-review', what: 'edit feedback, attacked: lifecycle with real frames, card at 390 px in both themes, contrast, keyboard, honesty of the card against the toast, jank, memory', exclusive: true },
   { name: 'uikit-review', what: 'independent review of the UI kit', review: true },
   { name: 'render-review', what: 'independent review of the renderer', review: true },
@@ -98,7 +102,7 @@ const seconds = (ms) => `${(ms / 1000).toFixed(1)} s`;
 async function main() {
   const opts = parseArgs(process.argv.slice(2));
   if (opts.list) {
-    for (const s of SCRIPTS) console.log(`${s.name.padEnd(16)}${s.review ? '(review) ' : s.exclusive ? '(alone)  ' : ''}${s.what}`);
+    for (const s of SCRIPTS) console.log(`${s.name.padEnd(22)}${s.review ? '(review) ' : s.exclusive ? '(alone)  ' : ''}${s.what}`);
     return 0;
   }
   const unknown = opts.names.filter((n) => !SCRIPTS.some((s) => s.name === n));
@@ -125,7 +129,7 @@ async function main() {
       results.push(result);
       const summary = result.lines.filter((l) => /passed|checks|all browser checks|all checks|OK|no defects/i.test(l)).at(-1) || '';
       const status = result.failed ? 'FAIL' : flaky ? 'FLAKY' : 'ok  ';
-      console.log(`${status} ${script.name.padEnd(16)} ${seconds(result.ms).padStart(8)}  ${result.failed || (flaky ? `passed on the second run (the first: ${flaky})` : summary.trim().slice(0, 100))}`);
+      console.log(`${status} ${script.name.padEnd(22)} ${seconds(result.ms).padStart(8)}  ${result.failed || (flaky ? `passed on the second run (the first: ${flaky})` : summary.trim().slice(0, 100))}`);
       if (result.failed) for (const line of result.lines.slice(-14)) console.log(`       | ${line.slice(0, 200)}`);
     }
   };

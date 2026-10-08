@@ -56,7 +56,7 @@ export const HANDLE_CURSORS = Object.freeze({
 const shiftText = (drawMode) => (drawMode === 'straight' ? 'Every stroke is a straight line.' : 'Hold Shift for a straight line.');
 
 /** "Drag to draw. Hold Shift for a straight line." for the drawing tools, in the words of the draw mode (store.ui.toolOptions.drawMode). */
-const dragText = (drawMode, where = '') => `Drag to draw${drawMode === 'free' ? ' freehand' : ''}${where}. ${shiftText(drawMode)}`;
+const dragText = (drawMode, what = '', where = '') => `Drag to draw${what}${drawMode === 'free' ? ' freehand' : ''}${where}. ${shiftText(drawMode)}`;
 
 /** Text for the status line when a tool is active: one short sentence, keys spelled out. */
 export function toolHint(tool, options = {}) {
@@ -64,7 +64,7 @@ export function toolHint(tool, options = {}) {
     case 'select': return 'Click to select. Drag to move. Drag empty space to select an area. Space + drag pans.';
     case 'pan': return 'Drag to move the view. Scroll to zoom.';
     case 'road': return `${dragText(options.drawMode)} Alt = erase.`;
-    case 'oneway': return `${dragText(options.drawMode, ' in the driving direction')} Alt = erase.`;
+    case 'oneway': return `${dragText(options.drawMode, ' a one-way road', ' in the driving direction')} Alt = erase.`;
     case 'speedzone': return `Drag over roads to limit speed to ${Math.round((options.factor ?? 0.5) * 100)} %. ${shiftText(options.drawMode)} Alt = remove the limit. Z again = other limit.`;
     case 'erase': return `Drag to erase roads, walls and labels. ${shiftText(options.drawMode)} To remove a station, select it and press Delete.`;
     case 'obstacle': return `Click to place a ${obstacleName(options.kind).toLowerCase()}, drag to size it. W again = other type. Esc = back to Select.`;

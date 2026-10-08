@@ -1,46 +1,101 @@
 name: Deploy to GitHub Pages
 
+# A merge to main goes live after a fast gate, not after the whole suite: the pull request has already passed every test before it was
+# merged (ci.yml), so the deploy only re-checks what a merge can break on its own.
+#
+#   verify  imports resolve + the fast test tier + the site assembles and is uploaded       (about a minute)
+#   deploy  needs `verify` only. Publishes the uploaded site.
+#   heavy   the heavy test tier (scripts/test-tiers.mjs) beside the deploy, one job per shard. It does not hold the deploy back, but
+#           a failure turns this run red, so a problem that only shows on main (a merge of two PRs that are fine alone) is not missed.
 on:
   push:
     branches: [main]
   workflow_dispatch:
 
+# No workflow-level `concurrency`: it would make the next push wait for the heavy tier of the previous run. Only the deploy is serialised.
 permissions:
   contents: read
-  pages: write
-  id-token: write
-
-concurrency:
-  group: pages
-  cancel-in-progress: false
 
 jobs:
-  test:
+  verify:
+    name: Verify (check + fast tests)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      stale: ${{ steps.fresh.outputs.stale }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: npm run test:quiet
-      - run: npm run check
-
-  deploy:
-    needs: test
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - uses: actions/configure-pages@v5
+      - name: Import / export consistency
+        run: npm run check
+      - name: Fast tests
+        run: npm run test:fast
       - name: Assemble site
         run: node scripts/build-site.mjs _site
       - uses: actions/upload-pages-artifact@v3
         with:
           path: _site
-      - id: deployment
+      # The jobs of two pushes can finish in another order than the pushes did. Without this check an older commit whose verify takes
+      # longer would be deployed after the newer one and replace it. If the branch cannot be read the answer is "deploy" (the case before
+      # this check existed). Consequence: re-running the run of an old commit does not roll the site back; revert on main instead.
+      - name: Is this still the newest commit?
+        id: fresh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          latest=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/${GITHUB_REF#refs/}" --jq .object.sha 2>/dev/null) || latest=""
+          if [ -n "$latest" ] && [ "$latest" != "$GITHUB_SHA" ]; then
+            echo "stale=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Not deployed: ${GITHUB_REF_NAME} has moved on to ${latest:0:7}; the run of that commit publishes the newer site."
+          else
+            echo "stale=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  deploy:
+    name: Deploy
+    needs: verify
+    if: ${{ needs.verify.outputs.stale != 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # One deploy at a time, and a deploy that has started is never cancelled halfway. Of several waiting ones only the newest is kept.
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    # The same three permissions as GitHub's own Pages starter workflow (reading the contents is harmless; the deploy job does not check out).
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Publish
+        id: deployment
         uses: actions/deploy-pages@v4
+
+  heavy:
+    name: Heavy tests ${{ matrix.shard }}/5 (beside the deploy)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Heavy tests
+        run: npm run test:heavy -- --shard ${{ matrix.shard }}

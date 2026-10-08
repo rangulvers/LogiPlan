@@ -103,7 +103,13 @@ test('tools: every tool has a cursor and a hint; hints use planner language and 
   assert.equal(toolCursor('select'), 'default');
   assert.equal(toolCursor('pan'), 'grab');
   assert.equal(toolCursor('label'), 'text');
-  assert.match(toolHint('road'), /two-way road.*Shift = straight line/);
+  assert.equal(toolHint('road'), 'Drag to draw. Hold Shift for a straight line. Alt = erase.');
+  assert.match(toolHint('oneway', { drawMode: 'smart' }), /driving direction.*Hold Shift for a straight line/);
+  assert.match(toolHint('road', { drawMode: 'free' }), /freehand.*Hold Shift for a straight line/);
+  assert.match(toolHint('road', { drawMode: 'straight' }), /Every stroke is a straight line/);
+  assert.doesNotMatch(toolHint('road', { drawMode: 'straight' }), /Hold Shift/, 'nothing to hold when every stroke is straight');
+  assert.match(toolHint('erase'), /Hold Shift for a straight line/);
+  assert.match(toolHint('speedzone', { factor: 0.5 }), /Hold Shift for a straight line/);
   assert.match(toolHint('speedzone', { factor: 0.25 }), /25 %/);
   assert.match(toolHint('obstacle', { kind: 'rack' }), /rack/);
   assert.match(toolHint('process'), /Workstation/);

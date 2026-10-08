@@ -72,8 +72,8 @@ await withBrowser(async ({ page, url, errors, shot }) => {
     ok(Math.abs(first - report.throughput.perHour) < 0.6, `throughput card ${first} vs report ${report.throughput.perHour}`);
     const util = Object.values(report.fleets).reduce((a, f) => a + f.utilization * f.count, 0) / Object.values(report.fleets).reduce((a, f) => a + f.count, 0);
     ok(Math.abs(parseFloat(await kpiValue('fleet')) - util * 100) < 0.6, 'fleet utilization card is the vehicle-weighted mean');
-    eq(await count('details.dash-sec'), 6, 'six sections');
-    eq(await count('details.dash-sec[open]'), 6, 'all open by default');
+    eq(await count('details.dash-sec'), 7, 'seven sections (Insights, Over time, Vehicles, Workstations & buffers, Docks, Material flows, Traffic hot spots)');
+    eq(await count('details.dash-sec[open]'), 7, 'all open by default');
     eq(await count('.dash-fleet'), layout.fleets, 'one card per fleet');
     eq(await count('[data-flow]'), layout.flows, 'one row per flow');
     const stationNames = Object.values(report.stations).filter((s) => ['process', 'storage'].includes(s.type)).map((s) => s.name).sort();

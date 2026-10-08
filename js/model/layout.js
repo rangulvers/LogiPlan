@@ -1342,7 +1342,9 @@ export function contentBounds(layout) {
     if (by > y1) y1 = by;
   };
   for (const key of Object.keys(layout.roads)) {
-    const [cx, cy] = parseKey(key);
+    const comma = key.indexOf(','); // "cx,cy": faster than parseKey, and this runs over every road cell of a plan of up to 100 000 cells
+    const cx = +key.slice(0, comma);
+    const cy = +key.slice(comma + 1);
     take(cx, cy, cx + 1, cy + 1);
   }
   for (const e of layout.stations) take(e.x, e.y, e.x + e.w, e.y + e.h);
@@ -1393,6 +1395,24 @@ function trimAxis(c0, c1, size, margin, min) {
 }
 
 /**
+ * What trimGrid would do, without doing it: the kept range of cells { x0, x1, y0, y1 } (old cell numbers), the new size and the
+ * move of the content. `changed` is false for an empty plan and for one that has nothing to trim.
+ * @param {object} layout
+ * @param {{ margin?: number }} [opts] empty cells kept around the content, default 4
+ */
+export function trimmedSize(layout, opts) {
+  const { cols, rows } = layout.grid;
+  const none = { changed: false, x0: 0, y0: 0, x1: cols, y1: rows, cols, rows, dx: 0, dy: 0 };
+  const margin = cellCount((opts ?? {}).margin ?? 4);
+  const b = contentBounds(layout);
+  if (!b) return none;
+  const [x0, x1] = trimAxis(b.x, b.x + b.w, cols, margin, GRID_LIMITS.minCols);
+  const [y0, y1] = trimAxis(b.y, b.y + b.h, rows, margin, GRID_LIMITS.minRows);
+  if (x0 === 0 && y0 === 0 && x1 === cols && y1 === rows) return none;
+  return { changed: true, x0, y0, x1, y1, cols: x1 - x0, rows: y1 - y0, dx: 0 - x0, dy: 0 - y0 };
+}
+
+/**
  * Shrink the baseplate to the content plus `margin` empty cells on every side (never below the minimum size, never
  * dropping anything: only empty cells are removed, and the content moves up/left by the cells removed there). An empty
  * plan is left alone.
@@ -1404,15 +1424,10 @@ function trimAxis(c0, c1, size, margin, min) {
  */
 export function trimGrid(layout, opts) {
   const { cols, rows } = layout.grid;
-  const none = { changed: false, dx: 0, dy: 0, left: 0, top: 0, right: 0, bottom: 0, cols, rows };
-  const margin = cellCount((opts ?? {}).margin ?? 4);
-  const b = contentBounds(layout);
-  if (!b) return none;
-  const [x0, x1] = trimAxis(b.x, b.x + b.w, cols, margin, GRID_LIMITS.minCols);
-  const [y0, y1] = trimAxis(b.y, b.y + b.h, rows, margin, GRID_LIMITS.minRows);
-  if (x0 === 0 && y0 === 0 && x1 === cols && y1 === rows) return none;
-  if (x0 || y0) translateAll(layout, -x0, -y0); // content only moves inside the old grid: cannot be refused
-  layout.grid.cols = x1 - x0;
-  layout.grid.rows = y1 - y0;
-  return { changed: true, dx: 0 - x0, dy: 0 - y0, left: 0 - x0, top: 0 - y0, right: x1 - cols, bottom: y1 - rows, cols: x1 - x0, rows: y1 - y0 };
+  const t = trimmedSize(layout, opts);
+  if (!t.changed) return { changed: false, dx: 0, dy: 0, left: 0, top: 0, right: 0, bottom: 0, cols, rows };
+  if (t.x0 || t.y0) translateAll(layout, -t.x0, -t.y0); // content only moves inside the old grid: cannot be refused
+  layout.grid.cols = t.cols;
+  layout.grid.rows = t.rows;
+  return { changed: true, dx: t.dx, dy: t.dy, left: t.dx, top: t.dy, right: t.x1 - cols, bottom: t.y1 - rows, cols: t.cols, rows: t.rows };
 }

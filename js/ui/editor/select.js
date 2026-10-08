@@ -9,13 +9,18 @@
 //   flow handle                  drag to another station to connect them with a flow; a click starts connect mode (connector.js)
 //   flow curve / vehicle         click selects the flow / the vehicle's fleet; dragging draws a marquee
 //   road cell or empty space     click selects the road cell (or clears the selection); dragging draws a marquee
+//
+// Beyond the edge. With the pointer beyond an edge of the baseplate a moved or resized station, wall or label may leave it: the plan
+// grows to hold it (ed.showGrowth while dragging, ed.commitGrow on release, one undo step, editor/grow.js). With the pointer inside the
+// baseplate an item still may not stick out (the ghost is red and says how to extend the plan).
 
 import { roadAt, getStation, resizeStation, updateObstacle } from '../../model/layout.js';
 import { cellKey } from '../../util/grid.js';
 import { isHandle, resizeRect } from './resize.js';
+import { pointerBeyond, extentOfMoves, extentOfRect, shiftRect, blockReasonGrowing, isLimitReason, limitText } from './grow.js';
 import { checkMove, applyMove, isMovable, itemsText, selectionBounds, selectedItems, MOVABLE_KINDS } from './moves.js';
 import { rectFromPoints, marqueeHits, pickMarquee, addToSelection, toggleInSelection, isSelected } from './marquee.js';
-import { blockReason, sizeText, dragThreshold } from './snapping.js';
+import { sizeText, dragThreshold } from './snapping.js';
 import { plannerName, obstacleName, HANDLE_CURSORS } from './tools.js';
 import { HANDLE_HINT } from './connect.js';
 
@@ -25,6 +30,9 @@ const NONE = Object.freeze({ kind: null, ids: Object.freeze([]) });
 const isResizable = (sel) => (sel.kind === 'station' || sel.kind === 'obstacle') && sel.ids.length === 1;
 
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+
+/** The reason that the pointer can undo by moving past the edge. */
+const LEAVES = 'it would leave the plant area';
 
 /** "Move by +3, −2 cells (+6, −4 m)" for the status line. */
 function moveText(dx, dy, cellSize) {
@@ -156,15 +164,16 @@ export function createSelectTool(ed) {
   function updateMove(p) {
     const [dx, dy] = cellDelta(p);
     const layout = ed.layout();
-    const check = checkMove(layout, g.sel, dx, dy);
+    const check = checkMove(layout, g.sel, dx, dy, pointerBeyond(layout.grid, p.ux, p.uy));
     g.delta = [dx, dy];
     g.check = check;
+    ed.showGrowth(check.ok || isLimitReason(check.reason) ? extentOfMoves(check.moves) : null);
     ed.view.ghost = null;
     ed.view.marquee = null;
     if (g.sel.kind === 'label') showLabelTarget(layout, check);
     else if (g.sel.ids.length === 1) showRectGhost(g.sel.kind, check.moves[0], check.ok);
     else showGroupBox(layout, dx, dy);
-    ed.status(check.ok ? moveText(dx, dy, layout.grid.cellSize) : `Cannot move here: ${check.reason}.`);
+    ed.status(check.ok ? moveText(dx, dy, layout.grid.cellSize) : `Cannot move here: ${check.reason}.${check.reason === LEAVES ? ' Move the pointer past the edge to extend the plan.' : ''}`);
     ed.redraw();
   }
 
@@ -192,11 +201,11 @@ export function createSelectTool(ed) {
     const [dx, dy] = g.delta;
     if (dx === 0 && dy === 0) return;
     if (!g.check.ok) {
-      ed.toast(`Cannot move here: ${g.check.reason}.`, { kind: 'warn' });
+      ed.toast(isLimitReason(g.check.reason) ? limitText() : `Cannot move here: ${g.check.reason}.`, { kind: 'warn' });
       return;
     }
     const { sel } = g;
-    ed.commit(`Move ${itemsText(ed.layout(), sel)}`, (draft) => applyMove(draft, sel, dx, dy));
+    ed.commitGrow(`Move ${itemsText(ed.layout(), sel)}`, extentOfMoves(g.check.moves), (draft) => applyMove(draft, sel, dx, dy));
   }
 
   // ---- drag: resize ----
@@ -205,11 +214,13 @@ export function createSelectTool(ed) {
     const layout = ed.layout();
     const { sel } = g;
     const [dx, dy] = cellDelta(p);
-    const rect = resizeRect(g.rect0, g.handle, dx, dy, layout.grid);
+    const beyond = pointerBeyond(layout.grid, p.ux, p.uy);
+    const rect = resizeRect(g.rect0, g.handle, dx, dy, layout.grid, 1, beyond);
     const ignore = sel.kind === 'station' ? { ignoreStation: sel.ids[0] } : { ignoreObstacle: sel.ids[0] };
-    const reason = blockReason(layout, rect, ignore);
+    const reason = blockReasonGrowing(layout, rect, ignore, beyond);
     g.rect = rect;
     g.reason = reason;
+    ed.showGrowth(!reason || isLimitReason(reason) ? extentOfRect(rect) : null);
     if (sel.kind === 'station') ed.view.ghost = { kind: 'station', type: getStation(layout, sel.ids[0]).type, rect, valid: !reason };
     else ed.view.ghost = { kind: 'obstacle', obstacleKind: layout.obstacles.find((o) => o.id === sel.ids[0]).kind, rect, valid: !reason };
     ed.status(reason ? `Cannot resize here: ${reason}.` : `Size ${sizeText(rect, layout.grid.cellSize)}`);
@@ -221,11 +232,14 @@ export function createSelectTool(ed) {
     const { rect, rect0, reason, sel } = g;
     if (['x', 'y', 'w', 'h'].every((k) => rect[k] === rect0[k])) return;
     if (reason) {
-      ed.toast(`Cannot resize here: ${reason}.`, { kind: 'warn' });
+      ed.toast(isLimitReason(reason) ? limitText() : `Cannot resize here: ${reason}.`, { kind: 'warn' });
       return;
     }
     const id = sel.ids[0];
-    ed.commit(`Resize ${itemsText(ed.layout(), sel)}`, (draft) => (sel.kind === 'station' ? resizeStation(draft, id, rect) : updateObstacle(draft, id, rect)));
+    ed.commitGrow(`Resize ${itemsText(ed.layout(), sel)}`, extentOfRect(rect), (draft, shift) => {
+      const at = shiftRect(rect, shift);
+      return sel.kind === 'station' ? resizeStation(draft, id, at) : updateObstacle(draft, id, at);
+    });
   }
 
   // ---- drag: marquee ----
@@ -255,6 +269,7 @@ export function createSelectTool(ed) {
 
   return {
     busy: () => g !== null,
+    autoPan: () => g !== null && (g.mode === 'move' || g.mode === 'resize'), // dragging something: the view follows the pointer to the edge of the canvas
     down(p) {
       const hit = ed.hit(p);
       g = { mode: 'press', p0: p, arm: null, onClick: null };
