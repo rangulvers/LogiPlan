@@ -1,0 +1,24 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches-ignore: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Unit & integration tests
+        run: npm run test:quiet
+      - name: Import / export consistency
+        run: npm run check
+      - name: Site assembles
+        run: node scripts/build-site.mjs _site-ci

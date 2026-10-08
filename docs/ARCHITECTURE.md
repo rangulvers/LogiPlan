@@ -139,7 +139,9 @@ createLayout({ name?, cols?, rows?, cellSize? }) → Layout                     
 normalizeLayout(raw) → Layout            // tolerant import: migrate by `schema`, fill defaults, clamp numbers, drop dangling refs,
                                          // repair road links/overlaps, dedupe ids, never throws on junk (throws only if raw isn't an object)
 cloneLayout(layout) → Layout             // structuredClone
-layoutChangeKind(prev, next) → 'none' | 'runtime' | 'structural'   // 'runtime' iff only RUNTIME_KEYS in settings differ
+layoutChangeKind(prev, next) → 'none' | 'cosmetic' | 'runtime' | 'structural'
+                                         // 'none' deep-equal; 'cosmetic' iff only name, notes, labels, obstacles, settings.duration differ (sim keeps running);
+                                         // 'runtime' iff (additionally) only RUNTIME_KEYS in settings differ (applied live); anything else 'structural' (sim rebuilds)
 
 // queries
 getStation(layout, id), getFlow(layout, id), getFleet(layout, id)
@@ -266,7 +268,8 @@ traffic.onArrive = (tv) => {}            // route finished: tv stopped exactly a
 traffic.onDeadlock = ({ vehicles, nodes, resolved, victim }) => {}
 traffic.edgeCount(edgeId) → number       // vehicles currently on the edge (for congestion-aware costs)
 traffic.stats = { edgePasses: Int32Array, edgeWait: Float64Array /* veh·s waiting on edge */, nodeWait: Float64Array /* veh·s waiting in/at cell */,
-                  deadlocks: number, totalWait: number }
+                  waitVehicle: number, waitJunction: number, waitBroken: number /* cumulative veh·s by waitReason */,
+                  deadlocks: number, totalWait: number /* = sum of the three */, drivingTime: number /* veh·s with a route and moving or waiting */ }
 TV = { id, owner, length, width, vmax, accel, decel,
        onRoad, node /* ≥0 when stationary exactly at a node centre, else -1 */, edge /* current edge or -1 */, s /* m from the edge tail */, lastEdge,
        v, x, y, heading, prevX, prevY, prevHeading /* pose at start of the last tick, for render interpolation */,
@@ -480,7 +483,7 @@ runner.play(), runner.pause(), runner.toggle(), runner.step(seconds = 1), runner
 runner.on(event, fn) → off     // 'state' (play/pause/reset/speed), 'frame' (every rAF, throttled stats at ~4 Hz as 'kpis')
 ```
 Behaviour: the sim is built lazily on first play/step; **structural** layout changes (via `layoutChangeKind`) reset the sim (keeping the playing state) after a 250 ms debounce;
-**runtime** changes call `sim.setRuntime` without reset. Per frame: `target += min(realDt, 0.1) * speed`; `sim.advance(target - sim.time, { maxMillis: 10 })`; `limited` when it falls behind; `alpha` for interpolation.
+**runtime** and **cosmetic** changes never reset (runtime ones call `sim.setRuntime`). Per frame: `target += min(realDt, 0.1) * speed`; `sim.advance(target - sim.time, { maxMillis: 10 })`; `limited` when it falls behind; `alpha` for interpolation.
 Pauses automatically when the tab is hidden. Exposes `runner.kpis()` (cached 250 ms) and `runner.insights()`.
 
 ### 6.5 Panels & dialogs (owner: panels agent) — `js/ui/panels/*.js`, `js/ui/dialogs.js`

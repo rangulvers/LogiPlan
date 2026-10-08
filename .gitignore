@@ -4,3 +4,4 @@ node_modules/
 /test-results/
 /e2e-output/
 /_site/
+/_site-ci/
