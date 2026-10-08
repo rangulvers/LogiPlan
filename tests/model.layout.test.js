@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as L from '../js/model/layout.js';
-import { emptyLayout, RUNTIME_KEYS, STATION_TYPES, OBSTACLE_KINDS, FLEET_PRESET_ORDER } from '../js/model/defaults.js';
+import { emptyLayout, RUNTIME_KEYS, STATION_TYPES, OBSTACLE_KINDS, FLEET_PRESET_ORDER, GRID_LIMITS } from '../js/model/defaults.js';
 import { createRng } from '../js/util/rng.js';
 import { DIR_BIT, N, E, S, W } from '../js/util/grid.js';
 
@@ -29,7 +29,7 @@ test('createLayout: defaults, overrides and clamping to the grid limits', () => 
   assert.deepEqual(L.createLayout(), emptyLayout());
   const l = L.createLayout({ name: '  Plant X ', cols: 5, rows: 9999, cellSize: 0.1 });
   assert.equal(l.name, 'Plant X');
-  assert.deepEqual(l.grid, { cols: 8, rows: 160, cellSize: 0.5 });
+  assert.deepEqual(l.grid, { cols: 8, rows: GRID_LIMITS.maxRows, cellSize: 0.5 }); // the limit is GRID_LIMITS (320 since the plan can grow), not a literal
   assert.deepEqual(L.createLayout({ cols: NaN, rows: 'abc', cellSize: Infinity }).grid, { cols: 48, rows: 32, cellSize: 2 });
   assert.deepEqual(L.checkInvariants(l), []);
 });
@@ -638,7 +638,7 @@ test('resizeGrid clips and drops what falls outside and reports how much was rem
   assert.equal(L.getStation(l, 's2').w, 2, 'a station that sticks out is clipped, not deleted');
   assert.equal(clipped.removed, 4 + 1, '4 road cells and the clipped obstacle that now lies completely outside');
   assert.equal(L.resizeGrid(l, 3, 1e9).removed, 4, '2 road cells plus the process and the depot, now completely outside');
-  assert.deepEqual([l.grid.cols, l.grid.rows], [8, 160], 'clamped to the grid limits');
+  assert.deepEqual([l.grid.cols, l.grid.rows], [8, GRID_LIMITS.maxRows], 'clamped to the grid limits');
   assert.deepEqual(L.resizeGrid(l, 'x', undefined), { removed: 0 }, 'junk keeps the current size');
   assert.deepEqual(L.checkInvariants(l), []);
 });

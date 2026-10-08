@@ -9,6 +9,12 @@
 // Controlled cells (zone blocking): a cell is controlled when vehicles can conflict inside it —
 // a reversal happens there (dead end), two streams merge into the same exit, or two movements
 // cross. Plain straight/curved roads and one-way forks are uncontrolled.
+//
+// Size. The cell-indexed members (isNode, out, in, limit, controlled, ...) are dense: one slot per grid cell, so a lookup by
+// node id is O(1). A route SEARCH, however, costs time and memory in proportion to the ROAD graph only: its per-node results are
+// kept under the compact index `nodeIndex[id]` (position of the node in `nodes`), the Dijkstra scratch buffers are reused, and
+// nothing in it is sized by the grid. A 320 x 320 plant with a few roads searches as fast as a small baseplate with the same roads,
+// and the same plant grown on any side behaves identically (docs/ARCHITECTURE.md 4.6, tests/sim.largegrid.test.js).
 
 import { DX, DY, DIR_BIT, opposite, parseKey, perimeterCells } from '../util/grid.js';
 
@@ -36,6 +42,8 @@ export function buildGraph(layout) {
     nodes.push(id);
   }
   nodes.sort((a, b) => a - b);
+  const nodeIndex = new Int32Array(nodeCount).fill(-1); // node id -> position in `nodes` (compact index for search results)
+  for (let k = 0; k < nodes.length; k++) nodeIndex[nodes[k]] = k;
 
   // ---- edges (deterministic order: node ascending, direction N,E,S,W) -------------------------
   const edges = [];
@@ -65,6 +73,8 @@ export function buildGraph(layout) {
     const r = edgeAt.get(e.to * 4 + opposite(e.dir));
     e.rev = r === undefined ? -1 : r;
   }
+  const baseCost = new Float64Array(edges.length); // default search cost per edge: length / limit (never below 1e-9)
+  for (const e of edges) baseCost[e.id] = Math.max(1e-9, e.length / e.limit);
   const out = new Array(nodeCount);
   const inn = new Array(nodeCount);
   for (let i = 0; i < nodeCount; i++) { out[i] = outLists[i] || EMPTY; inn[i] = inLists[i] || EMPTY; }
@@ -93,7 +103,7 @@ export function buildGraph(layout) {
   for (const v of nodes) classifyNode(v, edges, out, inn, controlled, deadEnd);
 
   const graph = {
-    cols, rows, cellSize, nodeCount, isNode, nodes, edges, out, in: inn, limit, controlled, deadEnd, docks, stationsAt,
+    cols, rows, cellSize, nodeCount, isNode, nodes, nodeIndex, edges, baseCost, out, in: inn, limit, controlled, deadEnd, docks, stationsAt,
     x: (id) => ((id % cols) + 0.5) * cellSize,
     y: (id) => (Math.floor(id / cols) + 0.5) * cellSize,
     cx: (id) => id % cols,
@@ -145,14 +155,20 @@ function classifyNode(v, edges, out, inn, controlled, deadEnd) {
 
 // ---- shortest route search (edge-based Dijkstra with the no-U-turn rule) -----------------------------
 
-class MinHeap {
-  constructor() { this.cost = []; this.id = []; }
-  get size() { return this.id.length; }
+/** Binary min-heap of (cost, edge id) in typed arrays, ordered by cost and then by id. One per graph, reused by every search. */
+class EdgeHeap {
+  constructor(capacity) {
+    this.cost = new Float64Array(capacity);
+    this.id = new Int32Array(capacity);
+    this.size = 0;
+    this.lastCost = 0; // cost of the entry returned by the last pop()
+  }
+
   push(cost, id) {
+    if (this.size === this.id.length) this.grow();
     const c = this.cost;
     const ids = this.id;
-    let i = ids.length;
-    c.push(cost); ids.push(id);
+    let i = this.size++;
     while (i > 0) {
       const p = (i - 1) >> 1;
       if (c[p] < cost || (c[p] === cost && ids[p] < id)) break;
@@ -160,15 +176,16 @@ class MinHeap {
     }
     c[i] = cost; ids[i] = id;
   }
+
   pop() {
     const c = this.cost;
     const ids = this.id;
     const topCost = c[0];
     const topId = ids[0];
-    const lastCost = c.pop();
-    const lastId = ids.pop();
-    const n = ids.length;
+    const n = --this.size;
     if (n > 0) {
+      const lastCost = c[n];
+      const lastId = ids[n];
       let i = 0;
       for (;;) {
         let l = 2 * i + 1;
@@ -183,53 +200,93 @@ class MinHeap {
     this.lastCost = topCost;
     return topId;
   }
+
+  grow() {
+    const cost = new Float64Array(this.cost.length * 2);
+    const id = new Int32Array(this.id.length * 2);
+    cost.set(this.cost);
+    id.set(this.id);
+    this.cost = cost;
+    this.id = id;
+  }
 }
 
-const defaultCost = (edge) => edge.length / edge.limit;
+/** Per-graph scratch buffers of search(): tentative edge costs with a generation stamp (no clearing between searches) and the heap. */
+const scratchOf = new WeakMap();
 
+function scratchFor(graph) {
+  let sc = scratchOf.get(graph);
+  if (sc === undefined) {
+    const n = graph.edges.length;
+    sc = { edgeCost: new Float64Array(n), stamp: new Int32Array(n), gen: 0, heap: new EdgeHeap(Math.max(64, n)) };
+    scratchOf.set(graph, sc);
+  }
+  if (++sc.gen >= 0x7fffffff) { sc.stamp.fill(0); sc.gen = 1; }
+  return sc;
+}
+
+/**
+ * Cheapest routes from `from` to every road cell. Cost and memory follow the road graph, not the grid: the result keeps one
+ * distance and one edge per ROAD node (compact index) and one predecessor per edge.
+ */
 function search(graph, from, opts = {}) {
-  const { edges, out, nodeCount } = graph;
+  const { edges, out, nodeIndex, nodeCount } = graph;
   const arrivalEdge = opts.arrivalEdge ?? -1;
-  const cost = opts.cost || defaultCost;
+  const customCost = opts.cost || null;
   const target = opts.target ?? -1;
-  const edgeCost = new Float64Array(edges.length).fill(Infinity); // cost to have traversed edge e
-  const pred = new Int32Array(edges.length).fill(-1);
-  const nodeDist = new Float64Array(nodeCount).fill(Infinity);
-  const nodeEdge = new Int32Array(nodeCount).fill(-1);
-  const heap = new MinHeap();
+  const roadNodes = graph.nodes.length;
+  const nodeDist = new Float64Array(roadNodes).fill(Infinity); // per compact node: cost of the cheapest arrival
+  const nodeEdge = new Int32Array(roadNodes).fill(-1); // ... and the edge that arrives that way
+  const pred = new Int32Array(edges.length); // edge before e on its cheapest route, -1 for a first edge; only read along settled chains
 
   if (from >= 0 && from < nodeCount && graph.isNode[from]) {
-    nodeDist[from] = 0;
+    const sc = scratchFor(graph);
+    const { edgeCost, stamp, gen, heap } = sc;
+    const baseCost = graph.baseCost;
+    heap.size = 0;
     const relax = (e, base, p) => {
-      const c = base + Math.max(1e-9, cost(edges[e]));
-      if (c < edgeCost[e]) { edgeCost[e] = c; pred[e] = p; heap.push(c, e); }
+      const c = base + (customCost === null ? baseCost[e] : Math.max(1e-9, customCost(edges[e])));
+      if (c < (stamp[e] === gen ? edgeCost[e] : Infinity)) { edgeCost[e] = c; stamp[e] = gen; pred[e] = p; heap.push(c, e); }
     };
-    for (const e of exitsAfter(edges, out, from, arrivalEdge)) relax(e, 0, -1);
+    const exits0 = out[from];
+    const arrived = arrivalEdge >= 0 ? edges[arrivalEdge] : undefined;
+    const skip0 = arrived !== undefined && exits0.length > 1 ? arrived.rev : -1; // the reverse of the arrival edge, unless it is the only way out
+    for (let i = 0; i < exits0.length; i++) if (exits0[i] !== skip0) relax(exits0[i], 0, -1);
     while (heap.size > 0) {
       const e = heap.pop();
       const c = heap.lastCost;
       if (c > edgeCost[e]) continue;
-      const v = edges[e].to;
-      if (c < nodeDist[v] || (c === nodeDist[v] && e < nodeEdge[v])) { nodeDist[v] = c; nodeEdge[v] = e; }
+      const edge = edges[e];
+      const v = edge.to;
+      const k = nodeIndex[v];
+      if (c < nodeDist[k] || (c === nodeDist[k] && e < nodeEdge[k])) { nodeDist[k] = c; nodeEdge[k] = e; }
       if (v === target) break;
-      for (const nx of exitsAfter(edges, out, v, e)) relax(nx, c, e);
+      const exits = out[v];
+      const skip = exits.length > 1 ? edge.rev : -1;
+      for (let i = 0; i < exits.length; i++) if (exits[i] !== skip) relax(exits[i], c, e);
     }
   }
 
+  const compact = (node) => (node >= 0 && node < nodeCount ? nodeIndex[node] : -1);
   return {
     from,
     arrivalEdge,
-    dist: (node) => (node === from ? 0 : node >= 0 && node < nodeCount ? nodeDist[node] : Infinity),
+    dist: (node) => {
+      if (node === from) return 0;
+      const k = compact(node);
+      return k >= 0 ? nodeDist[k] : Infinity;
+    },
     routeTo(node) {
       if (from < 0 || from >= nodeCount || !graph.isNode[from] || node < 0 || node >= nodeCount) return null;
       if (node === from) return { nodes: [from], edges: [], cost: 0 };
-      if (nodeEdge[node] < 0) return null;
+      const k = compact(node);
+      if (!(k >= 0) || nodeEdge[k] < 0) return null;
       const routeEdges = [];
-      for (let e = nodeEdge[node]; e >= 0; e = pred[e]) routeEdges.push(e);
+      for (let e = nodeEdge[k]; e >= 0; e = pred[e]) routeEdges.push(e);
       routeEdges.reverse();
       const routeNodes = [from];
       for (const e of routeEdges) routeNodes.push(edges[e].to);
-      return { nodes: routeNodes, edges: routeEdges, cost: nodeDist[node] };
+      return { nodes: routeNodes, edges: routeEdges, cost: nodeDist[k] };
     },
   };
 }

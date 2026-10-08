@@ -174,6 +174,8 @@ export function drawGhost(ctx, fr, ghost) {
 /**
  * Road paint preview: highlighted cells, direction chevrons for one-way strokes, a dashed centre line for
  * two-way strokes. `preview.blocked` (optional [[cx, cy]]) marks cells that stop the stroke, in red.
+ * Optional: `preview.guide` = { axis: 'h' | 'v', cell: [cx, cy] } draws the axis a straight line is locked to across the plant,
+ * `preview.label` = { text, ux, uy, above? } puts a short label (the length) next to the pointer (ux, uy in fractional cells).
  */
 export function drawPaintPreview(ctx, fr, preview) {
   if (!preview || !Array.isArray(preview.cells)) return;
@@ -181,6 +183,7 @@ export function drawPaintPreview(ctx, fr, preview) {
   if (cells.length === 0) return;
   const theme = fr.theme;
   const cell = fr.cs * fr.zoom;
+  drawAxisGuide(ctx, fr, preview.guide, cell);
   ctx.fillStyle = theme.road;
   ctx.globalAlpha = 0.72;
   ctx.beginPath();
@@ -217,6 +220,60 @@ export function drawPaintPreview(ctx, fr, preview) {
     ctx.strokeStyle = theme.ghostInvalid;
     ctx.strokeRect(x + 1, y + 1, cell - 2, cell - 2);
   }
+  drawStrokeLabel(ctx, fr, preview.label, cell);
+}
+
+/** The axis a straight line is locked to: a dashed accent line through the middle of the start cell, across the whole plant. */
+function drawAxisGuide(ctx, fr, guide, cell) {
+  if (!guide || !isCell(guide.cell) || (guide.axis !== 'h' && guide.axis !== 'v')) return;
+  const horizontal = guide.axis === 'h';
+  const length = (horizontal ? fr.scene.cols : fr.scene.rows) * cell;
+  if (!(length > 0)) return;
+  ctx.save();
+  ctx.setLineDash([clamp(cell * 0.4, 4, 14), clamp(cell * 0.3, 3, 10)]);
+  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = fr.theme.selection;
+  ctx.globalAlpha = 0.6;
+  ctx.beginPath();
+  if (horizontal) {
+    const y = fr.oy + (guide.cell[1] + 0.5) * cell;
+    ctx.moveTo(fr.ox, y);
+    ctx.lineTo(fr.ox + length, y);
+  } else {
+    const x = fr.ox + (guide.cell[0] + 0.5) * cell;
+    ctx.moveTo(x, fr.oy);
+    ctx.lineTo(x, fr.oy + length);
+  }
+  ctx.stroke();
+  ctx.restore();
+}
+
+/** A small pill with the length of the stroke ("24 m · 12 cells") below and right of the pointer (above it for a finger), kept inside the canvas. */
+function drawStrokeLabel(ctx, fr, label, cell) {
+  if (!label || typeof label.text !== 'string' || !label.text || !Number.isFinite(label.ux) || !Number.isFinite(label.uy)) return;
+  const theme = fr.theme;
+  ctx.save();
+  ctx.font = fontOf(theme, 700, 11.5);
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  const w = measure(ctx, label.text) + 18;
+  const h = 22;
+  const px = fr.ox + label.ux * cell;
+  const py = fr.oy + label.uy * cell;
+  const x = clamp(px + 14, 6, Math.max(6, fr.w - w - 6));
+  let y = label.above ? py - 14 - h - 22 : py + 16;
+  if (y + h > fr.h - 6) y = py - h - 16;
+  y = clamp(y, 6, Math.max(6, fr.h - h - 6));
+  ctx.beginPath();
+  roundRectPath(ctx, x, y, w, h, h / 2);
+  ctx.fillStyle = theme.panel;
+  ctx.fill();
+  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = theme.panelBorder;
+  ctx.stroke();
+  ctx.fillStyle = theme.text;
+  ctx.fillText(label.text, x + w / 2, y + h / 2 + 0.5);
+  ctx.restore();
 }
 
 function drawPreviewChevrons(ctx, fr, cells, fallbackDir, cell, centre) {

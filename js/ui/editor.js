@@ -38,7 +38,7 @@
 // hint(), startConnect(), connector (the select, flow and place tools call into it).
 // A pointer `p` handed to a tool has: x, y (canvas CSS px), clientX/Y, wx, wy (world metres), ux, uy (fractional cells),
 // cx, cy (cell under the pointer, possibly outside the grid), cell and path (grid-clamped cell / cells visited since the
-// last event), shift, alt, type ('mouse' | 'pen' | 'touch').
+// last event), trail (the fractional-cell positions [ux, uy] since the last event, unclamped), shift, alt, type ('mouse' | 'pen' | 'touch').
 
 import { roadAt, updateLabel } from '../model/layout.js';
 import { clamp } from '../util/format.js';
@@ -337,6 +337,7 @@ export class Editor {
     p.alt = !!e.altKey;
     p.type = e.pointerType || 'mouse';
     p.path = this.pathOf(e, p);
+    p.trail = this.trailOf(e, p);
     return p;
   }
 
@@ -365,6 +366,19 @@ export class Editor {
     const last = cells[cells.length - 1];
     if (!last || last[0] !== p.cell[0] || last[1] !== p.cell[1]) cells.push(p.cell);
     return cells;
+  }
+
+  /** The pointer positions since the previous event as [ux, uy] in fractional cells, unclamped: the coalesced samples, then the event itself (the stroke modes of editor/strokes.js read these). */
+  trailOf(e, p) {
+    const trail = [];
+    const samples = typeof e.getCoalescedEvents === 'function' ? e.getCoalescedEvents() : [];
+    for (const s of samples) {
+      const at = this.locate(s.clientX, s.clientY);
+      trail.push([at.ux, at.uy]);
+    }
+    const last = trail[trail.length - 1];
+    if (!last || last[0] !== p.ux || last[1] !== p.uy) trail.push([p.ux, p.uy]);
+    return trail;
   }
 
   remember(e) {
@@ -458,6 +472,7 @@ export class Editor {
     const view = this.view;
     view.hover = null;
     view.ghost = null;
+    view.paintPreview = null; // the Shift+click line preview of the road tools
     this.connector.pointerLeft();
     this.status('');
     this.redraw();

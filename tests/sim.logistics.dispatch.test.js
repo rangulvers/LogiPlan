@@ -564,7 +564,7 @@ test('route cache: the memory budget caps the number of searches on a big plant'
   big.grid.rows = 160;
   const graph = buildGraph(big);
   const cache = new RouteCache(graph, { edgeCount: () => 0 });
-  const perSearch = 12 * (graph.edges.length + graph.nodeCount);
+  const perSearch = 12 * graph.nodes.length + 4 * graph.edges.length; // what a cached search keeps: per ROAD cell a distance and an edge, per link a predecessor
   assert.ok((cache.fixedCapacity + cache.capacity) * perSearch <= ROUTE_CACHE_BYTES + 8 * perSearch, 'within the budget (plus the minimum of 8 per cache)');
   assert.ok(cache.fixedCapacity >= 8 && cache.fixedCapacity <= 512);
   const small = new RouteCache(buildGraph(layoutFromAscii(['A.B', '+++'], { stations: { A: 'source', B: 'sink' }, fleets: [] })), { edgeCount: () => 0 });
