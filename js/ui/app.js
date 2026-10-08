@@ -34,7 +34,7 @@
 //  * The plant name is one name: the project name of the top bar. The Properties tab edits it, the file, window and report use it.
 
 import { h } from '../util/dom.js';
-import { clamp, formatClock } from '../util/format.js';
+import { clamp, formatClock, formatDuration } from '../util/format.js';
 import { createStore } from '../store/store.js';
 import { buildGraph } from '../sim/graph.js';
 import { validateLayout } from '../model/validate.js';
@@ -126,6 +126,7 @@ const FOCUS_MS = 150;
 const ZOOM_STEP = 1.25;
 const STEP_SECONDS = 1;
 const ISSUES_INTERVAL_MS = 200;
+const PRIME_PROGRESS_AFTER_MS = 600; // a pre-roll that takes longer than this shows how far it has come
 const MAX_VARIANTS_HINT = 'A project can hold at most 100 variants.';
 
 const TOAST_ICONS = Object.freeze({ info: 'info', success: 'check', warn: 'warning', error: 'error' });
@@ -197,8 +198,9 @@ function unionOf(boxes) {
 }
 
 /** The run state chip: Ready (never started), Warming up, Running or Paused. */
-export function runChip({ playing, time, warmup, started, priming = false }) {
-  if (priming) return { key: 'warming', label: 'Updating…' }; // an edit: the new plant is pre-rolled behind the one on screen
+export function runChip({ playing, time, warmup, started, priming = false, primeProgress = null }) {
+  // an edit: the new plant is pre-rolled behind the one on screen; a slow plant shows how far it has come (in steps, so a screen reader is not flooded)
+  if (priming) return { key: 'warming', label: primeProgress === null ? 'Updating…' : `Updating… ${Math.round(primeProgress * 100)} %` };
   if (playing) return time < warmup ? { key: 'warming', label: 'Warming up' } : { key: 'running', label: 'Running' };
   return started && time > 0 ? { key: 'paused', label: 'Paused' } : { key: 'ready', label: 'Ready' };
 }
@@ -716,6 +718,7 @@ function createSimBar({ runner, store }) {
     iconButton('step', `Step forward ${STEP_SECONDS} second`, { tip: `Step ${STEP_SECONDS} s (.)`, onclick: () => { void runner.step(STEP_SECONDS); } }),
     h('div', { class: 'toolbar__sep', role: 'separator' }), speed, clock, chip, limited);
   const cache = {};
+  let primingSince = null; // when the current pre-roll was first seen (ms), for the progress in the chip
 
   /** Bring the bar up to date with the runner; cheap enough to call on every frame. */
   function sync() {
@@ -728,7 +731,15 @@ function createSimBar({ runner, store }) {
     });
     changed(cache, 'speed', runner.speed, (s) => { if (document.activeElement !== speed) speed.value = String(s); });
     changed(cache, 'clock', formatClock(runner.time), (t) => { clock.textContent = t; });
-    const run = runChip({ playing: runner.playing, time: runner.time, warmup, started: Boolean(runner.sim), priming: runner.priming });
+    // a pre-roll that takes longer than a moment shows its progress in steps of 20 %
+    const stamp = performance.now();
+    if (!runner.priming) primingSince = null;
+    else if (primingSince === null) primingSince = stamp;
+    const showProgress = primingSince !== null && stamp - primingSince > PRIME_PROGRESS_AFTER_MS;
+    const run = runChip({
+      playing: runner.playing, time: runner.time, warmup, started: Boolean(runner.sim), priming: runner.priming,
+      primeProgress: showProgress ? Math.min(0.95, Math.floor(runner.primeProgress * 5) / 5) : null,
+    });
     changed(cache, 'chip', run.key, (key) => { chip.className = CHIP_CLASS[key]; });
     changed(cache, 'chipText', run.label, (t) => { chip.textContent = t; });
     changed(cache, 'limited', runner.limited && runner.playing, (on) => { limited.hidden = !on; });
@@ -1447,11 +1458,15 @@ function startUpdateLoop(core, chrome) {
     runner.on('state', () => { chrome.simBar.sync(); refresh(); }),
     runner.on('frame', ({ time }) => { clockBeforeRebuild = time; chrome.simBar.sync(); }),
     runner.on('kpis', refresh),
-    runner.on('rebuild', ({ reason, sim, warm, label, baseline }) => {
+    runner.on('rebuild', ({ reason, sim, warm, label, baseline, paired, warmedUp = true, warmupLeft = 0 }) => {
       if (sim && warm) {
         const what = label ? `Plant changed: ${label}. ` : 'Plant changed. ';
-        if (baseline) ctx.toast(`${what}Updated simulation is warmed up – see Results for the effect.`, { action: { label: 'See effect', onClick: () => ctx.actions.setRightTab('results') } });
-        else ctx.toast(`${what}Updated simulation is warmed up.`);
+        if (!warmedUp) {
+          // a warm-up longer than the quick pre-run: say so instead of promising numbers (Results show the warm-up progress)
+          ctx.toast(`${what}Updated simulation is still warming up (about ${formatDuration(warmupLeft)} to go); Results show figures after that.`);
+        } else if (baseline) {
+          ctx.toast(`${what}Updated simulation is warmed up${paired ? ' – see Results for the effect.' : '. The old plant could not be compared in time – see Results.'}`, { action: { label: paired ? 'See effect' : 'See Results', onClick: () => ctx.actions.setRightTab('results') } });
+        } else ctx.toast(`${what}Updated simulation is warmed up.`);
       } else if (sim && reason === 'reset') {
         ctx.toast('Simulation reset to an empty plant at 0:00.');
       } else if (sim && reason === 'structural' && sim.time < clockBeforeRebuild) {

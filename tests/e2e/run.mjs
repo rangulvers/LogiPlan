@@ -42,6 +42,7 @@ const SCRIPTS = Object.freeze([
   { name: 'guidance-panels', what: 'who serves which flow: station Where do loads go?, Jobs this fleet serves, Served by, Help page and welcome tips' },
   { name: 'walkthrough', what: 'first-time planner: the second Goods in end to end, every way to connect, from scratch, breaking it, touch, dark, keyboard, performance', exclusive: true },
   { name: 'edit-feedback', what: 'edit feedback: warm restart after edits, "Effect of your change" card, baseline, fleet status, frame times', exclusive: true },
+  { name: 'edit-feedback-review', what: 'edit feedback, attacked: lifecycle with real frames, card at 390 px in both themes, contrast, keyboard, honesty of the card against the toast, jank, memory', exclusive: true },
   { name: 'uikit-review', what: 'independent review of the UI kit', review: true },
   { name: 'render-review', what: 'independent review of the renderer', review: true },
 ]);

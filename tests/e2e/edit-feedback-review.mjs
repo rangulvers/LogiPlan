@@ -7,6 +7,7 @@
 // Two kinds of checks (same convention as the unit review): `ok` / `eq` are GUARDS (attacks that must not break anything; a failed one
 // aborts the run), `defect(id, cond, text)` is a REAL defect found by the review: it is printed as OPEN while it fails and as FIXED once
 // it holds (then turn it into a guard). The ids are those of the unit review file where the cause is the same (WARM-<n>).
+// After the fix pass every defect holds and is a guard: `fixed(id, cond, text)` asserts it (the id stays for the cross-reference).
 //
 // Run: node tests/e2e/edit-feedback-review.mjs [section]     sections: lifecycle ui honesty keyboard persistence perf
 // Screenshots: e2e-output/edit-feedback-review-*.png (open them and look). Numbers of `perf` go to e2e-output/edit-feedback-review-perf.json.
@@ -22,6 +23,8 @@ let checks = 0;
 const ok = (cond, msg) => { assert.ok(cond, msg); checks++; };
 const eq = (a, b, msg) => { assert.deepEqual(a, b, msg); checks++; };
 const defects = [];
+/** A defect of the review that has been fixed: now a guard. */
+const fixed = (id, cond, text) => { ok(cond, `${id}: ${text}`); };
 /** A defect found by the review: OPEN while `cond` is false, FIXED when it holds. Never aborts. */
 const defect = (id, cond, text) => {
   defects.push({ id, open: !cond, text });
@@ -250,11 +253,12 @@ await withBrowser(async ({ browser, url, errors }) => {
       for (const [key, ratio] of Object.entries(state.contrast)) ok(ratio >= 4.5, `${name}: contrast of ${key} is ${ratio.toFixed(2)}:1`);
       ok(state.sizes.keep && state.sizes.keep.h >= 24 && state.sizes.compare.h >= 24 && state.sizes.dismiss.h >= 24 && state.sizes.dismiss.w >= 24, `${name}: card buttons are at least 24 px: ${JSON.stringify(state.sizes)}`);
       if (name === 'desktop-light') {
-        defect('WARM-10a', state.labels.title === state.labels.text || state.labels.clipped === false, `the card cuts the list of edits to two lines with no way to read the rest ("${state.labels.text.slice(0, 60)}...", no title attribute)`);
-        defect('WARM-10b', state.sizes.hintClose === null || (state.sizes.hintClose.w >= 24 && state.sizes.hintClose.h >= 24), `the "Hide this hint" button is ${JSON.stringify(state.sizes.hintClose)} px, under the 24 px minimum target of WCAG 2.2`);
+        // the visible text names three edits and counts the rest; the title (and the name of the card) must give every one of them in full
+        fixed('WARM-10a', state.labels.clipped === false || longLabels.every(([label]) => (state.labels.title || '').includes(label)), `the list of edits is cut off ("${state.labels.text.slice(0, 60)}...") and its title does not give every edit: "${(state.labels.title || '').slice(0, 80)}"`);
+        fixed('WARM-10b', state.sizes.hintClose === null || (state.sizes.hintClose.w >= 24 && state.sizes.hintClose.h >= 24), `the "Hide this hint" button is ${JSON.stringify(state.sizes.hintClose)} px, under the 24 px minimum target of WCAG 2.2`);
       }
       if (name === 'narrow-light') {
-        defect('WARM-10c', state.hint === null || !state.hint.clipped || Boolean(state.hint.title && state.hint.title.includes(state.hint.text.slice(0, 25))), `at 390 px the one-line hint is cut off ("${state.hint && state.hint.text.slice(0, 50)}...") and no title or other text gives it in full (the button title only says "${state.hint && state.hint.title}")`);
+        fixed('WARM-10c', state.hint === null || !state.hint.clipped || Boolean(state.hint.title && state.hint.title.includes(state.hint.text.slice(0, 25))), `at 390 px the hint is cut off ("${state.hint && state.hint.text.slice(0, 50)}...") and no title or other text gives it in full (the button title says "${state.hint && state.hint.title}")`);
       }
       await card(page).scrollIntoViewIfNeeded();
       await snap(page, `card-${name}`);
@@ -276,7 +280,8 @@ await withBrowser(async ({ browser, url, errors }) => {
       await page.waitForTimeout(400);
       const chips = await card(page).locator('.impact__row').evaluateAll((rows) => rows.map((r) => ({ metric: r.dataset.metric, text: r.querySelector('.impact__delta').textContent.trim(), good: r.querySelector('.impact__delta').classList.contains('delta--good'), bad: r.querySelector('.impact__delta').classList.contains('delta--bad') })));
       const coloured = chips.filter((c) => c.good || c.bad);
-      defect('WARM-1', coloured.length === 0, `a pure rename shows ${coloured.length} red or green chip(s): ${coloured.map((c) => `${c.metric} ${c.text}`).join(', ') || 'none'}`);
+      fixed('WARM-1', coloured.length === 0, `a pure rename shows ${coloured.length} red or green chip(s): ${coloured.map((c) => `${c.metric} ${c.text}`).join(', ') || 'none'}`);
+      ok(chips.every((c) => c.text.startsWith('±0')), `and every figure reads exactly ±0 (the old plant was simulated next to the new one): ${chips.map((c) => `${c.metric} ${c.text}`).join(', ')}`);
       await card(page).scrollIntoViewIfNeeded();
       await snap(page, 'rename-verdicts');
       noErrors('honesty rename');
@@ -295,7 +300,8 @@ await withBrowser(async ({ browser, url, errors }) => {
       const cardText = (await card(page).innerText()).replace(/\s+/g, ' ');
       ok(warming, 'the updated plant is still warming up after the 40 minute pre-roll (warm-up 60 min)');
       ok(/still warming up/.test(cardText), 'the card says so');
-      defect('WARM-3', !/warmed up/.test(toast), `the toast says "${toast.replace(/ See effect.*/, '')}" while the card says "still warming up"`);
+      fixed('WARM-3', !/warmed up/.test(toast) && /still warming up \(about 20 min to go\)/.test(toast), `the toast says "${toast.replace(/ See effect.*/, '')}" while the card says "still warming up"`);
+      ok(!/Indicative/.test(cardText) && await card(page).locator('.impact__rows').isHidden(), 'and the card shows no rows of dashes for it, and no "Indicative" claim');
       await snap(page, 'toast-vs-card');
       noErrors('honesty toast');
       await context.close();
@@ -312,7 +318,7 @@ await withBrowser(async ({ browser, url, errors }) => {
       eq(await page.evaluate(() => window.__logiplan.store.getState().ui.rightTab), 'experiments', 'the button opens the Experiments tab');
       const text = (await page.locator('#panel-experiments').innerText()).replace(/\s+/g, ' ');
       const scenarios = await page.evaluate(() => window.__logiplan.store.getState().project.scenarios.length);
-      defect('WARM-6', scenarios >= 2 && !/Create a variant to compare/.test(text), `"Compare properly..." lands on "${(text.match(/Create a variant to compare[^.]*\./) || [''])[0]}" (${scenarios} variant): the old plant is not offered, so the old-versus-new comparison the button promises cannot be run`);
+      fixed('WARM-6', scenarios >= 2 && !/Create a variant to compare/.test(text), `"Compare properly..." lands on "${(text.match(/Create a variant to compare[^.]*\./) || [''])[0]}" (${scenarios} variant): the old plant is not offered, so the old-versus-new comparison the button promises cannot be run`);
       await snap(page, 'compare-properly');
       noErrors('honesty compare');
       await context.close();
@@ -328,7 +334,7 @@ await withBrowser(async ({ browser, url, errors }) => {
       await page.waitForTimeout(400);
       const rows = await card(page).locator('.impact__row').evaluateAll((els) => els.map((r) => ({ metric: r.dataset.metric, text: r.innerText.replace(/\s+/g, ' ').trim(), good: r.querySelector('.impact__delta').classList.contains('delta--good') })));
       const note = (await card(page).locator('.impact__note').innerText()).trim();
-      defect('WARM-2', !rows.some((r) => r.good) && /no load|nothing/i.test(note), `a plant without roads: ${rows.filter((r) => r.good).map((r) => r.text).join('; ') || 'no green chip'}; note: "${note}"`);
+      fixed('WARM-2', !rows.some((r) => r.good) && /no load|nothing/i.test(note), `a plant without roads: ${rows.filter((r) => r.good).map((r) => r.text).join('; ') || 'no green chip'}; note: "${note}"`);
       await card(page).scrollIntoViewIfNeeded();
       await snap(page, 'no-roads');
       noErrors('honesty broken');
@@ -354,18 +360,19 @@ await withBrowser(async ({ browser, url, errors }) => {
     const names = await card(page).getByRole('button').evaluateAll((els) => els.map((e) => e.getAttribute('aria-label') || e.textContent.trim()));
     eq(names, ['Dismiss', 'Keep as baseline', 'Compare properly…'], 'the buttons have names, in reading order');
     const roles = await page.evaluate(() => ({
-      progress: Boolean(document.querySelector('[data-panel=impact] [role=progressbar][aria-valuenow]')),
+      progress: document.querySelector('[data-panel=impact] [role=progressbar]') === null,
       chipStatus: [...document.querySelectorAll('.simbar .chip')].map((e) => e.getAttribute('role')),
       toastLive: document.querySelector('.toast-region')?.getAttribute('aria-live'),
       rowsList: document.querySelector('[data-panel=impact] ul.impact__rows') !== null,
       srWord: [...document.querySelectorAll('.impact__delta .sr-only')].every((e) => /better|worse|no clear change|for information|not comparable/.test(e.textContent)),
     }));
-    ok(roles.progress, 'the progress bar has role and value');
+    // changed with the fix of WARM-1: the card compares a fixed paired window, so there is no growing window and no progress bar to name
+    ok(roles.progress, 'the card has no progress bar (a fixed window is compared)');
     ok(roles.chipStatus.includes('status'), 'the run chip ("Updating…") is a status');
     eq(roles.toastLive, 'polite', 'the toast region announces politely');
     ok(roles.rowsList && roles.srWord, 'rows are a list and every chip has a hidden word for readers who cannot see colour');
     const announced = await page.evaluate(() => Boolean(document.querySelector('[data-panel=impact] .impact__status')?.closest('[aria-live], [role=status], [role=alert]')) || Boolean(document.querySelector('[data-panel=impact]')?.closest('[aria-live], [role=status], [role=alert]')));
-    defect('WARM-10d', announced, 'the honesty line ("Indicative: only 10 of 20 minutes measured so far" -> "Measured over 20 min") and the figures change without being announced: only the toast and the "Updating..." chip are live regions');
+    fixed('WARM-10d', announced, 'the honesty line and the notes change without being announced: only the toast and the "Updating..." chip are live regions');
 
     // Tab from the Results tab reaches Dismiss, then Keep; Enter and Space activate; the focus never falls to the page
     await page.locator('#tab-results').focus();

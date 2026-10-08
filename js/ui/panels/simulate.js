@@ -67,7 +67,13 @@ function diceIcon(size = 14) {
 const hintLine = (text) => h('p', { class: 'field__hint' }, text);
 
 /** The sentence under the "keep results warm" switch: how long the silent run before the swap is for this warm-up. */
-const warmHint = (warmup) => `After you change the plant, the updated simulation first runs silently for ${formatDuration(primeSeconds(warmup))}, so Results show numbers at once instead of starting from an empty plant.`;
+function warmHint(warmup) {
+  const ahead = primeSeconds(warmup);
+  if (ahead < warmup) { // the silent run is capped: a long warm-up is not over when the new simulation appears
+    return `After you change the plant, the updated simulation first runs silently for ${formatDuration(ahead)}. Your warm-up of ${formatDuration(warmup)} is longer than that, so Results need another ${formatDuration(warmup - ahead)} of simulated time before they show numbers.`;
+  }
+  return `After you change the plant, the updated simulation first runs silently for ${formatDuration(ahead)}, so Results show numbers at once instead of starting from an empty plant.`;
+}
 
 /** Select with a line under it that explains the chosen option. `options`: [{ value, label, description }]. */
 function describedSelect({ label, options, value, onChange }) {

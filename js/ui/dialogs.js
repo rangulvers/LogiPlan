@@ -677,8 +677,8 @@ const HOW_IT_WORKS = [
     + 'The bottleneck is the workstation that is busy almost all the time while loads queue in front of it or the stations behind it wait for material: it sets the limit for the whole plant. Results only count after the warm-up time.'],
   ['After you change the plant',
     'When you change the plant while the simulation has been running, the changed plant is first simulated silently for about 20 minutes and then replaces the old one, so Results show numbers at once instead of starting from an empty plant. '
-    + 'The card "Effect of your change" at the top of Results puts the figures before and after side by side; it is only indicative until 20 minutes are measured, and "Compare properly" runs several replications in the Experiments tab. '
-    + 'Vehicles that hardly get a job are marked "barely used" in the Fleet tab. Switch "Keep results warm after edits" off in the Simulate tab to start from an empty plant after every change; the reset button always does.'],
+    + 'The card "Effect of your change" at the top of Results simulates the old plant once more next to the new one, for the same 10 minutes and with the same random seed, and puts the figures side by side. It is a quick indication from one run each, so small differences are not coloured; "Compare properly" adds the old plant as a variant and runs both several times in the Experiments tab. '
+    + 'Vehicles that hardly get a job are marked in the Fleet tab ("no jobs", "barely used", "some idle" or "mostly idle"). Switch "Keep results warm after edits" off in the Simulate tab to start from an empty plant after every change; the reset button always does.'],
   ['Repeatable results',
     'The simulation uses a random seed. The same plant with the same seed always gives identical results. Change the seed in the Simulate tab to see how much the results vary, or run several replications in the Experiments tab and look at the average.'],
 ];

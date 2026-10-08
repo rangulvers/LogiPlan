@@ -1,6 +1,6 @@
 /* Edit feedback (docs/ARCHITECTURE.md 6.4, 6.6): the "Effect of your change" card at the top of the Results tab, the one-line
  * "Before -> after" hint under the simulation bar and the live status of a fleet card. Built from the kit (tokens, .card, .btn, .chip,
- * .delta, .badge, .progress, .dot); this file only places and tones them. Loaded after layout.css. */
+ * .delta, .badge, .dot); this file only places and tones them. Loaded after layout.css. */
 
 /* ==========================================================================
    Effect of your change (js/ui/panels/impact.js)
@@ -46,7 +46,7 @@
   overflow: hidden;
   overflow-wrap: anywhere;
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+  -webkit-line-clamp: 3;
   color: var(--text);
 }
 
@@ -153,7 +153,7 @@
   display: none;
 }
 
-.impact__foot {
+.impact__live {
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -278,8 +278,8 @@
   display: inline-grid;
   flex: none;
   place-items: center;
-  width: 22px;
-  height: 22px;
+  width: 24px;
+  height: 24px;
   padding: 0;
   border: 0;
   border-radius: var(--radius-pill);
@@ -291,6 +291,30 @@
 .impact-hint__close:hover {
   background: var(--hover);
   color: var(--text);
+}
+
+/* A phone: the line may take two lines instead of being cut off after a few words. */
+@media (max-width: 640px) {
+  .impact-hint {
+    align-items: flex-start;
+  }
+
+  .impact-hint__main {
+    align-items: flex-start;
+    flex-wrap: wrap;
+    height: auto;
+    min-height: 26px;
+    padding-block: 4px;
+    text-align: left;
+  }
+
+  .impact-hint__text {
+    display: -webkit-box;
+    flex: 1 1 100%;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    white-space: normal;
+  }
 }
 
 /* ==========================================================================

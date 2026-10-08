@@ -21,7 +21,7 @@
 // "something else holds the loads back". Waiting loads are judged on the window average of the report
 // (flows[].avgBacklog), never on the instantaneous count, so a recommendation does not flicker with a single load.
 //
-// Resources that are not used (fleet-unused, vehicle-idle-some, source-unconnected-activity, station-never-used) are judged on a
+// Resources that are not used (fleet-no-jobs, fleet-unused, vehicle-idle-some, source-unconnected-activity, station-never-used) are judged on a
 // longer window (UNUSED_MIN_WINDOW, STATION_NEVER_USED_WINDOW). A fleet is "unused" by ONE verdict (barelyUsed) that the other
 // fleet rules consult: an unused fleet is not also called oversized or broken-down-and-in-need-of-a-spare, and a saturated fleet is
 // never told to buy vehicles while another fleet that may do the same jobs stands idle. A goods-in without any outgoing flow is
@@ -51,7 +51,7 @@ export const FLEET_TARGET_UTILIZATION = 0.75;
 export const TRANSPORT_BACKLOG = 1; // loads that wait for a vehicle on average before transport is called a problem
 
 // Resources that are not used. These need a longer window than the other rules: one trip more or less in five minutes means nothing.
-export const UNUSED_MIN_WINDOW = 10 * 60; // measured s before a fleet or a vehicle is called unused
+export const UNUSED_MIN_WINDOW = 20 * 60; // measured s before a fleet or a vehicle is called unused (at 10 min the verdict came and went with the luck of a few trips)
 export const FLEET_BARELY_USED_TRIPS_PER_HOUR = 0.3; // trips per vehicle and hour below which a fleet "hardly works" ...
 export const FLEET_UNUSED_MIN_OTHER_TRIPS = 3; // ... provided other vehicles made this many trips on the flows it may serve too
 export const VEHICLE_IDLE_SHARE = 0.2; // a vehicle with less than this share of the average trips of its fleet-mates hardly works
@@ -487,6 +487,9 @@ function saturatedFleets(ctx) {
   return out;
 }
 
+/** No flow may use this fleet: the plant has flows, and every one of them is restricted to another fleet. */
+const noJobs = (ctx, f) => f.count >= 1 && (ctx.layout.flows || []).length > 0 && servedFlows(ctx, f).length === 0;
+
 /** A load that this fleet may carry is waiting for transport on average. */
 const loadsWaitFor = (ctx, f) => servedFlows(ctx, f).some((flow) => (ctx.flows[flow.id]?.avgBacklog || 0) >= TRANSPORT_BACKLOG);
 
@@ -518,7 +521,7 @@ function oversizedFleets(ctx) {
   const out = [];
   for (const f of ctx.fleets) {
     if (!oversized(f)) continue;
-    if (barelyUsed(ctx, f)) continue; // fleet-unused says it better: the other vehicles cover every job
+    if (barelyUsed(ctx, f) || noJobs(ctx, f)) continue; // fleet-unused / fleet-no-jobs say it better: the other vehicles cover every job / no flow may use this fleet
     const unused = f.utilization < FLEET_UNUSED_UTILIZATION;
     if (!unused && loadsWaitFor(ctx, f)) continue; // loads wait although vehicles are free: not a matter of fleet size
     const fewer = Math.max(1, Math.ceil((f.count * f.utilization) / FLEET_TARGET_UTILIZATION));
@@ -604,7 +607,7 @@ function batteryProblems(ctx) {
 }
 
 /** A spare vehicle only makes sense when the fleet is not mostly idle already and traffic is not congested. */
-const moreVehiclesHelp = (ctx, f) => !congested(ctx, f) && !oversized(f) && !barelyUsed(ctx, f);
+const moreVehiclesHelp = (ctx, f) => !congested(ctx, f) && !oversized(f) && !barelyUsed(ctx, f) && !noJobs(ctx, f);
 
 function vehicleBreakdowns(ctx) {
   const out = [];
@@ -626,6 +629,22 @@ function vehicleBreakdowns(ctx) {
 
 /** "#3" for the vehicle "f2#3". */
 const vehicleNumber = (id) => `#${String(id).split('#').pop()}`;
+
+/** Vehicles that no flow may use: all flows are dedicated to other fleets, so they stand idle however much work there is. */
+function fleetsWithoutJobs(ctx) {
+  const out = [];
+  for (const f of ctx.fleets) {
+    if (!noJobs(ctx, f)) continue;
+    const owners = [...new Set((ctx.layout.flows || []).map((flow) => ctx.fleetDefs.get(flow.fleetId)?.name || flow.fleetId))];
+    const them = f.count === 1 ? 'it' : 'them';
+    out.push(candidate('fleet-no-jobs', f.id, 'info', 1,
+      `The ${plural(f.count, 'vehicle', 'vehicles')} of the ${f.name} fleet ${f.count === 1 ? 'has' : 'have'} no job: every flow is restricted to another fleet.`,
+      `All flows of this plant are dedicated to ${owners.join(' and ')}. A vehicle only takes jobs from flows that allow its fleet, so the ${f.name} ${f.count === 1 ? 'vehicle stands' : 'vehicles stand'} idle however much work there is.`,
+      `Allow ${f.name} on a flow (Fleet → Jobs this fleet serves, or the fleet setting of a flow in the Flows tab), or remove ${them} (now ${f.count}).`,
+      { fleetIds: [f.id] }));
+  }
+  return out;
+}
 
 function unusedFleets(ctx) {
   const out = [];
@@ -661,9 +680,10 @@ function idleVehicles(ctx) {
     const named = quiet.slice(0, 3).map(([id, t]) => `${vehicleNumber(id)} (${plural(t, 'trip', 'trips')})`);
     const more = quiet.length > 3 ? ` and ${quiet.length - 3} more` : '';
     const keep = n - quiet.length;
+    const one = quiet.length === 1;
     out.push(candidate('vehicle-idle-some', f.id, 'info', quiet.length / n,
-      `${quiet.length} of ${n} vehicles in the ${f.name} fleet hardly work.`,
-      `Over ${formatDuration(ctx.duration)}, ${named.join(', ')}${more} made far fewer trips than their fleet-mates, who averaged ${amount(busyMean)} trips each.`,
+      `${quiet.length} of ${n} vehicles in the ${f.name} fleet ${one ? 'hardly works' : 'hardly work'}.`,
+      `Over ${formatDuration(ctx.duration)}, ${named.join(', ')}${more} made far fewer trips than ${one ? 'the other vehicles of the fleet' : 'their fleet-mates'}, who averaged ${amount(busyMean)} trips each.`,
       `Try ${plural(keep, 'vehicle', 'vehicles')} instead of ${n}: a job goes to the vehicle that can start soonest, so vehicles that wait far from the docks rarely get one. Or park the idle ones closer to the work (Fleet → Parking).`,
       { fleetIds: [f.id] }));
   }
@@ -696,6 +716,9 @@ function neverUsedStations(ctx) {
     // the loads are there (made upstream or waiting for a pickup) and a vehicle that is not busy may carry them
     const supplied = incoming.filter((flow) => {
       const origin = ctx.byId.get(flow.from);
+      // a storage keeps every load for its dwell time: with a dwell of half the window or more, nothing could have left it yet
+      const held = ctx.stationDefs.get(flow.from);
+      if (held && held.type === 'storage' && (held.params?.dwell || 0) >= ctx.duration / 2) return false;
       const waiting = (ctx.flows[flow.id]?.avgBacklog || 0) >= TRANSPORT_BACKLOG;
       return transportState(ctx, flow) === 'free' && (waiting || (origin && Math.max(origin.produced || 0, origin.arrivals || 0) >= STATION_NEVER_USED_MIN_SUPPLY));
     });
@@ -703,7 +726,7 @@ function neverUsedStations(ctx) {
     const origin = ctx.byId.get(supplied[0].from);
     out.push(candidate('station-never-used', s.id, 'warning', 1,
       `Nothing reaches ${s.name}: no load arrived there in ${formatDuration(ctx.duration)}.`,
-      `${origin ? origin.name : 'The station before it'} supplies ${s.name} and the vehicles have time to spare, yet not one trip to ${s.name} was made in ${formatDuration(ctx.duration)}. Most likely no vehicle can drive to its dock.`,
+      `${origin ? origin.name : 'The station before it'} supplies ${s.name} and the vehicles have time to spare, yet not one trip to ${s.name} was made in ${formatDuration(ctx.duration)}. Either no vehicle can drive to its dock, or the flow waits for a batch that never fills.`,
       `Check the road to ${s.name}: it needs a road cell next to the station that vehicles can reach and leave again (not a one-way dead end). The Checks tab lists stations without a usable dock.`,
       { stationIds: [s.id], flowIds: supplied.map((flow) => flow.id) }));
   }
@@ -786,7 +809,7 @@ function goodNews(ctx) {
 const RULES = [
   bottlenecks, blockedWorkstations, starvedWorkstations, bufferProblems, supplyExceedsCapacity, stationBreakdowns,
   saturatedFleets, oversizedFleets, emptyDriving, unplacedVehicles, batteryProblems, vehicleBreakdowns, trafficCongestion, deadlocks,
-  noOutput, unusedFleets, idleVehicles, unconnectedSources, neverUsedStations,
+  noOutput, fleetsWithoutJobs, unusedFleets, idleVehicles, unconnectedSources, neverUsedStations,
 ];
 
 function notEnoughData(report) {
