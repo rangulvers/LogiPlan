@@ -3,13 +3,19 @@
 // busy CI machines pass, and the measured factor is logged.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { performance } from 'node:perf_hooks';
 import { layoutFromAscii } from './helpers/ascii.js';
 import { buildGraph } from '../js/sim/graph.js';
 import { TrafficSystem } from '../js/sim/traffic.js';
 import { createRng } from '../js/util/rng.js';
 
-const REQUIRED_FACTOR = 500; // real-time factor that must be reached on any machine
+// Timed in CPU seconds of this process, not wall-clock time: node runs the test files in parallel, and on a machine busy with
+// other work the wall-clock time of a run says little about the speed of the code.
+const cpuSeconds = () => {
+  const u = process.cpuUsage();
+  return (u.user + u.system) / 1e6;
+};
+
+const REQUIRED_FACTOR = 500; // real-time factor (CPU time) that must be reached on any machine
 const TARGET_FACTOR = 2000; // the figure of docs/ARCHITECTURE.md §5.2
 
 /** 60 x 40 cells, two-way streets on every sixth row and column: ~660 road cells, 25 junctions. */
@@ -54,9 +60,9 @@ test('100 vehicles on a 60 x 40 grid simulate at least 500x real time (target 20
   const dt = 0.1;
   for (let i = 0; i < 300; i++) traffic.step(dt); // warm-up (JIT, caches)
   const seconds = 600;
-  const started = performance.now();
+  const started = cpuSeconds();
   for (let i = 0; i < seconds / dt; i++) traffic.step(dt);
-  const elapsed = (performance.now() - started) / 1000;
+  const elapsed = cpuSeconds() - started;
   const factor = seconds / elapsed;
 
   const message = `100 vehicles, 60x40 grid: ${seconds} s simulated in ${(elapsed * 1000).toFixed(0)} ms = ${factor.toFixed(0)}x real time `

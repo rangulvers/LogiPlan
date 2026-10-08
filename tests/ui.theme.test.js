@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  getTheme, resolveThemeMode, STATUS_COLORS, statusColor, mix, shade, rgba, parseHex, luminance, contrast, inkFor,
-  heatColor, HEAT_LEVELS,
+  getTheme, resolveThemeMode, STATUS_COLORS, STATUS_INK, statusColor, mix, shade, rgba, parseHex, luminance, contrast, inkFor,
+  heatColor, HEAT_LEVELS, MIN_INK_CONTRAST,
 } from '../js/ui/theme.js';
 import { STATION_TYPES, STATION_TYPE_ORDER } from '../js/model/defaults.js';
 
@@ -19,7 +19,7 @@ test('theme: getTheme returns a cached frozen palette per mode and falls back to
 test('theme: both palettes define every colour the renderer reads', () => {
   const required = [
     'bg', 'baseplate', 'stud', 'gridLine', 'gridMajor', 'road', 'roadMark', 'roadChevron', 'zoneHatch', 'label', 'labelHalo',
-    'flow', 'selection', 'hover', 'ghostValid', 'ghostInvalid', 'deadlock', 'font', 'accent',
+    'flow', 'selection', 'hover', 'ghostValid', 'ghostInvalid', 'deadlock', 'font', 'accent', 'dotRim', 'dotRing', 'flowChip', 'flowHalo',
   ];
   for (const mode of ['light', 'dark']) {
     const t = getTheme(mode);
@@ -39,7 +39,7 @@ test('theme: station colours follow the model, have a darker edge and readable i
       const c = t.station[type];
       assert.ok(luminance(c.edge) < luminance(c.top), `${mode} ${type}: front edge is darker than the top face`);
       assert.ok(luminance(c.hi) > luminance(c.top), `${mode} ${type}: highlight is lighter than the top face`);
-      assert.ok(contrast(c.top, c.ink) >= 3.5, `${mode} ${type}: ink contrast ${contrast(c.top, c.ink).toFixed(2)}`);
+      assert.ok(contrast(c.top, c.ink) >= MIN_INK_CONTRAST, `${mode} ${type}: ink contrast ${contrast(c.top, c.ink).toFixed(2)} (fill labels and counts are small bold text)`);
     }
   }
   // light mode uses the documented base colours unchanged
@@ -58,6 +58,26 @@ test('theme: STATUS_COLORS carry the shared semantics and statusColor maps state
   assert.equal(statusColor('full'), STATUS_COLORS.blocked);
   assert.equal(statusColor('nope'), STATUS_COLORS.idle);
   assert.equal(statusColor('toString'), STATUS_COLORS.idle, 'prototype keys are not states');
+});
+
+test('theme: the mark inside a state dot reads on every status colour, and the dot has a bezel that separates it from any brick', () => {
+  for (const [state, color] of Object.entries(STATUS_COLORS)) {
+    assert.ok(contrast(STATUS_INK, color) >= MIN_INK_CONTRAST, `${state} ${color}: ${contrast(STATUS_INK, color).toFixed(2)}:1`);
+  }
+  for (const mode of ['light', 'dark']) {
+    const t = getTheme(mode);
+    assert.ok(luminance(t.dotRim) > 0.7, 'light rim');
+    assert.match(t.dotRing, /^rgba\(\d+,\d+,\d+,0\.[5-9]/, 'a mostly opaque dark ring');
+    // the status colour never has to stand on the brick colour alone (amber on yellow is 1.1:1): it sits on the dark ring
+    assert.ok(t.dotRing.match(/\d+/g).slice(0, 3).every((v) => Number(v) < 40), `${mode}: ring is near black`);
+  }
+});
+
+test('theme: dark mode keeps roads distinguishable from the baseplate', () => {
+  const dark = getTheme('dark');
+  assert.ok(contrast(dark.road, dark.baseplate) >= 1.5, `road / plate ${contrast(dark.road, dark.baseplate).toFixed(2)}:1`);
+  assert.ok(luminance(dark.road) < luminance(dark.baseplate));
+  assert.ok(contrast(getTheme('light').road, getTheme('light').baseplate) >= 4, 'light roads are far darker than the plate');
 });
 
 test('theme: resolveThemeMode passes explicit modes through and follows matchMedia for auto', () => {
@@ -112,6 +132,17 @@ test('theme: colour maths', () => {
   near(contrast('#777777', '#777777'), 1);
   assert.equal(inkFor('#f5b82e'), '#1c2230', 'dark ink on yellow');
   assert.equal(inkFor('#1c2230'), '#ffffff', 'light ink on dark');
+  // mid-tone colours where neither the navy nor the white ink reaches 4.5:1 get pure black or white instead
+  assert.equal(inkFor('#2f7df6'), '#000000');
+  assert.equal(inkFor('#8a63d2'), '#000000');
+  for (let r = 0; r < 256; r += 51) {
+    for (let g = 0; g < 256; g += 51) {
+      for (let b = 0; b < 256; b += 51) {
+        const bg = '#' + [r, g, b].map((v) => v.toString(16).padStart(2, '0')).join('');
+        assert.ok(contrast(bg, inkFor(bg)) >= MIN_INK_CONTRAST, `${bg}: ${contrast(bg, inkFor(bg)).toFixed(2)}`);
+      }
+    }
+  }
 });
 
 function near(a, b, eps = 1e-6) {

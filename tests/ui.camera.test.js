@@ -41,18 +41,19 @@ test('camera: zoomAt keeps the world point under the cursor fixed', () => {
   }
 });
 
-test('camera: zoom is clamped to [4, 80] px/m and a clamped no-op reports false and moves nothing', () => {
+test('camera: zoom is clamped to [MIN_ZOOM, 80] px/m and a clamped no-op reports false and moves nothing', () => {
   const cam = new Camera({ x: 5, y: 6, zoom: 20, width: 400, height: 300 });
   cam.zoomAt(1000, 10, 10);
   assert.equal(cam.zoom, MAX_ZOOM);
   const pos = [cam.x, cam.y];
   assert.equal(cam.zoomAt(2, 10, 10), false);
   assert.deepEqual([cam.x, cam.y], pos);
-  cam.zoomAt(1e-6, 10, 10);
+  cam.zoomAt(1e-9, 10, 10);
   assert.equal(cam.zoom, MIN_ZOOM);
+  assert.equal(cam.zoomAt(0.5, 10, 10), false, 'already at the lower limit');
   assert.equal(new Camera({ zoom: 1000 }).zoom, MAX_ZOOM);
-  assert.equal(new Camera({ zoom: 0.1 }).zoom, MIN_ZOOM);
-  assert.equal(MIN_ZOOM, 4);
+  assert.equal(new Camera({ zoom: 1e-6 }).zoom, MIN_ZOOM);
+  assert.equal(MIN_ZOOM, 0.1);
   assert.equal(MAX_ZOOM, 80);
 });
 
@@ -124,7 +125,7 @@ test('camera: fit is limited by the tighter axis and centres on the other', () =
 
 test('camera: fit clamps to the zoom range and survives tiny / zero viewports and null layouts', () => {
   const huge = emptyLayout({ grid: { cols: 160, rows: 160, cellSize: 10 } });
-  assert.equal(new Camera().fit(huge, 800, 600, 10).zoom, MIN_ZOOM);
+  assert.equal(new Camera().fit(huge, 40, 30, 10).zoom, MIN_ZOOM, 'a viewport too small for the plant stops at the zoom floor');
   const tiny = emptyLayout({ grid: { cols: 8, rows: 8, cellSize: 0.5 } });
   assert.equal(new Camera().fit(tiny, 2000, 2000, 10).zoom, MAX_ZOOM);
   const cam = new Camera().fit(tiny, 0, 0, 32);

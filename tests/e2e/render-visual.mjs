@@ -151,6 +151,26 @@ check('hit testing follows the documented priority', async ({ page, url }) => {
   assert.equal(corner.id, 'B');
 });
 
+check('flows between touching stations show a direction badge on the shared edge that wins the click', async ({ page, url, shot }) => {
+  await open(page, url);
+  await scene(page, () => harness.showTouching(true));
+  shots.push(await shot('render-18-light-touching-flows'));
+  const probe = await page.evaluate(() => {
+    const entries = harness.renderer._fr.scene.flows;
+    const [badge, arrow] = entries;
+    const [bx, by] = harness.camera.worldToScreen(badge.marker.x, badge.marker.y);
+    const stationB = harness.touchingLayout.stations.find((st) => st.id === 'B');
+    const [sx, sy] = harness.camera.worldToScreen((stationB.x + stationB.w / 2) * 2, (stationB.y + stationB.h / 2) * 2);
+    const pick = (x, y) => { const h = harness.renderer.hitTest(x, y); return `${h.kind}/${h.id}`; };
+    return { count: entries.length, badge: pick(bx, by), body: pick(sx, sy), arrowIsMarker: arrow.marker !== null };
+  });
+  assert.equal(probe.count, 2, 'both flows are in the scene');
+  assert.equal(probe.badge, 'flow/f1', 'the badge is picked, not the station under it');
+  assert.equal(probe.body, 'station/B');
+  assert.equal(probe.arrowIsMarker, false, 'the second flow has room for a normal arrow');
+  await scene(page, () => harness.showTouching(false));
+});
+
 check('static layer is cached across frames and pans, rebuilt on zoom bucket / theme / layout change', async ({ page, url }) => {
   await open(page, url);
   const builds = () => page.evaluate(() => harness.renderer.stats.staticBuilds);

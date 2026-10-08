@@ -16,11 +16,14 @@
 //    back to a dock of `from` (with a graph: judged on the cheapest route, as the simulation would drive it).
 //  * one-way-dead-end: a road cell that can be entered but has no exit at all (a two-way dead end is fine:
 //    vehicles reverse there).
-//  * batch-exceeds-capacity is an error unless the flow has a maxWait (then a partial batch is released later).
+//  * batch-exceeds-capacity is a warning, never an error: the simulation limits a minimum batch to what the vehicles,
+//    the buffers and the maximum batch allow (js/sim/logistics/dispatcher.js), so the flow still runs, only with
+//    smaller batches than the planner asked for.
 //  * process-no-outflow is only an info (finished goods may leave the plant at the machine).
 //  * Extra code: warmup-exceeds-duration (warning).
-//  * The layout must have the usual shape (arrays present); it does not have to be normalized, so broken
-//    references (flow endpoints, fleet.home …) are reported rather than assumed away.
+//  * The layout must have the usual shape (grid, arrays, roads); it does not have to be normalized: broken references
+//    (flow endpoints, fleet.home …) are reported rather than assumed away, and missing names, station parameters or
+//    settings are tolerated (a nameless item is called by its id).
 
 import { STATION_TYPES } from './defaults.js';
 import { docksOf, flowsFrom, flowsTo, hasLink } from './layout.js';
@@ -31,10 +34,14 @@ const FLOW_FROM_TYPES = ['source', 'process', 'storage'];
 const FLOW_TO_TYPES = ['process', 'storage', 'sink'];
 const MAX_CELLS_PER_ISSUE = 100;
 
-const q = (name) => `“${name}”`;
+/** Name to show for a station or fleet: its own, else its id. */
+const nameOf = (item) => (typeof item.name === 'string' && item.name.trim() ? item.name : String(item.id ?? 'unnamed'));
+const q = (item) => `“${nameOf(item)}”`;
+/** The station's parameters; {} for a station without any (not normalized), so comparisons simply find nothing wrong. */
+const paramsOf = (station) => station.params ?? {};
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 const typeName = (station) => (STATION_TYPES[station.type] ? STATION_TYPES[station.type].short.toLowerCase() : 'station');
-const flowText = (a, b) => `${q(a.name)} → ${q(b.name)}`;
+const flowText = (a, b) => `${q(a)} → ${q(b)}`;
 
 // ---------------------------------------------------------------------------------------------------------
 // Routing (same rule as the simulation: no U-turn unless the cell offers no other exit)
@@ -50,7 +57,7 @@ function createRouter(layout) {
   const idx = (cx, cy) => cy * cols + cx;
   const road = new Uint8Array(size);
   const exits = new Uint8Array(size); // exit bits that lead into another road cell
-  const cells = Object.entries(layout.roads).map(([key, cell]) => [...parseKey(key), cell.out]).filter(([cx, cy]) => inBounds(cx, cy, cols, rows));
+  const cells = Object.entries(layout.roads).map(([key, cell]) => [...parseKey(key), (cell && cell.out) | 0]).filter(([cx, cy]) => inBounds(cx, cy, cols, rows));
   for (const [cx, cy] of cells) road[idx(cx, cy)] = 1;
   for (const [cx, cy, out] of cells) {
     for (let d = 0; d < 4; d++) {
@@ -215,7 +222,7 @@ function checkPlant(ctx, add) {
       : 'Material flows exist but there are no vehicles to move the loads.',
     layout.fleets.length ? 'Raise the vehicle count of a fleet in the Fleet tab.' : 'Add a fleet (AGV, forklift or tugger train) in the Fleet tab.');
   }
-  const { warmup, duration } = layout.settings;
+  const { warmup, duration } = layout.settings ?? {};
   if (warmup >= duration) {
     add('warning', 'warmup-exceeds-duration', 'layout', 'The warm-up period is as long as the whole run, so no results would be measured.',
       'Shorten the warm-up or lengthen the run duration in the Simulate tab.');
@@ -227,10 +234,10 @@ function checkDocks(ctx, add) {
     const docks = ctx.docks.get(s.id);
     const severity = s.type === 'depot' || ctx.inFlow.has(s.id) ? 'error' : 'warning';
     if (!docks.length) {
-      add(severity, 'station-no-dock', s.id, `${q(s.name)} is not next to any road, so vehicles cannot load or unload there.`,
+      add(severity, 'station-no-dock', s.id, `${q(s)} is not next to any road, so vehicles cannot load or unload there.`,
         'Move the station next to a road or draw a road touching it.', { stationId: s.id });
     } else if (docks.every(([cx, cy]) => cellDegree(ctx.layout, cx, cy) === 0)) {
-      add(severity, 'station-dock-isolated', s.id, `The road next to ${q(s.name)} is a single plate that is not connected to any other road.`,
+      add(severity, 'station-dock-isolated', s.id, `The road next to ${q(s)} is a single plate that is not connected to any other road.`,
         'Draw the road on from that plate so it joins the rest of the network.', { stationId: s.id, cells: docks });
     }
   }
@@ -239,9 +246,9 @@ function checkDocks(ctx, add) {
 /** The reason a flow's endpoints are not allowed (null if fine). */
 function endpointProblem(a, b) {
   if (!a || !b) return 'This flow starts or ends at a station that no longer exists.';
-  if (a === b) return `A flow cannot start and end at the same station (${q(a.name)}).`;
-  if (!FLOW_FROM_TYPES.includes(a.type)) return `${q(a.name)} is a ${typeName(a)}, so loads cannot start their journey there.`;
-  if (!FLOW_TO_TYPES.includes(b.type)) return `${q(b.name)} is a ${typeName(b)}, so it cannot receive loads.`;
+  if (a === b) return `A flow cannot start and end at the same station (${q(a)}).`;
+  if (!FLOW_FROM_TYPES.includes(a.type)) return `${q(a)} is a ${typeName(a)}, so loads cannot start their journey there.`;
+  if (!FLOW_TO_TYPES.includes(b.type)) return `${q(b)} is a ${typeName(b)}, so it cannot receive loads.`;
   return null;
 }
 
@@ -250,27 +257,27 @@ function batchLimit(ctx, flow, a, b) {
   const limits = [];
   const vehicle = vehicleCapacity(ctx, flow);
   if (vehicle !== null) limits.push([vehicle, `the vehicles carry at most ${vehicle}`]);
-  const buffer = a.type === 'storage' ? a.params.capacity : a.params.outCap;
-  limits.push([buffer, `${q(a.name)} holds at most ${buffer} loads for this flow`]);
-  if (b.type === 'process') limits.push([b.params.inCap, `${q(b.name)} accepts at most ${b.params.inCap} loads of this flow`]);
-  if (b.type === 'storage') limits.push([b.params.capacity, `${q(b.name)} holds at most ${b.params.capacity} loads`]);
+  const buffer = a.type === 'storage' ? paramsOf(a).capacity : paramsOf(a).outCap;
+  limits.push([buffer, `${q(a)} holds at most ${buffer} loads for this flow`]);
+  if (b.type === 'process') limits.push([paramsOf(b).inCap, `${q(b)} accepts at most ${paramsOf(b).inCap} loads of this flow`]);
+  if (b.type === 'storage') limits.push([paramsOf(b).capacity, `${q(b)} holds at most ${paramsOf(b).capacity} loads`]);
   if (flow.batchMax > 0) limits.push([flow.batchMax, `the maximum batch is ${flow.batchMax}`]);
   return limits.filter(([n]) => Number.isFinite(n)).sort((x, y) => x[0] - y[0])[0] || null;
 }
 
 function checkFlowParameters(ctx, flow, a, b, add) {
   const label = flowText(a, b);
-  if (b.type === 'process' && flow.perCycle > b.params.inCap) {
+  if (b.type === 'process' && flow.perCycle > paramsOf(b).inCap) {
     add('error', 'perCycle-exceeds-inCap', flow.id,
-      `${q(b.name)} needs ${flow.perCycle} loads from ${q(a.name)} per cycle, but its input slot for this flow holds only ${b.params.inCap}, so it can never start.`,
-      `Raise the input capacity of ${q(b.name)} to at least ${flow.perCycle}, or lower the per-cycle quantity of this flow.`,
+      `${q(b)} needs ${flow.perCycle} loads from ${q(a)} per cycle, but its input slot for this flow holds only ${paramsOf(b).inCap}, so it can never start.`,
+      `Raise the input capacity of ${q(b)} to at least ${flow.perCycle}, or lower the per-cycle quantity of this flow.`,
       { stationId: b.id, flowId: flow.id });
   }
   const limit = batchLimit(ctx, flow, a, b);
   if (limit && flow.batchMin > limit[0]) {
-    add(flow.maxWait > 0 ? 'warning' : 'error', 'batch-exceeds-capacity', flow.id,
-      `Flow ${label} waits for ${flow.batchMin} loads per trip, but at most ${limit[0]} can ever be ready: ${limit[1]}.`,
-      `Lower the minimum batch to ${limit[0]} or less, or raise the limit.`, { flowId: flow.id });
+    add('warning', 'batch-exceeds-capacity', flow.id,
+      `Flow ${label} is set to wait for ${flow.batchMin} loads per trip, but at most ${limit[0]} can ever be ready (${limit[1]}), so trips will leave with ${limit[0]} or fewer.`,
+      `Lower the minimum batch to ${limit[0]} or less to match, or raise the limit.`, { flowId: flow.id });
   }
 }
 
@@ -280,11 +287,11 @@ function checkFlowRouting(ctx, flow, a, b, router, add) {
   const to = { id: b.id, docks: ctx.docks.get(b.id) };
   const result = router.check(from, to);
   if (result === 'unreachable') {
-    add('error', 'flow-unreachable', flow.id, `Vehicles cannot drive from ${q(a.name)} to ${q(b.name)}.`,
+    add('error', 'flow-unreachable', flow.id, `Vehicles cannot drive from ${q(a)} to ${q(b)}.`,
       'Look for a gap in the road, a one-way segment pointing the wrong way, or parallel roads that are not joined.',
       { flowId: flow.id, stationId: a.id });
   } else if (result === 'no-return') {
-    add('error', 'flow-no-return', flow.id, `Vehicles can reach ${q(b.name)} from ${q(a.name)} but cannot get back (flow ${label}).`,
+    add('error', 'flow-no-return', flow.id, `Vehicles can reach ${q(b)} from ${q(a)} but cannot get back (flow ${label}).`,
       'A one-way road or dead end traps them. Make the road two-way or add a return road so the route forms a loop.',
       { flowId: flow.id, stationId: b.id });
   }
@@ -299,7 +306,7 @@ function checkFlows(ctx, add) {
     const b = ctx.stations.get(flow.to);
     const duplicate = pairs.has(`${flow.from}>${flow.to}`);
     pairs.add(`${flow.from}>${flow.to}`);
-    const problem = duplicate && a && b ? `There is more than one flow from ${q(a.name)} to ${q(b.name)}.` : endpointProblem(a, b);
+    const problem = duplicate && a && b ? `There is more than one flow from ${q(a)} to ${q(b)}.` : endpointProblem(a, b);
     if (problem) {
       add('error', 'flow-bad-endpoints', flow.id, problem, 'Delete the flow or reconnect it between a goods-in/workstation/storage and a workstation/storage/goods-out station.', { flowId: flow.id });
       continue;
@@ -308,7 +315,7 @@ function checkFlows(ctx, add) {
       const fleet = ctx.fleets.get(flow.fleetId);
       if (!fleet || fleet.count <= 0) {
         add('error', 'flow-fleet-missing', flow.id, fleet
-          ? `Flow ${flowText(a, b)} is restricted to ${q(fleet.name)}, which has no vehicles.`
+          ? `Flow ${flowText(a, b)} is restricted to ${q(fleet)}, which has no vehicles.`
           : `Flow ${flowText(a, b)} is restricted to a fleet that no longer exists.`,
         'Choose another fleet for this flow, set it to "any fleet", or raise the vehicle count.', { flowId: flow.id, fleetId: flow.fleetId });
       }
@@ -326,19 +333,19 @@ function checkStationRoles(ctx, add) {
     const out = flowsFrom(layout, s.id);
     const into = flowsTo(layout, s.id);
     if (s.type === 'source' && !out.length) {
-      add('warning', 'source-no-outflow', s.id, `${q(s.name)} creates loads but no flow takes them away, so they pile up at the gate.`,
+      add('warning', 'source-no-outflow', s.id, `${q(s)} creates loads but no flow takes them away, so they pile up at the gate.`,
         'Add a flow from this station to a workstation or storage.', { stationId: s.id });
     } else if (s.type === 'process') {
       if (!into.length) {
-        add('warning', 'process-no-inflow', s.id, `${q(s.name)} has no incoming flow, so it will run without any input material.`,
+        add('warning', 'process-no-inflow', s.id, `${q(s)} has no incoming flow, so it will run without any input material.`,
           'Add a flow into this station from a goods-in, storage or upstream workstation.', { stationId: s.id });
       }
       if (!out.length) {
-        add('info', 'process-no-outflow', s.id, `${q(s.name)} has no outgoing flow: its finished loads leave the plant right at the machine.`,
+        add('info', 'process-no-outflow', s.id, `${q(s)} has no outgoing flow: its finished loads leave the plant right at the machine.`,
           'That is fine for the last step. Otherwise add a flow to the next station.', { stationId: s.id });
       }
     } else if (s.type === 'sink' && !into.length) {
-      add('warning', 'sink-no-inflow', s.id, `Nothing is sent to ${q(s.name)}.`,
+      add('warning', 'sink-no-inflow', s.id, `Nothing is sent to ${q(s)}.`,
         'Add a flow into this goods-out station from the last workstation or storage.', { stationId: s.id });
     } else if (s.type === 'storage') checkStorage(ctx, s, into, add);
   }
@@ -350,34 +357,34 @@ function checkStorage(ctx, s, into, add) {
     return vehicle === null ? 0 : Math.min(vehicle, f.batchMax > 0 ? f.batchMax : Infinity);
   });
   const biggest = Math.max(0, ...deliveries);
-  if (s.params.capacity < biggest) {
-    add('warning', 'storage-small', s.id, `${q(s.name)} holds only ${s.params.capacity} loads, fewer than a single delivery of ${biggest}.`,
+  if (paramsOf(s).capacity < biggest) {
+    add('warning', 'storage-small', s.id, `${q(s)} holds only ${paramsOf(s).capacity} loads, fewer than a single delivery of ${biggest}.`,
       `Raise the capacity to at least ${biggest}, or let vehicles carry smaller batches.`, { stationId: s.id });
   }
 }
 
 function checkFleets(ctx, add) {
   const { layout } = ctx;
-  const chargers = layout.stations.some((s) => s.type === 'depot' && s.params.chargers > 0);
+  const chargers = layout.stations.some((s) => s.type === 'depot' && paramsOf(s).chargers > 0);
   const cell = layout.grid.cellSize;
   for (const f of layout.fleets) {
     const refs = { fleetId: f.id };
     const home = f.home ? ctx.stations.get(f.home) : null;
     if (f.home && (!home || home.type !== 'depot')) {
-      add('error', 'home-depot-missing', f.id, `The home depot of ${q(f.name)} is missing: the station it points to is gone or is not a depot.`,
+      add('error', 'home-depot-missing', f.id, `The home depot of ${q(f)} is missing: the station it points to is gone or is not a depot.`,
         'Pick another depot in the Fleet tab, or clear the home depot.', refs);
     }
     if (f.count <= 0) {
-      add('warning', 'fleet-count-zero', f.id, `${q(f.name)} has no vehicles.`, 'Raise its count in the Fleet tab, or delete the fleet.', refs);
+      add('warning', 'fleet-count-zero', f.id, `${q(f)} has no vehicles.`, 'Raise its count in the Fleet tab, or delete the fleet.', refs);
       continue;
     }
     if (f.length > cell) {
       add('warning', 'vehicle-longer-than-cell', f.id,
-        `${q(f.name)} vehicles are ${f.length} m long but a road cell is only ${cell} m, so they overhang neighbouring cells in corners and at docks.`,
+        `${q(f)} vehicles are ${f.length} m long but a road cell is only ${cell} m, so they overhang neighbouring cells in corners and at docks.`,
         'Use a larger cell size for the plant, or choose a shorter vehicle.', refs);
     }
     if (f.battery && f.battery.enabled && !chargers) {
-      add('error', 'depot-missing', f.id, `${q(f.name)} runs on batteries but the plant has no parking & charging station with chargers, so the vehicles will run flat.`,
+      add('error', 'depot-missing', f.id, `${q(f)} runs on batteries but the plant has no parking & charging station with chargers, so the vehicles will run flat.`,
         'Add a Depot station next to a road and give it at least one charger.', refs);
     }
   }
@@ -387,12 +394,12 @@ function checkNames(ctx, add) {
   const groups = (items, kind) => {
     const byName = new Map();
     for (const item of items) {
-      const key = item.name.trim().toLowerCase();
+      const key = nameOf(item).trim().toLowerCase();
       byName.set(key, [...(byName.get(key) || []), item]);
     }
     for (const [key, list] of byName) {
       if (list.length < 2) continue;
-      add('info', 'duplicate-names', `${kind}:${key}`, `${list.length} ${kind === 'station' ? 'stations are' : 'fleets are'} all called ${q(list[0].name)}.`,
+      add('info', 'duplicate-names', `${kind}:${key}`, `${list.length} ${kind === 'station' ? 'stations are' : 'fleets are'} all called ${q(list[0])}.`,
         'Give them different names so charts and reports stay readable.', kind === 'station' ? { stationId: list[0].id } : { fleetId: list[0].id });
     }
   };
@@ -449,7 +456,8 @@ function checkRoadNetwork(ctx, add) {
  * @param {{graph?: object}} [opts] a sim graph (js/sim/graph.js) to use for reachability instead of the internal search
  * @returns {Array<{id: string, severity: string, code: string, message: string, hint: string, refs: object}>}
  */
-export function validateLayout(layout, { graph = null } = {}) {
+export function validateLayout(layout, opts) {
+  const graph = (opts ?? {}).graph ?? null;
   const issues = [];
   const add = (severity, code, ref, message, hint, refs = {}) => {
     issues.push({ id: `${code}:${ref}`, severity, code, message, hint, refs });

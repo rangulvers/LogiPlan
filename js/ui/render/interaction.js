@@ -6,7 +6,7 @@ import { parseKey, DX, DY } from '../../util/grid.js';
 import { HANDLE_NAMES, handlePoint } from './geometry.js';
 import { drawBrick } from './bricks.js';
 import { drawDockNotches } from './overlays.js';
-import { labelFontPx } from './static.js';
+import { labelFontPx } from './labels.js';
 import { roundRectPath, fontOf, measure } from './draw.js';
 
 const HANDLE_SIZE = 8;
@@ -14,6 +14,9 @@ const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
 /** Metre rectangle -> CSS px rectangle. */
 const toPx = (fr, x, y, w, h) => ({ x: fr.ox + x * fr.zoom, y: fr.oy + y * fr.zoom, w: w * fr.zoom, h: h * fr.zoom });
+
+/** Is `c` a [cx, cy] pair of finite numbers? */
+const isCell = (c) => Array.isArray(c) && Number.isFinite(c[0]) && Number.isFinite(c[1]);
 
 /** Cell id of a 'cell' selection: "cx,cy" or [cx, cy]. */
 function cellOf(id) {
@@ -33,15 +36,15 @@ export function itemRectPx(ctx, fr, kind, id) {
     return e ? toPx(fr, e.x, e.y, e.w, e.h) : null;
   }
   if (kind === 'obstacle') {
-    const o = (fr.scene.layout.obstacles || []).find((item) => item.id === id);
+    const o = fr.scene.obstacleById.get(id);
     return o ? toPx(fr, o.x * cs, o.y * cs, o.w * cs, o.h * cs) : null;
   }
   if (kind === 'label') {
-    const l = (fr.scene.layout.labels || []).find((item) => item.id === id);
+    const l = fr.scene.labelById.get(id);
     if (!l) return null;
-    const px = Math.max(labelFontPx(l, fr.zoom), 10);
+    const px = Math.max(labelFontPx(l, fr.zoom, cs), 10);
     ctx.font = fontOf(fr.theme, 600, px);
-    const w = measure(ctx, l.text || '') + 8;
+    const w = measure(ctx, l.text) + 8;
     const h = px * 1.35;
     return { x: fr.ox + l.x * cs * fr.zoom - w / 2, y: fr.oy + l.y * cs * fr.zoom - h / 2, w, h };
   }
@@ -111,7 +114,7 @@ export function drawSelection(ctx, fr) {
 /** The rectangle that carries resize handles (single selected station / obstacle with resizeHandles on), or null. */
 export function handleRect(ctx, fr) {
   const sel = fr.view.selection;
-  if (!fr.view.resizeHandles || !sel || (sel.kind !== 'station' && sel.kind !== 'obstacle') || sel.ids.length !== 1) return null;
+  if (!fr.view.resizeHandles || !sel || (sel.kind !== 'station' && sel.kind !== 'obstacle') || !Array.isArray(sel.ids) || sel.ids.length !== 1) return null;
   return itemRectPx(ctx, fr, sel.kind, sel.ids[0]);
 }
 
@@ -173,10 +176,11 @@ export function drawGhost(ctx, fr, ghost) {
  * two-way strokes. `preview.blocked` (optional [[cx, cy]]) marks cells that stop the stroke, in red.
  */
 export function drawPaintPreview(ctx, fr, preview) {
-  if (!preview || !Array.isArray(preview.cells) || preview.cells.length === 0) return;
+  if (!preview || !Array.isArray(preview.cells)) return;
+  const cells = preview.cells.filter(isCell);
+  if (cells.length === 0) return;
   const theme = fr.theme;
   const cell = fr.cs * fr.zoom;
-  const cells = preview.cells;
   ctx.fillStyle = theme.road;
   ctx.globalAlpha = 0.72;
   ctx.beginPath();
@@ -202,7 +206,7 @@ export function drawPaintPreview(ctx, fr, preview) {
     ctx.stroke();
     ctx.setLineDash([]);
   }
-  for (const [cx, cy] of preview.blocked || []) {
+  for (const [cx, cy] of Array.isArray(preview.blocked) ? preview.blocked.filter(isCell) : []) {
     const x = fr.ox + cx * cell;
     const y = fr.oy + cy * cell;
     ctx.fillStyle = theme.ghostInvalid;

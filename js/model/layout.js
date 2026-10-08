@@ -19,7 +19,12 @@
 //    later stations/obstacles that overlap earlier ones, and drops roads under them. Schema 0/absent is
 //    read as schema 1 (there is nothing older to migrate); newer schemas are read best-effort.
 //  * Numeric strings ("12") are accepted wherever a number is expected; anything else non-numeric falls
-//    back to the default. Ids must match [A-Za-z0-9_-]{1,32}; missing/invalid/duplicate ids are reassigned.
+//    back to the default when a layout is loaded and keeps the CURRENT value when a mutator patches a field
+//    (an editor that commits NaN or '' while the user clears a field must not wipe the setting).
+//  * Ids must match [A-Za-z0-9_-]{1,32} and must not be a property name of Object.prototype ("__proto__",
+//    "constructor", "toString" …), so reports and stores that key plain objects by id cannot be corrupted;
+//    missing/invalid/duplicate ids are reassigned.
+//  * Options arguments (`{ oneWay }`, `{ ignoreStation }` …) may be null or omitted; both mean "defaults".
 
 import {
   SCHEMA_VERSION, STATION_TYPES, DIST_KINDS, FLEET_PRESETS, DISPATCH_STRATEGIES, ROUTING_MODES,
@@ -43,6 +48,7 @@ const NAME_MAX = 80;
 const TEXT_MAX = 200;
 const NOTES_MAX = 20000;
 const ID_RE = /^[A-Za-z0-9_-]{1,32}$/;
+const RESERVED_IDS = new Set(Object.getOwnPropertyNames(Object.prototype));
 const KEY_RE = /^(0|[1-9]\d*),(0|[1-9]\d*)$/;
 const COLOR_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
 
@@ -138,22 +144,27 @@ export function cleanText(v, max, fallback = '', multiline = false) {
   return (multiline ? s : s.trim()) || fallback;
 }
 
-/** A valid id string ([A-Za-z0-9_-]{1,32}), or '' when `v` is not one. Non-negative integers become decimal strings. */
+/** Is `v` an acceptable entity id: [A-Za-z0-9_-]{1,32} and not a property name of Object.prototype? */
+const isValidId = (v) => typeof v === 'string' && ID_RE.test(v) && !RESERVED_IDS.has(v);
+
+/** A valid id string (see isValidId), or '' when `v` is not one. Non-negative integers become decimal strings. */
 export function cleanId(v) {
   if (typeof v === 'number' && Number.isInteger(v) && v >= 0) v = String(v);
-  return typeof v === 'string' && ID_RE.test(v) ? v : '';
+  return isValidId(v) ? v : '';
 }
 
-/** Keep first occurrences of valid ids, give every other item a fresh `prefix`+n id. */
+/** Keep first occurrences of valid ids, give every other item a fresh `prefix`+n id (linear time: one counter, one Set). */
 function assignIds(items, prefix) {
   const used = new Set();
   for (const item of items) {
     if (item.id && !used.has(item.id)) used.add(item.id);
     else item.id = '';
   }
+  let n = 1;
   for (const item of items) {
     if (item.id) continue;
-    item.id = nextId(prefix, used);
+    while (used.has(prefix + n)) n++;
+    item.id = prefix + n;
     used.add(item.id);
   }
 }
@@ -195,29 +206,35 @@ function sanitizeDist(raw, base) {
   };
 }
 
-/** Complete, clamped `params` for a station type; unknown keys are dropped. */
-function sanitizeParams(type, raw) {
-  const base = defaultStationParams(type);
+/**
+ * Complete, clamped `params` for a station type; unknown keys are dropped. A missing or junk field takes its value
+ * from `fallback` (the type's defaults unless the caller passes the current, already valid, params).
+ */
+function sanitizeParams(type, raw, fallback = defaultStationParams(type)) {
   const src = isObj(raw) ? raw : {};
   const spec = PARAM_SPEC[type];
   const out = {};
-  for (const key of Object.keys(base)) {
-    out[key] = isObj(base[key]) ? sanitizeDist(src[key], base[key]) : fit(spec[key], src[key], base[key]);
+  for (const key of Object.keys(fallback)) {
+    out[key] = isObj(fallback[key]) ? sanitizeDist(src[key], fallback[key]) : fit(spec[key], src[key], fallback[key]);
   }
   if (type === 'depot') out.chargers = Math.min(out.chargers, out.slots);
   return out;
 }
 
-/** `current` params with `patch` merged one level deep (distributions merge field by field), then sanitized. */
+/**
+ * `current` params with `patch` merged one level deep (distributions merge field by field), then sanitized.
+ * A patched field that is not a usable value keeps its current value.
+ */
 function mergeParams(type, current, patch) {
-  const merged = { ...current };
+  const base = sanitizeParams(type, current);
+  const merged = { ...base };
   if (isObj(patch)) {
-    for (const key of Object.keys(current)) {
+    for (const key of Object.keys(base)) {
       if (patch[key] === undefined) continue;
-      merged[key] = isObj(current[key]) && isObj(patch[key]) ? { ...current[key], ...patch[key] } : patch[key];
+      merged[key] = isObj(base[key]) && isObj(patch[key]) ? { ...base[key], ...patch[key] } : patch[key];
     }
   }
-  return sanitizeParams(type, merged);
+  return sanitizeParams(type, merged, base);
 }
 
 /** If a maximum batch is set and below the minimum, let `keep` ('min' | 'max') win. */
@@ -299,7 +316,8 @@ function claim(occ, grid, rect) {
  * A new empty plant. Sizes are clamped to GRID_LIMITS.
  * @param {{name?: string, cols?: number, rows?: number, cellSize?: number}} [opts]
  */
-export function createLayout({ name, cols, rows, cellSize } = {}) {
+export function createLayout(opts) {
+  const { name, cols, rows, cellSize } = opts ?? {};
   const d = defaultGrid();
   const layout = emptyLayout({
     grid: {
@@ -577,7 +595,7 @@ function checkRects(kind, items, layout, owner, bad, extra) {
   }
   for (const it of items) {
     const tag = `${kind} ${it && it.id}`;
-    if (!isObj(it) || !ID_RE.test(it.id)) { bad.push(`${tag}: invalid id`); continue; }
+    if (!isObj(it) || !isValidId(it.id)) { bad.push(`${tag}: invalid id`); continue; }
     if (byId.has(it.id)) bad.push(`${tag}: duplicate id`);
     byId.set(it.id, it);
     const geometryOk = ['x', 'y', 'w', 'h'].every((k) => Number.isInteger(it[k])) && it.w >= 1 && it.h >= 1
@@ -620,7 +638,7 @@ function checkFlows(layout, stations, fleets, bad) {
   if (!Array.isArray(layout.flows)) bad.push('flows: not an array');
   for (const f of arr(layout.flows)) {
     const tag = `flow ${f && f.id}`;
-    if (!isObj(f) || !ID_RE.test(f.id)) { bad.push(`${tag}: invalid id`); continue; }
+    if (!isObj(f) || !isValidId(f.id)) { bad.push(`${tag}: invalid id`); continue; }
     if (ids.has(f.id)) bad.push(`${tag}: duplicate id`);
     ids.add(f.id);
     if (!flowEndpointsValid(stations.get(f.from), stations.get(f.to))) bad.push(`${tag}: endpoints missing or not allowed`);
@@ -637,7 +655,7 @@ function checkFleets(layout, stations, bad) {
   if (!Array.isArray(layout.fleets)) bad.push('fleets: not an array');
   for (const f of arr(layout.fleets)) {
     const tag = `fleet ${f && f.id}`;
-    if (!isObj(f) || !ID_RE.test(f.id)) { bad.push(`${tag}: invalid id`); continue; }
+    if (!isObj(f) || !isValidId(f.id)) { bad.push(`${tag}: invalid id`); continue; }
     if (byId.has(f.id)) bad.push(`${tag}: duplicate id`);
     byId.set(f.id, f);
     if (typeof f.name !== 'string' || !f.name.trim()) bad.push(`${tag}: empty name`);
@@ -658,7 +676,7 @@ function checkLabels(layout, bad) {
   if (!Array.isArray(layout.labels)) bad.push('labels: not an array');
   for (const l of arr(layout.labels)) {
     const tag = `label ${l && l.id}`;
-    if (!isObj(l) || !ID_RE.test(l.id)) { bad.push(`${tag}: invalid id`); continue; }
+    if (!isObj(l) || !isValidId(l.id)) { bad.push(`${tag}: invalid id`); continue; }
     if (ids.has(l.id)) bad.push(`${tag}: duplicate id`);
     ids.add(l.id);
     const { cols, rows } = layout.grid;
@@ -732,7 +750,8 @@ export function hasLink(layout, cx, cy, dir) {
 }
 
 /** In bounds and not covered by a station/obstacle (roads are ignored). */
-export function isCellFree(layout, cx, cy, { ignoreStation, ignoreObstacle } = {}) {
+export function isCellFree(layout, cx, cy, opts) {
+  const { ignoreStation, ignoreObstacle } = opts ?? {};
   if (!Number.isInteger(cx) || !Number.isInteger(cy) || !inBounds(cx, cy, layout.grid.cols, layout.grid.rows)) return false;
   const s = stationAt(layout, cx, cy);
   if (s && s.id !== ignoreStation) return false;
@@ -755,7 +774,8 @@ function hasRoadIn(layout, r) {
 }
 
 /** Is an integer rectangle inside the grid and clear of stations/obstacles (and of roads unless `allowRoads`)? */
-export function isRectFree(layout, rect, { ignoreStation, ignoreObstacle, allowRoads = false } = {}) {
+export function isRectFree(layout, rect, opts) {
+  const { ignoreStation, ignoreObstacle, allowRoads = false } = opts ?? {};
   if (!isObj(rect) || !['x', 'y', 'w', 'h'].every((k) => Number.isInteger(rect[k])) || rect.w < 1 || rect.h < 1) return false;
   if (rect.x < 0 || rect.y < 0 || rect.x + rect.w > layout.grid.cols || rect.y + rect.h > layout.grid.rows) return false;
   if (layout.stations.some((s) => s.id !== ignoreStation && rectsOverlap(rect, s))) return false;
@@ -816,7 +836,8 @@ function expandStroke(cells, grid) {
  * @param {number[][]} cells consecutive cells; non-adjacent neighbours are connected with an L-shaped path
  * @returns {number} distinct stroke cells accepted
  */
-export function paintRoadPath(layout, cells, { oneWay = false } = {}) {
+export function paintRoadPath(layout, cells, opts) {
+  const oneWay = !!(opts ?? {}).oneWay;
   const accepted = new Set();
   let prev = null;
   for (const cell of expandStroke(cells, layout.grid)) {
@@ -975,7 +996,8 @@ function findFreeSpot(layout, base) {
  * Copy a station (type, size, parameters; not its flows) to the free spot nearest to `(x+dx, y+dy)`.
  * Offsets default to one cell, which always overlaps the original, so the nearest free spot is used.
  */
-export function duplicateStation(layout, id, { dx = 1, dy = 1 } = {}) {
+export function duplicateStation(layout, id, offset) {
+  const { dx = 1, dy = 1 } = offset ?? {};
   const s = getStation(layout, id);
   const ox = toInt(dx);
   const oy = toInt(dy);
@@ -1178,6 +1200,38 @@ export function removeLabel(layout, id) {
   const i = layout.labels.findIndex((l) => l.id === id);
   if (i < 0) return false;
   layout.labels.splice(i, 1);
+  return true;
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// Plant name, notes and settings
+// ---------------------------------------------------------------------------------------------------------
+
+/** Rename the plant (control characters become spaces, 80 characters at most; an empty name keeps the old one). Always true. */
+export function setName(layout, name) {
+  layout.name = cleanText(name, NAME_MAX, layout.name);
+  return true;
+}
+
+/** Replace the plant notes (multi-line text, 20000 characters at most; empty clears them). Always true. */
+export function setNotes(layout, notes) {
+  layout.notes = cleanText(notes, NOTES_MAX, '', true);
+  return true;
+}
+
+/**
+ * Patch `layout.settings`: numbers are clamped to their range, enumerations (`dispatch`, `routing`, `handedness`,
+ * `deadlock`) must name a known option. A field whose new value is unusable (NaN, '', an unknown option) and keys
+ * that are not settings keep their current value. False only if `patch` is not an object.
+ */
+export function updateSettings(layout, patch) {
+  if (!isObj(patch)) return false;
+  for (const [key, spec] of Object.entries(SETTINGS_SPEC)) {
+    if (patch[key] !== undefined) layout.settings[key] = fit(spec, patch[key], layout.settings[key]);
+  }
+  for (const [key, values] of Object.entries(SETTINGS_ENUMS)) {
+    if (values.includes(patch[key])) layout.settings[key] = patch[key];
+  }
   return true;
 }
 

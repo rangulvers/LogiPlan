@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LogiPlan experiments harness</title>
+  <link rel="stylesheet" href="../../css/tokens.css">
+  <link rel="stylesheet" href="../../css/components.css">
+  <style>
+    /* Test page only: a stand-in for the app shell (canvas on the left, tabbed right panel, toasts). */
+    html, body { height: 100%; margin: 0; overflow: hidden; }
+    .shell { display: flex; height: 100%; background: var(--bg); }
+    .stage { position: relative; flex: 1 1 auto; min-width: 0; }
+    #plant { display: block; width: 100%; height: 100%; }
+    .pane { flex: none; width: var(--pane-w, 400px); max-width: 100%; display: flex; flex-direction: column; background: var(--surface); border-left: 1px solid var(--border); }
+    .pane .tabs { flex: none; }
+    .pane__body { flex: 1 1 auto; overflow: auto; }
+    .pane__body > [data-tab] { display: none; }
+    .pane__body > [data-tab].is-shown { display: block; }
+    body.narrow .stage { display: none; }
+    body.narrow .pane { width: 100%; border-left: 0; }
+    html:has(body.tall), body.tall { height: auto; overflow: visible; }
+    body.tall .shell, body.tall .pane, body.tall .pane__body { height: auto; overflow: visible; }
+    .toast-region { position: fixed; left: 16px; bottom: 16px; transform: none; }
+    .other { padding: 16px; color: var(--text-dim); }
+  </style>
+</head>
+<body>
+<div class="shell">
+  <div class="stage"><canvas id="plant" aria-label="Plant layout"></canvas></div>
+  <aside class="pane" aria-label="Panels">
+    <div class="tabs" role="tablist" aria-label="Panels" id="tabs"></div>
+    <div class="pane__body" id="body"></div>
+  </aside>
+</div>
+<div class="toast-region" id="toasts" aria-live="polite"></div>
+<script type="module">
+// Test page for the Experiments tab (js/ui/compare.js) and the report (js/ui/report.js): the real store, camera, renderer and
+// runner, the real simulation experiments, a minimal stand-in for the app shell around them. tests/e2e/compare.mjs drives it
+// through window.harness.
+import { createStore } from '../../js/store/store.js';
+import { Camera } from '../../js/ui/camera.js';
+import { Renderer } from '../../js/ui/renderer.js';
+import { createRunner } from '../../js/ui/runner.js';
+import { EXAMPLES } from '../../js/model/examples.js';
+import { updateFleet, updateSettings } from '../../js/model/layout.js';
+import { buildGraph } from '../../js/sim/graph.js';
+import { validateLayout } from '../../js/model/validate.js';
+import { icon } from '../../js/ui/icons.js';
+import { createCompare, getLastResults } from '../../js/ui/compare.js';
+import * as report from '../../js/ui/report.js';
+
+const params = new URLSearchParams(location.search);
+const theme = params.get('theme') || 'light';
+document.documentElement.dataset.theme = theme;
+if (params.get('w')) document.documentElement.style.setProperty('--pane-w', `${params.get('w')}px`);
+if (params.get('narrow')) document.body.classList.add('narrow');
+if (params.get('tall')) document.body.classList.add('tall');
+
+const canvas = document.getElementById('plant');
+const store = createStore({ storage: undefined });
+const camera = new Camera();
+const renderer = new Renderer(canvas, { camera, theme });
+const runner = createRunner({ store, renderer });
+
+const toasts = [];
+const calls = [];
+
+function toast(message, { kind = 'info', ms = 3500, action = null } = {}) {
+  toasts.push({ message, kind, action: action ? action.label : null });
+  const el = document.createElement('div');
+  el.className = `toast toast--${kind === 'warn' ? 'warn' : kind}`;
+  el.setAttribute('role', 'status');
+  const text = document.createElement('span');
+  text.className = 'toast__msg';
+  text.textContent = message;
+  el.append(icon(kind === 'error' ? 'error' : kind === 'warn' ? 'warning' : 'info', { size: 16, class: 'toast__icon' }), text);
+  if (action) {
+    const b = document.createElement('button');
+    b.className = 'toast__action';
+    b.type = 'button';
+    b.textContent = action.label;
+    b.addEventListener('click', () => { action.onClick(); el.remove(); });
+    el.append(b);
+  }
+  document.getElementById('toasts').replaceChildren(el);
+  setTimeout(() => el.remove(), ms);
+}
+
+// graph() and issues() are cached per layout identity, like the shell does
+let cached = { layout: null, graph: null, issues: null };
+function cache() {
+  const layout = store.getState().layout;
+  if (cached.layout !== layout) {
+    const graph = buildGraph(layout);
+    cached = { layout, graph, issues: validateLayout(layout, { graph }) };
+  }
+  return cached;
+}
+
+const ctx = {
+  store, runner, renderer, camera, canvas, toast,
+  setStatus() {},
+  graph: () => cache().graph,
+  issues: () => cache().issues,
+  actions: {
+    fitView() { camera.fit(store.getState().layout, canvas.clientWidth, canvas.clientHeight, 24); },
+    setRightTab(name) { calls.push(['setRightTab', name]); },
+    exportReport() { calls.push(['exportReport']); return report.downloadReport(ctx); },
+  },
+};
+
+// ---- the project: three variants of the congestion lab ---------------------------------------------------
+
+/**
+ * "Baseline" (5 AGVs, demand doubled, 2 h experiments) plus, unless ?variants=1, "7 AGVs" and "9 AGVs"; the baseline is open at the
+ * end. With this much demand the number of vehicles decides the throughput up to about 7 AGVs, so comparisons and sweeps have a story.
+ */
+function buildProject() {
+  store.newProject(EXAMPLES.find((e) => e.id === (params.get('example') || 'congestion-lab')).build());
+  const baseId = store.getState().project.activeId;
+  const fleetId = store.getState().layout.fleets[0].id;
+  store.renameScenario(baseId, 'Baseline');
+  store.commit('Prepare the experiment plant', (d) => {
+    updateSettings(d, { demandFactor: 2, duration: 7200, warmup: 300 });
+    updateFleet(d, fleetId, { count: 5 });
+  });
+  if (params.get('variants') === '1') return;
+  for (const count of [7, 9]) {
+    store.addScenario(`${count} AGVs`, null);
+    store.commit('Change the number of vehicles', (d) => updateFleet(d, fleetId, { count }));
+  }
+  store.switchScenario(baseId);
+}
+buildProject();
+
+// ---- panels: Experiments plus a dummy tab to test show / hide ---------------------------------------------
+
+const tabs = document.getElementById('tabs');
+const body = document.getElementById('body');
+const harness = { store, ctx, runner, renderer, camera, toasts, calls, report, getLastResults, compare: null, buildProject };
+const other = Object.assign(document.createElement('div'), { className: 'other', textContent: 'Another panel.' });
+const panels = { experiments: null, other: { el: other, update() {}, setVisible() {} } };
+const TAB_NAMES = { experiments: 'Experiments', other: 'Simulate' };
+
+function mountCompare(options) {
+  harness.compare?.destroy();
+  harness.compare = createCompare(ctx, options);
+  panels.experiments = harness.compare;
+  const host = body.querySelector('[data-tab="experiments"]');
+  host.replaceChildren(harness.compare.el);
+  harness.compare.update(store.getState());
+  harness.compare.setVisible(harness.tab === 'experiments');
+}
+harness.mountCompare = mountCompare;
+
+for (const key of Object.keys(TAB_NAMES)) {
+  const tab = document.createElement('button');
+  tab.className = 'tab';
+  tab.type = 'button';
+  tab.setAttribute('role', 'tab');
+  tab.dataset.tab = key;
+  tab.textContent = TAB_NAMES[key];
+  tab.addEventListener('click', () => harness.showTab(key));
+  tabs.append(tab);
+  const host = document.createElement('div');
+  host.dataset.tab = key;
+  host.setAttribute('role', 'tabpanel');
+  if (key === 'other') host.append(other);
+  body.append(host);
+}
+
+harness.showTab = (key) => {
+  harness.tab = key;
+  for (const t of tabs.children) t.setAttribute('aria-selected', String(t.dataset.tab === key));
+  for (const host of body.children) host.classList.toggle('is-shown', host.dataset.tab === key);
+  for (const [name, panel] of Object.entries(panels)) panel?.setVisible(name === key);
+};
+
+store.subscribe((state) => { panels.experiments?.update(state); });
+
+// ---- the canvas ----------------------------------------------------------------------------------------------
+
+function fit() {
+  renderer.resize();
+  camera.setViewport?.(canvas.clientWidth, canvas.clientHeight);
+  camera.fit(store.getState().layout, canvas.clientWidth, canvas.clientHeight, 24);
+}
+new ResizeObserver(fit).observe(canvas);
+
+harness.showTab('experiments');
+mountCompare();
+fit();
+window.harness = harness;
+window.ready = true;
+</script>
+</body>
+</html>

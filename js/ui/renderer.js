@@ -11,23 +11,28 @@
 //   renderer.invalidate() / destroy()         force a static-layer rebuild / stop the settle timer
 //   renderer.stats = { frames, staticBuilds }  diagnostics (tests, perf HUD)
 //
-// Layers, bottom to top: background, cached static layer (baseplate, studs, grid, obstacles, roads, labels),
-// heatmap, dock notches, flows, station bricks, vehicles, deadlock rings, hover / selection / ghost /
-// previews, heat legend and scale bar. See render/*.js for the pieces.
+// Layers, bottom to top: background, cached static layer (baseplate, studs, grid, obstacles, roads),
+// heatmap, dock notches, flows, station bricks, flow markers, labels, vehicles, deadlock rings, hover /
+// selection / ghost / previews, heat legend and scale bar. See render/*.js for the pieces.
 //
 // Conventions chosen where the spec leaves room (also listed in the final report):
 //   * view.flowPreview.toPoint and view.marquee are in WORLD METRES; add `space: 'screen'` to the marquee
 //     (or to flowPreview) to pass CSS pixels instead. ghost.rect and paintPreview.cells are in grid cells.
-//   * toDataURL({ scale }): scale 1 = 20 px per metre; the result is capped to 8192 px per side.
+//   * toDataURL({ scale }): scale 1 = 20 px per metre; the result is capped to 8192 px per side and 16 M pixels
+//     (the canvas limit of iOS Safari).
 //   * sim.traffic.activeDeadlocks may be an iterable of node ids, of { node } or of { nodes: [] } objects.
-//   * Free labels are centred on (x, y) and `size` multiplies a 0.8 m font height.
+//   * Free labels are centred on (x, y); `size` is their text height in grid cells (as in js/model/layout.js).
+//   * hitTest priority: vehicles > resize handles > labels > flow markers (the direction badge of a flow between
+//     touching stations, drawn on top of the bricks) > stations > flows > obstacles > cells. Hidden layers
+//     (labels / flows overlay off) are not hit.
 
 import { getTheme, resolveThemeMode } from './theme.js';
 import { getScene } from './render/scene.js';
 import { StaticLayer, SETTLE_MS } from './render/layer.js';
-import { drawStatic, labelFontPx } from './render/static.js';
+import { drawStatic } from './render/static.js';
 import { drawStations } from './render/bricks.js';
-import { drawFlows, drawFlowPreview } from './render/flows.js';
+import { drawLabels, labelFontPx } from './render/labels.js';
+import { drawFlows, drawFlowMarkers, drawFlowPreview, markerRadius } from './render/flows.js';
 import { drawVehicles, vehiclePose, vehicleSize, idFontOf } from './render/vehicles.js';
 import {
   createHeatState, refreshHeat, drawHeat, drawHeatLegend, drawDocks, drawDeadlocks, drawScaleBar,
@@ -38,10 +43,13 @@ import { plantBounds, MIN_ZOOM, MAX_ZOOM, DEFAULT_ZOOM } from './camera.js';
 
 const EXPORT_PX_PER_METRE = 20;
 const EXPORT_MAX_SIDE = 8192;
-const EXPORT_MAX_PIXELS = 36e6;
+const EXPORT_MAX_PIXELS = 16e6;
 const EXPORT_MIN_MARGIN_PX = 12;
 const FLOW_HIT_PX = 6;
 const HANDLE_HIT_PX = 7;
+const MARKER_HIT_SLACK_PX = 3;
+/** Heat strips are widened by this many device pixels on every side, so strips of different levels that abut leave no seam. */
+const HEAT_BLEED_DEVICE_PX = 0.25;
 const EMPTY = Object.freeze([]);
 const EMPTY_VIEW = Object.freeze({});
 const DEFAULT_OVERLAYS = Object.freeze({});
@@ -93,7 +101,7 @@ function createFrame() {
     zoom: DEFAULT_ZOOM, dpr: 1, cs: 2, tx: 0, ty: 0, ox: 0, oy: 0, w: 0, h: 0,
     vis: { x0: 0, y0: 0, x1: 0, y1: 0 }, alpha: 1, now: 0,
     selKind: null, selIds: EMPTY, hoverKind: null, hoverId: null, hoverVehicle: null, selFleet: null,
-    showIds: false, idFont: '', reducedMotion: false,
+    showIds: false, idFont: '', reducedMotion: false, hand: 1,
     pose: new Float64Array(3), size: { length: 1.2, width: 0.66 }, poseBuf: new Float64Array(0), brick: {},
     curvePx: { ax: 0, ay: 0, qx: 0, qy: 0, bx: 0, by: 0 }, tmpA: [0, 0], tmpB: [0, 0],
     stationCache: { src: null, len: -1, map: null }, flowCache: { src: null, len: -1, map: null },
@@ -162,10 +170,17 @@ function setupFrame(fr, r, alpha, now) {
   fr.alpha = alpha;
   fr.now = now;
   fr.reducedMotion = r._motion.matches === true;
+  fr.hand = handSide(fr);
   applyInteraction(fr, view, true);
   fr.showIds = fr.overlays.ids === true;
   fr.idFont = idFontOf(fr.theme);
   return fr;
+}
+
+/** +1 for right-hand traffic, -1 for left-hand (which side of a two-way road vehicles use). */
+function handSide(fr) {
+  const settings = (fr.sim && fr.sim.settings) || (fr.layout && fr.layout.settings);
+  return settings && settings.handedness === 'left' ? -1 : 1;
 }
 
 /** Copy selection / hover from the view into frame fields (or clear them for export). */
@@ -296,7 +311,10 @@ export class Renderer {
   hitTest(px, py) {
     const fr = setupFrame(this._fr, this, this._alpha, this._now());
     if (!Number.isFinite(px) || !Number.isFinite(py)) { px = 0; py = 0; }
-    const cell = this.camera.screenToCell(px, py, fr.cs);
+    // the same pixel-snapped origin the bricks are drawn with, so `cell` always agrees with `kind` / `id`
+    const wx = (px - fr.ox) / fr.zoom;
+    const wy = (py - fr.oy) / fr.zoom;
+    const cell = [Math.floor(wx / fr.cs) + 0, Math.floor(wy / fr.cs) + 0];
     const result = (kind, id, extra) => ({ kind, id, cell, ...extra });
     const scene = fr.scene;
     if (!scene) return { kind: 'cell', cell };
@@ -308,17 +326,17 @@ export class Renderer {
       const name = hitHandle(hr.x, hr.y, hr.w, hr.h, px, py, HANDLE_HIT_PX);
       if (name) return result(fr.selKind, fr.selIds[0], { handle: name });
     }
-    const wx = (px - fr.ox) / fr.zoom;
-    const wy = (py - fr.oy) / fr.zoom;
     const label = ctx ? hitLabel(ctx, fr, px, py) : null;
     if (label) return result('label', label.id, selectedHandle(fr, 'label', label.id));
+    const marker = hitMarker(fr, px, py);
+    if (marker) return result('flow', marker.flow.id);
     for (let i = scene.stations.length - 1; i >= 0; i--) {
       const e = scene.stations[i];
       if (pointInRect(wx, wy, e)) return result('station', e.st.id, selectedHandle(fr, 'station', e.st.id));
     }
     if (fr.overlays.flows !== false) {
       for (let i = scene.flows.length - 1; i >= 0; i--) {
-        if (distToCurve(scene.flows[i].curve, wx, wy) * fr.zoom <= FLOW_HIT_PX) return result('flow', scene.flows[i].flow.id);
+        if (!scene.flows[i].marker && distToCurve(scene.flows[i].curve, wx, wy) * fr.zoom <= FLOW_HIT_PX) return result('flow', scene.flows[i].flow.id);
       }
     }
     const obstacles = scene.obstacles;
@@ -362,6 +380,7 @@ export class Renderer {
       w: out.width, h: out.height, alpha: 1, now: 0,
     });
     Object.assign(fr.vis, { x0: -pad, y0: -pad, x1: scene.width + pad, y1: scene.height + pad });
+    fr.hand = handSide(fr);
     applyInteraction(fr, view, false);
     fr.showIds = fr.overlays.ids === true;
     fr.idFont = idFontOf(theme);
@@ -371,7 +390,7 @@ export class Renderer {
     }
     ctx.setTransform(ppm, 0, 0, ppm, fr.tx, fr.ty);
     const ov = fr.overlays;
-    drawStatic(ctx, scene, theme, { k: ppm, zoom: ppm, win: fr.vis, studs: ov.studs !== false, grid: ov.grid !== false, labels: ov.labels !== false });
+    drawStatic(ctx, scene, theme, { k: ppm, zoom: ppm, win: fr.vis, studs: ov.studs !== false, grid: ov.grid !== false });
     const heat = createHeatState();
     drawLayers(ctx, fr, heat, true);
     ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -402,12 +421,14 @@ function drawLayers(ctx, fr, heat, forceHeat) {
   if (mode && fr.sim) {
     refreshHeat(heat, fr, mode, forceHeat);
     ctx.setTransform(zoom * dpr, 0, 0, zoom * dpr, fr.tx, fr.ty);
-    drawHeat(ctx, heat);
+    drawHeat(ctx, heat, HEAT_BLEED_DEVICE_PX / (zoom * dpr));
   } else heat.count = 0;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   drawDocks(ctx, fr);
   if (fr.overlays.flows !== false) drawFlows(ctx, fr);
   drawStations(ctx, fr);
+  drawFlowMarkers(ctx, fr);
+  drawLabels(ctx, fr);
   if (!fr.sim) return;
   drawVehicles(ctx, fr);
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -456,14 +477,27 @@ function hitVehicle(fr, px, py) {
   return null;
 }
 
-/** Top-most free label whose text box contains the screen point. */
+/** Top-most visible free label whose text box contains the screen point. */
 function hitLabel(ctx, fr, px, py) {
-  const labels = fr.scene.layout.labels || EMPTY;
+  if (fr.overlays.labels === false) return null;
+  const labels = fr.scene.labels;
   for (let i = labels.length - 1; i >= 0; i--) {
     const l = labels[i];
-    if (!l.text || labelFontPx(l, fr.zoom) < 7) continue;
+    if (!l.text || labelFontPx(l, fr.zoom, fr.cs) < 7) continue;
     const r = itemRectPx(ctx, fr, 'label', l.id);
     if (r && px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h) return l;
+  }
+  return null;
+}
+
+/** Top-most flow marker badge (a flow between touching stations) under the screen point, or null. */
+function hitMarker(fr, px, py) {
+  if (fr.overlays.flows === false) return null;
+  const flows = fr.scene.flows;
+  const reach = markerRadius(fr) + MARKER_HIT_SLACK_PX;
+  for (let i = flows.length - 1; i >= 0; i--) {
+    const m = flows[i].marker;
+    if (m && Math.hypot(px - (fr.ox + m.x * fr.zoom), py - (fr.oy + m.y * fr.zoom)) <= reach) return flows[i];
   }
   return null;
 }

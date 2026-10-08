@@ -30,6 +30,17 @@ async function rawShare(bytes) {
   return `z.${Buffer.from(await new Response(stream).arrayBuffer()).toString('base64url')}`;
 }
 
+/** Run `fn` while the browser has no CompressionStream (links come out in the plain 'p.' form). */
+async function withoutCompression(fn) {
+  const original = globalThis.CompressionStream;
+  try {
+    globalThis.CompressionStream = undefined;
+    return await fn();
+  } finally {
+    globalThis.CompressionStream = original;
+  }
+}
+
 /** A road mesh big enough that its JSON exceeds 300 KB. */
 function bigProject() {
   const l = L.createLayout({ name: 'Big', cols: 160, rows: 160 });
@@ -90,15 +101,44 @@ test('importProject normalizes every layout (junk is repaired, nothing throws)',
   assert.deepEqual(p.scenarios[0].layout.flows, []);
   assert.deepEqual(p.scenarios[0].layout.roads['1,1'], { out: 0 });
   assert.ok(p.scenarios.every((s) => L.checkInvariants(s.layout).length === 0));
-  assert.equal(p.warnings.length, 1);
+  assert.equal(p.warnings.length, 2);
   assert.match(p.warnings[0], /Scenario 4.*skipped/);
+  assert.match(p.warnings[1], /Scenario 5.*skipped/, 'an entry that is not even an object is reported too');
 });
 
-test('importProject keeps at most 20 scenarios and tolerates a byte-order mark', () => {
-  const scenarios = Array.from({ length: 25 }, (_, i) => ({ id: `s${i}`, name: `S${i}`, layout: L.createLayout() }));
-  const p = importProject(`﻿${JSON.stringify({ app: 'logiplan', scenarios })}`);
-  assert.equal(p.scenarios.length, 20);
-  assert.equal(p.activeId, 's0');
+test('importProject keeps many scenarios, tolerates a byte-order mark, and says so when a huge file is cut off', () => {
+  const make = (n) => Array.from({ length: n }, (_, i) => ({ id: `s${i}`, name: `S${i}`, layout: L.createLayout() }));
+  const p = importProject(`\ufeff${JSON.stringify({ app: 'logiplan', active: 24, scenarios: make(25) })}`);
+  assert.equal(p.scenarios.length, 25, 'more than the 20 the UI is designed for are not silently dropped');
+  assert.equal(p.activeId, 's24');
+  assert.equal(p.warnings, undefined);
+
+  const huge = importProject(JSON.stringify({ app: 'logiplan', active: 3, scenarios: make(130) }));
+  assert.equal(huge.scenarios.length, 100);
+  assert.equal(huge.activeId, 's3');
+  assert.deepEqual(huge.warnings, ['This file holds 130 scenarios; only the first 100 were opened.']);
+
+  const lost = importProject(JSON.stringify({ app: 'logiplan', active: 120, scenarios: make(130) }));
+  assert.equal(lost.activeId, 's0', 'the active scenario was cut off: the first one opens');
+  assert.equal(lost.warnings.length, 2);
+  assert.match(lost.warnings[1], /could not be opened.*first scenario/);
+});
+
+test('importProject resolves `active` against the file\'s own list, also when other entries are skipped', () => {
+  const layout = L.createLayout();
+  const doc = (active, scenarios) => JSON.stringify({ app: 'logiplan', active, scenarios });
+  const entries = [{ id: 'a', name: 'A', layout }, { id: 'b', name: 'B' }, { id: 'c', name: 'C', layout }];
+  const p = importProject(doc(2, entries));
+  assert.deepEqual(p.scenarios.map((s) => s.id), ['a', 'c']);
+  assert.equal(p.activeId, 'c', 'the file says scenario #3 was active');
+  assert.equal(p.warnings.length, 1);
+  assert.equal(importProject(doc(1, [7, entries[0], entries[2]])).activeId, 'a', 'junk entries in front do not shift the index');
+  const skipped = importProject(doc(1, entries));
+  assert.equal(skipped.activeId, 'a', 'the active scenario had no layout: the first one opens');
+  assert.equal(skipped.warnings.length, 2);
+  assert.match(skipped.warnings[1], /could not be opened.*first scenario/);
+  assert.equal(importProject(doc(-1, entries)).activeId, 'a');
+  assert.equal(importProject(doc('1', entries)).activeId, 'a');
 });
 
 test('importProject: JSON from a newer schema is accepted with a warning', () => {
@@ -163,6 +203,15 @@ test('shareUrl builds #p=… and decodeShare accepts the payload in all its dres
   for (const form of [payload, `p=${payload}`, `#p=${payload}`, url, `  ${payload}\n`]) assert.deepEqual(await decodeShare(form), p);
 });
 
+test('decodeShare shrugs off what chat and mail clients do to a pasted link (line breaks, spaces, punctuation around it)', async () => {
+  const p = project();
+  const url = await shareUrl('https://example.github.io/LogiPlan/', p);
+  const half = Math.floor(url.length / 2);
+  const dressed = [`(${url})`, `${url}.`, `"${url}",`, `<${url}>`, `${url}).`, `${url.slice(0, half)}\n${url.slice(half)}`, `${url.slice(0, half)} \r\n ${url.slice(half)}`, `\t${url}!\n`];
+  for (const form of dressed) assert.deepEqual(await decodeShare(form), p, JSON.stringify(form.slice(-24)));
+  await assert.rejects(decodeShare(`${url.slice(0, half)}!!${url.slice(half)}`), (e) => e.message === DAMAGED, 'noise inside the payload is still damage');
+});
+
 test('shares of layouts above 300 KB roundtrip exactly', async () => {
   const p = bigProject();
   const json = exportProject(p);
@@ -196,12 +245,26 @@ test('without CompressionStream the link is plain base64url with prefix p. and s
   }
 });
 
+test('a browser whose DecompressionStream does not know deflate-raw is told to update, not that the link is damaged', async () => {
+  const compressed = await encodeShare(project());
+  const original = globalThis.DecompressionStream;
+  try {
+    globalThis.DecompressionStream = class {
+      constructor(format) { throw new TypeError(`Unsupported compression format: '${format}'`); }
+    };
+    await assert.rejects(decodeShare(compressed), /cannot open it.*update your browser/i);
+    assert.deepEqual((await decodeShare(await withoutCompression(() => encodeShare(project())))).name, 'My plant', 'plain links do not need it');
+  } finally {
+    globalThis.DecompressionStream = original;
+  }
+});
+
 test('damaged or foreign links throw the same clear Error', async () => {
   const good = await encodeShare(project());
   const middle = Math.floor(good.length / 2);
   const flip = (i) => good.slice(0, i) + (good[i] === 'A' ? 'B' : 'A') + good.slice(i + 1);
   const bad = [
-    good.slice(0, 40), good.slice(0, middle), flip(middle), flip(10), `${good}!!`, good.replace('z.', 'q.'), 'z.', 'p.', '', 'nonsense', 'z.A', 'p.AAAAA',
+    good.slice(0, 40), good.slice(0, middle), flip(middle), flip(10), `${good.slice(0, middle)}!!${good.slice(middle)}`, good.replace('z.', 'q.'), 'z.', 'p.', '', 'nonsense', 'z.A', 'p.AAAAA',
     `p.${Buffer.from('{"hello":1}').toString('base64url')}`, // valid base64 and JSON, but not a project
     `p.${Buffer.from('{"scenarios":[').toString('base64url')}`, // cut-off JSON
     await rawShare(new TextEncoder().encode('plain words, not a project')),

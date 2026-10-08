@@ -12,11 +12,14 @@
 //                                     same rectangle in metres (stations with a non-finite or empty rectangle are
 //                                     left out, huge ones are cut to the grid size so no drawing loop can run away)
 //   stationById                       Map id -> entry of `stations`
-//   obstacles                         [{ id, kind, x, y, w, h }] in cells, sanitised the same way
-//   flows                             [{ flow, curve }] for flows that have a visible curve (see flowCurve)
+//   obstacles / obstacleById          [{ id, kind, x, y, w, h }] in cells, sanitised the same way, and an id index
+//   labels / labelById                [{ id, x, y, text, size }] free labels with finite anchors (cells) and string text
+//   flows                             [{ flow, curve, marker }]: one entry per flow between two known stations.
+//                                     `marker` is null for a normal arrow; for stations that touch (no room for an
+//                                     arrow) it is { x, y, angle }, the badge position in metres and its direction
 
 import { DX, DY, DIR_BIT, E, S, parseKey } from '../../util/grid.js';
-import { flowCurve } from './geometry.js';
+import { flowCurve, quadPoint, quadAngle } from './geometry.js';
 
 export const OCC_ROAD = 1;
 export const OCC_STATION = 2;
@@ -42,6 +45,21 @@ export function getScene(layout) {
     cache.set(layout, scene);
   }
   return scene;
+}
+
+/** Label with a finite anchor and string text, or null. Non-string text is shown as its string form. */
+function sanitizeLabel(l) {
+  if (!l || !Number.isFinite(l.x) || !Number.isFinite(l.y)) return null;
+  const text = typeof l.text === 'string' ? l.text : typeof l.text === 'number' ? String(l.text) : '';
+  return { id: l.id, x: l.x, y: l.y, text, size: l.size > 0 && Number.isFinite(l.size) ? l.size : 1 };
+}
+
+/** Badge position of a marker curve (see flowCurve): the middle of its short piece. */
+function markerOf(curve) {
+  if (!curve.marker) return null;
+  const tm = (curve.t0 + curve.t1) / 2;
+  const p = quadPoint(curve, tm);
+  return { x: p[0], y: p[1], angle: quadAngle(curve, tm) };
 }
 
 function markRect(occ, cols, rows, r, bit) {
@@ -133,7 +151,8 @@ export function buildScene(layout) {
   const scene = {
     layout, cols, rows, cs, width: cols * cs, height: rows * cs,
     occ: new Uint8Array(cols * rows), out: new Uint8Array(cols * rows), limit: new Float32Array(cols * rows).fill(1),
-    roads: [], twoWay: [], oneWay: [], zones: [], stations: [], stationById: new Map(), obstacles: [], flows: [],
+    roads: [], twoWay: [], oneWay: [], zones: [], stations: [], stationById: new Map(), obstacles: [], obstacleById: new Map(),
+    labels: [], labelById: new Map(), flows: [],
   };
   readRoads(layout, scene);
   readLinks(scene);
@@ -142,7 +161,15 @@ export function buildScene(layout) {
     const r = sanitizeRect(o, cols, rows);
     if (!r) continue;
     markRect(scene.occ, cols, rows, r, OCC_OBSTACLE);
-    scene.obstacles.push({ id: o.id, kind: o.kind, ...r });
+    const entry = { id: o.id, kind: o.kind, ...r };
+    scene.obstacles.push(entry);
+    scene.obstacleById.set(o.id, entry);
+  }
+  for (const l of layout.labels || []) {
+    const label = sanitizeLabel(l);
+    if (!label) continue;
+    scene.labels.push(label);
+    scene.labelById.set(label.id, label);
   }
   for (const st of layout.stations || []) {
     const cells = sanitizeRect(st, cols, rows);
@@ -153,10 +180,11 @@ export function buildScene(layout) {
     scene.stationById.set(st.id, entry);
   }
   for (const flow of layout.flows || []) {
+    if (!flow) continue;
     const a = scene.stationById.get(flow.from);
     const b = scene.stationById.get(flow.to);
     const curve = a && b && a !== b ? flowCurve(a, b) : null;
-    if (curve) scene.flows.push({ flow, curve });
+    if (curve) scene.flows.push({ flow, curve, marker: markerOf(curve) });
   }
   return scene;
 }

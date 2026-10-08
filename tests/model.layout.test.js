@@ -669,6 +669,102 @@ test('setCellSize and translateAll', () => {
   assert.equal(L.translateAll(l, 0, 0), true);
 });
 
+test('updateStation: a field patched with an unusable value keeps its current value (an editor may commit NaN or an empty string)', () => {
+  const l = L.createLayout({ cols: 20, rows: 12 });
+  const proc = L.addStation(l, { type: 'process', x: 2, y: 2, params: { machines: 3, inCap: 7, outCap: 5, mtbf: 3600, cycle: { kind: 'exp', mean: 50, spread: 0.3 } } });
+  const depot = L.addStation(l, { type: 'depot', x: 8, y: 8, params: { slots: 6, chargers: 3 } });
+  const wanted = structuredClone(proc.params);
+  const junk = [NaN, '', 'abc', null, Infinity, {}, [], true];
+  for (const value of junk) {
+    assert.equal(L.updateStation(l, proc.id, { params: { machines: value, inCap: value, outCap: value, mtbf: value, cycle: value } }), true);
+    assert.deepEqual(proc.params, wanted, `junk ${String(value)} left the parameters alone`);
+    L.updateStation(l, proc.id, { params: { cycle: { kind: value, mean: value, spread: value } } });
+    assert.deepEqual(proc.params, wanted, `junk ${String(value)} inside the distribution left it alone`);
+    L.updateStation(l, depot.id, { params: { slots: value, chargers: value } });
+    assert.deepEqual(depot.params, { slots: 6, chargers: 3 });
+  }
+  L.updateStation(l, proc.id, { params: { machines: 5, inCap: NaN, cycle: { mean: '75', kind: 'bogus' } } });
+  assert.deepEqual([proc.params.machines, proc.params.inCap, proc.params.cycle], [5, 7, { kind: 'exp', mean: 75, spread: 0.3 }], 'valid fields apply next to junk ones');
+  L.updateStation(l, proc.id, { params: { inCap: 1e9, outCap: -4 } });
+  assert.deepEqual([proc.params.inCap, proc.params.outCap], [1000, 1], 'numbers are still clamped to their range');
+  assert.deepEqual(L.checkInvariants(l), []);
+});
+
+test('ids: names that exist on every object ("__proto__", "constructor", "toString" …) are never kept as entity ids', () => {
+  const reserved = ['__proto__', 'constructor', 'toString', 'hasOwnProperty', 'valueOf', 'isPrototypeOf'];
+  const raw = {
+    stations: [...reserved.map((id, i) => ({ id, type: 'source', x: i * 3, y: 1, w: 2, h: 2 })), { id: 'ok', type: 'sink', x: 0, y: 6 }],
+    obstacles: [{ id: '__proto__', x: 1, y: 9 }], labels: [{ id: 'constructor', x: 2, y: 2, text: 'l' }],
+    fleets: [{ id: 'toString', count: 1 }], flows: [{ id: '__proto__', from: 's1', to: 'ok' }],
+  };
+  const out = L.normalizeLayout(raw);
+  const ids = [...out.stations, ...out.obstacles, ...out.labels, ...out.fleets, ...out.flows].map((e) => e.id);
+  assert.ok(ids.every((id) => !reserved.includes(id)), ids.join());
+  assert.deepEqual(out.stations.map((x) => x.id), ['s1', 's2', 's3', 's4', 's5', 's6', 'ok']);
+  assert.deepEqual(out.flows.map((f) => [f.id, f.from, f.to]), [['f1', 's1', 'ok']]);
+  assert.deepEqual(L.checkInvariants(out), []);
+  const bad = structuredClone(out);
+  bad.stations[0].id = 'constructor';
+  assert.ok(L.checkInvariants(bad).some((m) => /invalid id/.test(m)), 'the independent checker rejects them too');
+  for (const id of reserved) assert.equal(L.cleanId(id), '');
+  assert.equal(L.cleanId('s_1-b'), 's_1-b');
+});
+
+test('normalizeLayout: ids are assigned in linear time and exactly as the mutators would (first free number per prefix)', () => {
+  const raw = {
+    stations: [{ id: 's2', type: 'sink', x: 0, y: 0 }, { type: 'sink', x: 5, y: 0 }, { id: 's2', type: 'sink', x: 10, y: 0 }, { id: 's1', type: 'sink', x: 15, y: 0 }, { id: 5, type: 'sink', x: 20, y: 0 }],
+    labels: Array.from({ length: 30000 }, (_, i) => ({ x: i % 40, y: i % 30, text: 't', id: i % 7 === 0 ? 'dup' : undefined })),
+  };
+  const t0 = performance.now();
+  const out = L.normalizeLayout(raw);
+  const ms = performance.now() - t0;
+  assert.deepEqual(out.stations.map((x) => x.id), ['s2', 's3', 's4', 's1', '5']);
+  assert.equal(new Set(out.labels.map((x) => x.id)).size, 30000);
+  assert.equal(out.labels[0].id, 'dup', 'the first holder keeps a repeated id');
+  assert.equal(out.labels[1].id, 'l1');
+  assert.ok(ms < 1500, `30000 id-less labels took ${Math.round(ms)} ms (a copy of the id set per label would take 25 s)`);
+});
+
+test('a null options argument behaves like an omitted one', () => {
+  const l = plant();
+  assert.deepEqual(L.createLayout(null), L.createLayout());
+  assert.equal(L.isCellFree(l, 0, 0, null), L.isCellFree(l, 0, 0));
+  assert.equal(L.isRectFree(l, { x: 0, y: 0, w: 1, h: 1 }, null), L.isRectFree(l, { x: 0, y: 0, w: 1, h: 1 }));
+  const two = structuredClone(l);
+  assert.equal(L.paintRoadPath(two, [[1, 9], [4, 9]], null), L.paintRoadPath(l, [[1, 9], [4, 9]]));
+  assert.deepEqual(two, l, 'null means two-way');
+  const copy = L.duplicateStation(l, 's1', null);
+  assert.ok(copy && copy.type === 'source');
+  assert.deepEqual(L.checkInvariants(l), []);
+});
+
+test('setName, setNotes and updateSettings clamp like the loader does and ignore what is unusable', () => {
+  const l = plant();
+  assert.equal(L.setName(l, '  Werk 3\u0007 '), true);
+  assert.equal(l.name, 'Werk 3');
+  assert.equal(L.setName(l, '   '), true);
+  assert.equal(L.setName(l, null), true);
+  assert.equal(l.name, 'Werk 3', 'an empty name keeps the old one');
+  L.setName(l, 'x'.repeat(500));
+  assert.equal(l.name.length, 80);
+  assert.equal(L.setNotes(l, 'line 1\nline 2\u0000'), true);
+  assert.equal(l.notes, 'line 1\nline 2 ', 'line breaks stay, control characters become spaces');
+  L.setNotes(l, undefined);
+  assert.equal(l.notes, '');
+
+  assert.equal(L.updateSettings(l, { seed: '42', duration: 1, warmup: -5, demandFactor: 99, speedFactor: 0, dt: 0.25, dispatch: 'oldest', routing: 'congestion', handedness: 'left', deadlock: 'ignore' }), true);
+  assert.deepEqual(l.settings, { ...l.settings, seed: 42, duration: 60, warmup: 0, demandFactor: 10, speedFactor: 0.05, dt: 0.25, dispatch: 'oldest', routing: 'congestion', handedness: 'left', deadlock: 'ignore' });
+  const before = structuredClone(l.settings);
+  assert.equal(L.updateSettings(l, { seed: NaN, duration: '', demandFactor: null, dispatch: 'teleport', handedness: 7, hologram: 1 }), true);
+  assert.deepEqual(l.settings, before, 'junk values and unknown keys change nothing');
+  assert.equal(L.updateSettings(l, null), false);
+  assert.equal(L.updateSettings(l, 'seed'), false);
+  assert.deepEqual(L.checkInvariants(l), []);
+  const next = structuredClone(l);
+  next.settings.demandFactor = 1.5;
+  assert.equal(L.layoutChangeKind(l, next), 'runtime', 'what updateSettings writes is classified as the model says');
+});
+
 // ---------------------------------------------------------------------------------------------------------
 // Property test: random mutator calls never break an invariant, and rejected calls change nothing
 // ---------------------------------------------------------------------------------------------------------
@@ -722,6 +818,9 @@ function operations(rng) {
     ['resizeGrid', (l) => L.resizeGrid(l, 12 + rng.int(10), 10 + rng.int(8)), 1],
     ['setCellSize', (l) => L.setCellSize(l, rng.pick([0.2, 2, 3.5, 40, odd()])), 1],
     ['translateAll', (l) => L.translateAll(l, rng.int(5) - 2, rng.int(5) - 2), 1],
+    ['setName', (l) => L.setName(l, rng.pick(['Werk', '', odd(), 'x'.repeat(120)])), 1],
+    ['setNotes', (l) => L.setNotes(l, rng.pick(['a\nb', '', odd(), 'tab\there\u0000'])), 1],
+    ['updateSettings', (l) => L.updateSettings(l, { seed: odd(), duration: odd(), demandFactor: rng.pick([0.5, 99, odd()]), dispatch: rng.pick(['oldest', 'bogus', undefined]), handedness: rng.pick(['left', 7]) }), 1],
   ];
 }
 

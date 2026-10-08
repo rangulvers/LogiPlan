@@ -4,8 +4,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
-  niceTicks, timeTicks, stepDecimals, formatTick, formatTimeTick, formatValue, autoDigits, linearScale, bandScale, groupLayout,
-  stackSegments, segmentRects, nearestIndex, nearestPoint, hitRect, clampTooltip, truncateText, crispLine, seriesExtent, allIntegers,
+  niceTicks, timeTicks, fitTicks, stepDecimals, formatTick, formatTimeTick, formatValue, autoDigits, linearScale, bandScale, groupLayout,
+  stackSegments, segmentRects, nearestIndex, nearestPoint, hitRect, clampTooltip, truncateText, crispLine, hairlineWidth, seriesExtent, allIntegers,
   finiteRuns, bestWorst, gaugeFraction, gaugeBands, gaugeBandAt, segmentsFromShares, STATE_KEYS, STATE_LABELS,
 } from '../js/ui/charts.js';
 import { ICON_NAMES, iconSvg } from '../js/ui/icons.js';
@@ -62,6 +62,38 @@ test('timeTicks: clock-friendly steps; falls back to plain ticks for empty range
   assert.deepEqual(timeTicks(0, 3600, 6).ticks, [0, 900, 1800, 2700, 3600]);
   assert.ok(timeTicks(5, 5).ticks.length >= 2);
   assert.ok(timeTicks(0, 86400 * 400, 6).ticks.length <= 6);
+});
+
+test('fitTicks: fewer ticks when the labels would touch, never fewer than two, never more than the budget', () => {
+  const build = (count) => niceTicks(0, 100, count);
+  const width = (px) => () => px; // every label is px wide
+  const along = (span) => (t, set) => (t - set.min) * (span / (set.max - set.min)); // label centre on a plain axis of `span` px
+  const roomy = fitTicks(5, { build, labelWidth: width(30), place: along(400) });
+  assert.deepEqual(roomy.ticks, [0, 25, 50, 75, 100], 'labels that fit keep the full budget');
+  const tight = fitTicks(5, { build, labelWidth: width(90), place: along(400) });
+  assert.ok(tight.ticks.length < 5 && tight.ticks.length >= 2, `ticks: ${tight.ticks}`);
+  assert.ok((tight.ticks[1] - tight.ticks[0]) * (400 / 100) - 90 >= 12 - 1e-9, 'neighbouring labels keep the minimum gap');
+  assert.equal(fitTicks(8, { build, labelWidth: width(500), place: along(100) }).ticks.length, 2, 'two ticks is the floor');
+  assert.equal(fitTicks(0, { build, labelWidth: width(1), place: along(100) }).ticks.length, 2, 'a budget below two is repaired');
+  // the width may depend on the tick set (decimals follow the step): it is passed in
+  const steps = [];
+  fitTicks(4, { build, labelWidth: (t, set) => { steps.push(set.step); return 10; }, place: along(300) });
+  assert.ok(steps.length > 0 && steps.every((step) => step > 0));
+  // only ticks inside the axis domain compete for room
+  const clipped = fitTicks(5, { domain: [10, 90], build: (count) => niceTicks(0, 100, count), labelWidth: width(60), place: along(400) });
+  assert.ok(clipped.ticks.length >= 2);
+  assert.equal(fitTicks(5, { build, labelWidth: width(10), place: () => 0 }).ticks.length, 2, 'labels stacked on one spot cannot fit more than the floor');
+});
+
+test('fitTicks: an end label that is pushed inwards by the canvas edge counts where it is drawn', () => {
+  // 0..100 over a 300 px canvas with 100 px labels: the labels at both ends are pushed 50 px inwards, so all three touch.
+  const build = (count) => niceTicks(0, 100, count);
+  const place = (t, set, width) => Math.min(Math.max((t - set.min) * 3, width / 2), 300 - width / 2);
+  const naive = (t, set) => (t - set.min) * 3;
+  const sliding = fitTicks(3, { build, labelWidth: () => 100, place });
+  const plain = fitTicks(3, { build, labelWidth: () => 100, place: naive });
+  assert.equal(plain.ticks.length, 3, 'ignoring the slide, three labels look fine');
+  assert.equal(sliding.ticks.length, 2, 'with the slide they would overprint: two labels remain');
 });
 
 test('stepDecimals: decimals needed to print a step exactly', () => {
@@ -171,9 +203,34 @@ test('segmentRects: a 2 px gap between neighbours, flush ends, empty segments ta
   near(live[0].x + live[0].w + 2, live[1].x);
   near(live[1].x + live[1].w + 2, live[2].x);
   near(live[2].x + live[2].w, 200);
+  near(live.reduce((sum, r) => sum + r.w, 0), 200 - 2 * 2, 1e-9);
   const tiny = segmentRects(stackSegments([1000, 1]), 100, 2);
   assert.ok(tiny[1].w >= 1, 'a non-empty segment stays visible');
+  near(tiny[1].x + tiny[1].w, 100);
   assert.deepEqual(segmentRects([], 100), []);
+  assert.deepEqual(segmentRects(stackSegments([0, 0]), 100).map((r) => r.w), [0, 0]);
+});
+
+test('segmentRects: widths follow the shares; a stack that does not fill the bar ends where its total ends', () => {
+  const proportional = segmentRects(stackSegments([3, 1]), 400, 2);
+  near(proportional[0].w / proportional[1].w, 3, 1e-9);
+  const partial = segmentRects(stackSegments([2, 2], { total: 8 }), 400, 2);
+  near(partial[1].x + partial[1].w, 200, 1e-9);
+  const single = segmentRects(stackSegments([5]), 120, 2);
+  assert.deepEqual(single, [{ x: 0, w: 120 }], 'one segment has no gap');
+});
+
+test('segmentRects: thin segments keep one pixel without overlapping; the gap gives way when there is no room', () => {
+  const rects = segmentRects(stackSegments([1000, 1, 1, 1, 1000]), 200, 2);
+  assert.ok(rects.every((r) => r.w >= 1));
+  rects.slice(1).forEach((r, i) => assert.ok(r.x >= rects[i].x + rects[i].w - 1e-9, `rect ${i + 1} overlaps its neighbour`));
+  near(rects.at(-1).x + rects.at(-1).w, 200, 1e-9);
+  const cramped = segmentRects(stackSegments([1, 1, 1, 1]), 4, 2);
+  cramped.slice(1).forEach((r, i) => assert.ok(r.x >= cramped[i].x + cramped[i].w - 1e-9));
+  assert.ok(cramped.at(-1).x + cramped.at(-1).w <= 4 + 1e-9, 'never past the end of the bar');
+  const lessThanAPixelEach = segmentRects(stackSegments([1, 1, 1, 1]), 2, 2);
+  assert.ok(lessThanAPixelEach.at(-1).x + lessThanAPixelEach.at(-1).w <= 2 + 1e-9);
+  assert.deepEqual(segmentRects(stackSegments([1, 2]), 0).map((r) => r.w), [0, 0], 'a zero-width bar draws nothing');
 });
 
 // ---------------------------------------------------------------------------------------------- hit testing
@@ -241,6 +298,22 @@ test('crispLine: puts hairlines on device pixels at any pixel ratio', () => {
   for (const dpr of [1, 1.25, 1.5, 2, 3]) {
     const dw = Math.max(1, Math.round(dpr));
     const edge = (crispLine(7.37, 1, dpr) * dpr) - dw / 2;
+    near(edge, Math.round(edge), 1e-9);
+  }
+});
+
+test('hairlineWidth: one css pixel rounded to whole device pixels, in step with crispLine', () => {
+  assert.equal(hairlineWidth(1), 1);
+  near(hairlineWidth(1.25), 0.8);
+  near(hairlineWidth(1.5), 2 / 1.5);
+  assert.equal(hairlineWidth(2), 1);
+  assert.equal(hairlineWidth(3), 1);
+  for (const bad of [0, -2, NaN, Infinity, undefined, 'x']) assert.equal(hairlineWidth(bad), 1, `dpr ${bad}`);
+  for (const dpr of [1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3]) {
+    const device = hairlineWidth(dpr) * dpr;
+    near(device, Math.round(device), 1e-9);
+    assert.ok(device >= 1);
+    const edge = crispLine(9.37, 1, dpr) * dpr - device / 2; // first device pixel the line covers
     near(edge, Math.round(edge), 1e-9);
   }
 });
@@ -331,6 +404,26 @@ test('icons: every required name exists once, markup is well-formed and sized', 
     assert.deepEqual(stack, [], `${name}: unclosed tags`);
     for (const [, d] of svg.matchAll(/ d="([^"]*)"/g)) assert.match(d, /^[MmLlHhVvCcSsQqTtAaZz0-9eE+\-., ]+$/, `${name}: unexpected characters in a path`);
   }
+});
+
+test('icons: the simplified variants take over below 18 px and nowhere else', () => {
+  const inner = (svg) => svg.slice(svg.indexOf('>') + 1);
+  const differing = (a, b) => ICON_NAMES.filter((name) => inner(iconSvg(name, { size: a })) !== inner(iconSvg(name, { size: b })));
+  const compact = ['depot', 'forklift', 'oneway', 'speedzone', 'storage'];
+  assert.deepEqual(differing(16, 18).sort(), compact);
+  assert.deepEqual(differing(14, 17), [], 'one simplified variant for every size below 18');
+  assert.deepEqual(differing(18, 32), [], 'full art from 18 px up');
+  for (const name of compact) {
+    const small = iconSvg(name, { size: 16 });
+    assert.match(small, new RegExp(`class="icon icon--${name}"`));
+    const stack = [];
+    for (const [, close, tag, selfClose] of small.matchAll(/<(\/?)([a-z]+)[^>]*?(\/?)>/g)) {
+      if (selfClose) continue;
+      if (close) assert.equal(stack.pop(), tag); else stack.push(tag);
+    }
+    assert.deepEqual(stack, [], `${name}: unclosed tags in the simplified art`);
+  }
+  assert.equal(inner(iconSvg('play', { size: 12 })), inner(iconSvg('play', { size: 24 })), 'icons without a variant do not change');
 });
 
 test('iconSvg: size, class, unknown names and hostile input', () => {

@@ -1,11 +1,14 @@
-// Vehicles: pose interpolation, body drawing and the screen-space badges (waiting clock, charging bolt,
-// battery bar, id label). This is the hot path of the renderer (100+ vehicles at 60 fps), so the per-frame
-// functions allocate nothing: poses go through a reusable typed buffer, colours come from caches and the
-// vehicle matrix is set directly with setTransform instead of save/translate/rotate/restore.
+// Vehicles: pose interpolation, body drawing and the screen-space badges (waiting clock, battery bar, id
+// label). This is the hot path of the renderer (100+ vehicles at 60 fps), so the per-frame functions allocate
+// nothing: poses go through a reusable typed buffer, colours come from caches and the vehicle matrix is set
+// directly with setTransform instead of save/translate/rotate/restore.
+//
+// A charging vehicle is parked inside its depot and therefore not drawn here (visible = false); its bolt is
+// shown in the depot bay (bricks.js).
 
 import { lerpAngle } from './geometry.js';
-import { TAU, roundRectPath, fontOf, haloText } from './draw.js';
-import { drawBolt, drawClock } from './glyphs.js';
+import { roundRectPath, fontOf, haloText } from './draw.js';
+import { drawClock } from './glyphs.js';
 import { mix, shade, rgba } from '../theme.js';
 
 const DEFAULT_COLOR = '#2d7ff9';
@@ -124,7 +127,7 @@ export function drawVehicles(ctx, fr) {
   ctx.setTransform(fr.dpr, 0, 0, fr.dpr, 0, 0);
   for (let i = 0; i < n; i++) {
     const o = i * BUF_STRIDE;
-    if (buf[o + 3] === 1) drawBadges(ctx, fr, list[i], fr.ox + buf[o] * fr.zoom, fr.oy + buf[o + 1] * fr.zoom);
+    if (buf[o + 3] === 1) drawBadges(ctx, fr, list[i], fr.ox + buf[o] * fr.zoom, fr.oy + buf[o + 1] * fr.zoom, buf[o + 2]);
   }
 }
 
@@ -260,8 +263,12 @@ const BATTERY_OK = '#2fb36b';
 const BATTERY_LOW = '#f5a524';
 const BATTERY_CRITICAL = '#e5484d';
 
-/** Screen-space marks around the vehicle centre (sx, sy in CSS px). */
-function drawBadges(ctx, fr, v, sx, sy) {
+/**
+ * Screen-space marks around the vehicle centre (sx, sy in CSS px): waiting clock, battery bar, id label.
+ * The battery bar sits beside the vehicle on its own side of the road (the side away from the oncoming lane),
+ * parallel to the vehicle, so it never lands on a vehicle in the opposite lane.
+ */
+function drawBadges(ctx, fr, v, sx, sy, heading) {
   const { theme, zoom } = fr;
   const vt = theme.vehicle;
   const size = vehicleSize(v, fr.cs, fr.size);
@@ -269,22 +276,11 @@ function drawBadges(ctx, fr, v, sx, sy) {
   const widPx = Math.max(size.width * zoom, 9 * (size.width / size.length));
   const reach = 0.5 * Math.hypot(lenPx, widPx); // radius of the circle around the vehicle
   const tv = v.tv;
-  if (v.state === 'charging') {
-    const r = Math.min(8.5, Math.max(5.5, lenPx * 0.2));
-    drawBadgeDisc(ctx, vt, sx + reach * 0.75, sy - reach * 0.75, r);
-    drawBolt(ctx, sx + reach * 0.75, sy - reach * 0.75, r * 1.5, vt.bolt, null);
-  } else if (tv && tv.waiting === true && !isBroken(v)) {
+  if (tv && tv.waiting === true && !isBroken(v)) {
     drawClock(ctx, sx + reach * 0.75, sy - reach * 0.75, Math.min(8, Math.max(4.5, lenPx * 0.17)), vt.badgeFill, vt.wait, vt.badgeInk);
   }
   const battery = v.fleet && v.fleet.battery && v.fleet.battery.enabled === true ? v.battery : 1;
-  if (battery < 1 && battery >= 0) {
-    const w = Math.min(34, Math.max(14, lenPx * 0.9));
-    const y = sy + reach + 3;
-    ctx.fillStyle = vt.batteryTrack;
-    ctx.fillRect(sx - w / 2, y, w, 3.5);
-    ctx.fillStyle = battery > 0.5 ? BATTERY_OK : battery > 0.25 ? BATTERY_LOW : BATTERY_CRITICAL;
-    ctx.fillRect(sx - w / 2, y, w * battery, 3.5);
-  }
+  if (battery < 1 && battery >= 0) drawBatteryBar(ctx, fr, vt, battery, sx, sy, heading, lenPx, widPx);
   if (fr.showIds) {
     ctx.font = fr.idFont;
     ctx.textAlign = 'center';
@@ -293,14 +289,30 @@ function drawBadges(ctx, fr, v, sx, sy) {
   }
 }
 
-function drawBadgeDisc(ctx, vt, x, y, r) {
-  ctx.beginPath();
-  ctx.arc(x, y, r, 0, TAU);
-  ctx.fillStyle = vt.badgeFill;
-  ctx.fill();
-  ctx.lineWidth = 1.5;
-  ctx.strokeStyle = vt.bolt;
-  ctx.stroke();
+const BATTERY_THICK = 3.5;
+
+/** Battery gauge beside the vehicle's own-lane side: a horizontal bar above / below, a vertical one left / right. */
+function drawBatteryBar(ctx, fr, vt, battery, sx, sy, heading, lenPx, widPx) {
+  const sin = Math.sin(heading);
+  const cos = Math.cos(heading);
+  const nx = -sin * fr.hand; // outward = to the right of the travel direction (left for left-hand traffic)
+  const ny = cos * fr.hand;
+  const w = Math.min(34, Math.max(14, lenPx * 0.9));
+  const color = battery > 0.5 ? BATTERY_OK : battery > 0.25 ? BATTERY_LOW : BATTERY_CRITICAL;
+  const horizontal = Math.abs(ny) >= Math.abs(nx);
+  // half extent of the rotated vehicle along the axis the bar is offset on
+  const ext = horizontal ? 0.5 * (lenPx * Math.abs(sin) + widPx * Math.abs(cos)) : 0.5 * (lenPx * Math.abs(cos) + widPx * Math.abs(sin));
+  const away = ext + 2.5;
+  const dir = (horizontal ? ny : nx) >= 0 ? 1 : -1;
+  const bx = horizontal ? sx - w / 2 : sx + dir * away - (dir < 0 ? BATTERY_THICK : 0);
+  const by = horizontal ? sy + dir * away - (dir < 0 ? BATTERY_THICK : 0) : sy - w / 2;
+  const bw = horizontal ? w : BATTERY_THICK;
+  const bh = horizontal ? BATTERY_THICK : w;
+  ctx.fillStyle = vt.batteryTrack;
+  ctx.fillRect(bx, by, bw, bh);
+  ctx.fillStyle = color;
+  if (horizontal) ctx.fillRect(bx, by, w * battery, BATTERY_THICK);
+  else ctx.fillRect(bx, by + w * (1 - battery), BATTERY_THICK, w * battery);
 }
 
 /**

@@ -2,20 +2,28 @@
 //
 // The bitmap covers the visible world rectangle plus a margin (clipped to the baseplate), at the zoom it was
 // rendered for. Frames blit it with the current camera transform. It is rebuilt only when
-//   * the layout object, theme, devicePixelRatio, canvas size or one of the toggles (grid / studs / labels) changes,
+//   * the layout object, theme, devicePixelRatio, canvas size or one of the toggles (grid / studs) changes,
 //   * the zoom moved by more than 1.25x (the bucket), or the zoom has been steady for SETTLE_MS (re-render sharp),
 //   * the visible area leaves the cached window (panning far enough).
 // While a wheel zoom is in progress the stale bitmap is simply scaled.
 
-import { drawStatic, PLATE_MARGIN_M } from './static.js';
+import { drawStatic, plateMargin } from './static.js';
 
 /** Zoom ratio beyond which the bitmap is re-rendered immediately. */
 const ZOOM_BUCKET = 1.25;
 /** A zoom that has not changed for this long gets a sharp re-render. */
 export const SETTLE_MS = 140;
-const MAX_PIXELS = 24e6;
+/**
+ * Largest bitmap in pixels. Below the 16.7 M pixel canvas limit of iOS Safari, so one rule holds everywhere; it also
+ * bounds the cost of a rebuild.
+ */
+const MAX_PIXELS = 16e6;
 const MAX_SIDE = 8192;
-const MARGINS = [0.35, 0.15, 0];
+/**
+ * Margin around the visible area, as a fraction of the viewport per side, tried from the most generous. Huge hi-dpi
+ * canvases (5 K) only fit the small ones; even 2 % keeps a pan of a few pixels from rebuilding on every frame.
+ */
+const MARGINS = [0.35, 0.25, 0.15, 0.08, 0.04, 0.02, 0];
 
 export class StaticLayer {
   /** @param {(w: number, h: number) => HTMLCanvasElement} createCanvas */
@@ -55,13 +63,14 @@ export class StaticLayer {
     const scene = fr.scene;
     const vis = this.visible;
     this.pending = false;
-    if (!clipInto(vis, fr.vis, -PLATE_MARGIN_M, -PLATE_MARGIN_M, scene.width + PLATE_MARGIN_M, scene.height + PLATE_MARGIN_M)) return false;
+    const m = plateMargin(this.valid ? this.zoom : fr.zoom); // the margin the bitmap was built with, so a zoom nudge alone never invalidates it
+    if (!clipInto(vis, fr.vis, -m, -m, scene.width + m, scene.height + m)) return false;
     if (fr.zoom !== this.seenZoom) {
       this.seenZoom = fr.zoom;
       this.zoomChangedAt = fr.now;
     }
     const ov = fr.overlays;
-    const flags = (ov.studs !== false ? 1 : 0) | (ov.grid !== false ? 2 : 0) | (ov.labels !== false ? 4 : 0);
+    const flags = (ov.studs !== false ? 1 : 0) | (ov.grid !== false ? 2 : 0);
     const same = this.valid && this.layout === fr.layout && this.theme === fr.theme && this.dpr === fr.dpr
       && this.width === fr.w && this.height === fr.h && this.flags === flags;
     if (!same) return this.rebuild(fr, vis, flags);
@@ -78,7 +87,7 @@ export class StaticLayer {
   rebuild(fr, vis, flags) {
     const { zoom, dpr } = fr;
     const scene = fr.scene;
-    const m = PLATE_MARGIN_M;
+    const m = plateMargin(zoom);
     let k = zoom * dpr;
     const win = { x0: 0, y0: 0, x1: 0, y1: 0 };
     for (const f of MARGINS) {
@@ -100,7 +109,7 @@ export class StaticLayer {
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, bw, bh);
     ctx.setTransform(k, 0, 0, k, -win.x0 * k, -win.y0 * k);
-    drawStatic(ctx, scene, fr.theme, { k, zoom, win, studs: (flags & 1) !== 0, grid: (flags & 2) !== 0, labels: (flags & 4) !== 0 });
+    drawStatic(ctx, scene, fr.theme, { k, zoom, win, studs: (flags & 1) !== 0, grid: (flags & 2) !== 0 });
     this.win = win;
     this.k = k;
     this.zoom = zoom;

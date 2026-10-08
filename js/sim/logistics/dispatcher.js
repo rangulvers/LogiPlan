@@ -17,6 +17,10 @@
 // The docks of a trip are chosen by routing.js (a pickup dock must lead on to the drop, one-way traps come last).
 // A round also reports when it should run again (the next load becoming ready, a maxWait running out) and which
 // depots had a vehicle with work that could not leave.
+// Searches are the expensive part (routing.js): a vehicle whose first search the tick's budget does not allow yet is left out
+// of the round, which then runs again in the next tick. In a plant big enough for that to happen (dozens of vehicles on a
+// 100 x 80 grid) the vehicles are put to work a few per tick during the first second or two of a run, instead of all in one
+// tick that takes a fifth of a second.
 
 import { EPS, PRIORITY_AGING } from './common.js';
 import { flowCapacity, flowSpace, readyLoads, reserveInbound } from './stations.js';
@@ -28,10 +32,11 @@ const cmp = (a, b) => (Math.abs(a - b) <= TOL ? 0 : a < b ? -1 : 1);
 /**
  * Run one dispatch round at time t: assign orders to available vehicles.
  * @returns {{ wake: number, blockedDepots: Set<object> }} `wake`: sim time of the next event that may create demand
- *   (Infinity if none is known); `blockedDepots`: depots a parked vehicle with work could not leave
+ *   (Infinity if none is known; t when a vehicle is still waiting for its search); `blockedDepots`: depots a parked vehicle
+ *   with work could not leave
  */
 export function dispatch(lg, t) {
-  const round = { departures: new Map(), blockedDepots: new Set(), wake: Infinity };
+  const round = { departures: new Map(), blockedDepots: new Set(), wake: Infinity, starved: false };
   const avail = lg.vehicles.filter((vr) => isAvailable(lg, vr));
   if (avail.length === 0) return round;
   const maxCapacity = avail.reduce((m, vr) => Math.max(m, vr.cfg.capacity), 1);
@@ -43,6 +48,7 @@ export function dispatch(lg, t) {
     avail.splice(avail.indexOf(best.vehicle), 1);
     assign(lg, best, t, round);
   }
+  if (round.starved) round.wake = t;
   return round;
 }
 
@@ -102,7 +108,9 @@ function evaluate(lg, vehicle, demand, t, round) {
     if (!dep) return null;
     ({ best: pickup, dock } = dep);
   } else {
-    pickup = lg.routes.pickupDock(lg.routes.get(vehicle.tv.node, arrivalEdgeOf(lg, vehicle), t), flow.from.id, flow.to.id);
+    const entry = lg.routes.get(vehicle.tv.node, arrivalEdgeOf(lg, vehicle), t, true);
+    if (entry === null) { round.starved = true; return null; }
+    pickup = lg.routes.pickupDock(entry, flow.from.id, flow.to.id);
     if (!pickup) return null;
   }
   return { vehicle, demand, qty, cost: pickup.dist, age: demand.age, dock };
@@ -113,8 +121,9 @@ function departure(lg, depot, flow, t, round) {
   let perFlow = round.departures.get(depot);
   if (perFlow === undefined) round.departures.set(depot, (perFlow = new Map()));
   if (perFlow.has(flow.id)) return perFlow.get(flow.id);
-  const { attachable, best } = lg.routes.departure(depot, t, (entry) => lg.routes.pickupDock(entry, flow.from.id, flow.to.id));
+  const { attachable, pending, best } = lg.routes.departure(depot, t, (entry) => lg.routes.pickupDock(entry, flow.from.id, flow.to.id));
   if (!attachable) round.blockedDepots.add(depot);
+  if (pending) round.starved = true;
   const result = best ? { dock: best.dock, best: best.onward } : null;
   perFlow.set(flow.id, result);
   return result;

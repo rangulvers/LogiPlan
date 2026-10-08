@@ -181,19 +181,20 @@ export function defaultGrid(overrides = {}) {
 
 /** An empty but complete layout. layout.js builds on this; tests may use it directly. */
 export function emptyLayout(overrides = {}) {
+  const { grid, settings, ...rest } = overrides;
   return {
     schema: SCHEMA_VERSION,
     name: 'Untitled plant',
     notes: '',
-    grid: defaultGrid(overrides.grid),
+    grid: defaultGrid(grid),
     roads: {}, // "cx,cy" -> { out: bitmask of exit directions (N=1,E=2,S=4,W=8), limit?: 0.1..1 speed factor }
     obstacles: [], // { id, x, y, w, h, kind: 'wall' | 'rack' | 'column' }
     labels: [], // { id, x, y, text, size? }
     stations: [],
     flows: [],
     fleets: [],
-    ...overrides,
-    settings: defaultSettings(overrides.settings),
+    ...rest,
+    settings: defaultSettings(settings),
   };
 }
 

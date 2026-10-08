@@ -36,8 +36,12 @@
 //    units/h; wip / vehiclesWorking / vehiclesWaiting are means over the interval since the previous point.
 //    Reset clears the series together with every other accumulator.
 //  * emptyShare, avgPickupWait, avgTransit and every lead-time statistic are null when there is no data.
+//  * Fleet distance is everything the vehicles drove: loaded + empty (on the way to a pickup) + park (to depots, chargers
+//    and waiting cells), so it adds up to the odometers. emptyShare = empty / distance, as in the spec.
 //  * A deadlock that traffic reports twice (unresolved first, resolved later) is one entry of deadlockEvents,
-//    so the list never has more entries than the traffic counter.
+//    so the list never has more entries than the traffic counter. A jam that stands and is reported again (traffic loses
+//    track of it for a moment and counts it anew) is announced by the engine as 'deadlockRepeat' and taken off the
+//    counter again: traffic.deadlocks counts jams, not reports.
 
 /** Sim seconds between two series points (before decimation). */
 export const SERIES_INTERVAL = 60;
@@ -49,6 +53,8 @@ export const TRAILING_INTERVALS = 10;
 export const LEAD_SAMPLE_CAP = 50000;
 /** Sim seconds between two readings of the transport backlog (a queue walk per flow). */
 export const BACKLOG_INTERVAL = 5;
+/** Tolerance (s) when comparing the accumulated simulation clock with the end of the warm-up: 1000 ticks of 0.1 s do not add up to exactly 100 s. */
+export const WARMUP_EPS = 1e-6;
 /** Number of congestion hot spots in the report. */
 export const HOTSPOT_COUNT = 10;
 /** Deadlock events kept in the report (the counter keeps counting). */
@@ -58,6 +64,9 @@ const NONE = Object.freeze([]);
 const EPS = 1e-9;
 /** A storage counts as completely full above this fill. */
 const FULL = 1 - EPS;
+
+/** Fields snapshotted per vehicle at reset: trips, loaded, empty and park distance. */
+const VEHICLE_FIELDS = 4;
 
 const K_SOURCE = 0;
 const K_PROCESS = 1;
@@ -298,6 +307,7 @@ export class Stats {
     this.oPick = 0;
     this.oTransit = 0;
     this.deadlockEvents = [];
+    this.deadlockRepeats = 0;
     this.stride = 1;
     this.backlogK = 0;
     this.backlogReadings = 0;
@@ -340,8 +350,9 @@ export class Stats {
   }
 
   /**
-   * Take note of an engine event. Only loadCompleted, orderDelivered and deadlock carry data that sampling
-   * cannot see; every other event is ignored.
+   * Take note of an engine event. Only loadCompleted, orderDelivered, deadlock and deadlockRepeat carry data that sampling
+   * cannot see; every other event is ignored. 'deadlockRepeat' is the engine telling that traffic has reported a jam
+   * that stands since an earlier report once more: it is the same jam and counts once (see traffic.deadlocks).
    * @param {string} name event name
    * @param {object} [payload] event payload as documented in section 5.3
    */
@@ -350,6 +361,7 @@ export class Stats {
     if (name === 'loadCompleted') this._onLoadCompleted(payload || {});
     else if (name === 'orderDelivered') this._onOrderDelivered(payload || {});
     else if (name === 'deadlock') this._onDeadlock(payload || {});
+    else if (name === 'deadlockRepeat') this.deadlockRepeats++;
   }
 
   /**
@@ -465,7 +477,7 @@ export class Stats {
       this.fPick, this.fTransit, this.lDelivered, this.lTrips, this.lPick, this.lTransit, this.lBacklog, this.ring,
     ];
     this.snapStation = f64(nSt * 3);
-    this.snapVehicle = f64(this.nVeh * 3);
+    this.snapVehicle = f64(this.nVeh * VEHICLE_FIELDS);
   }
 
   /** Remember the cumulative counters of other modules so the window reports deltas only. */
@@ -491,9 +503,10 @@ export class Stats {
     }
     for (let i = 0; i < vehicles.length; i++) {
       const v = vehicles[i];
-      this.snapVehicle[i * 3] = nn(v.trips);
-      this.snapVehicle[i * 3 + 1] = nn(v.loadedDistance);
-      this.snapVehicle[i * 3 + 2] = nn(v.emptyDistance);
+      this.snapVehicle[i * VEHICLE_FIELDS] = nn(v.trips);
+      this.snapVehicle[i * VEHICLE_FIELDS + 1] = nn(v.loadedDistance);
+      this.snapVehicle[i * VEHICLE_FIELDS + 2] = nn(v.emptyDistance);
+      this.snapVehicle[i * VEHICLE_FIELDS + 3] = nn(v.parkDistance);
     }
   }
 
@@ -687,7 +700,7 @@ export class Stats {
 
   _windowReport(dur) {
     const settings = this.sim.settings || (this.sim.layout && this.sim.layout.settings) || {};
-    return { start: this.start, end: this.start + dur, duration: dur, warmingUp: nn(this.sim.time) < nn(settings.warmup) };
+    return { start: this.start, end: this.start + dur, duration: dur, warmingUp: nn(this.sim.time) + WARMUP_EPS < nn(settings.warmup) };
   }
 
   _throughputReport(dur) {
@@ -749,13 +762,16 @@ export class Stats {
     const trips = new Float64Array(defs.length);
     const loaded = new Float64Array(defs.length);
     const empty = new Float64Array(defs.length);
+    const park = new Float64Array(defs.length);
     for (let i = 0; i < vehicles.length; i++) {
       const fi = this.vehFleet[i];
       if (fi < 0) continue;
       const v = vehicles[i];
-      trips[fi] += Math.max(0, nn(v.trips) - this.snapVehicle[i * 3]);
-      loaded[fi] += Math.max(0, nn(v.loadedDistance) - this.snapVehicle[i * 3 + 1]);
-      empty[fi] += Math.max(0, nn(v.emptyDistance) - this.snapVehicle[i * 3 + 2]);
+      const at = i * VEHICLE_FIELDS;
+      trips[fi] += Math.max(0, nn(v.trips) - this.snapVehicle[at]);
+      loaded[fi] += Math.max(0, nn(v.loadedDistance) - this.snapVehicle[at + 1]);
+      empty[fi] += Math.max(0, nn(v.emptyDistance) - this.snapVehicle[at + 2]);
+      park[fi] += Math.max(0, nn(v.parkDistance) - this.snapVehicle[at + 3]);
     }
     const unplaced = new Int32Array(defs.length);
     for (const id of (this.sim.logistics && this.sim.logistics.unplaced) || NONE) {
@@ -767,7 +783,7 @@ export class Stats {
     for (let fi = 0; fi < defs.length; fi++) {
       const count = this.fleetCount[fi];
       const shares = this._fleetShares(time, fi, count);
-      const distance = loaded[fi] + empty[fi];
+      const distance = loaded[fi] + empty[fi] + park[fi];
       out[defs[fi].id] = {
         name: defs[fi].name || defs[fi].id,
         count,
@@ -841,7 +857,7 @@ export class Stats {
       vehicleWait,
       junctionWait,
       brokenWait,
-      deadlocks: delta('deadlocks'),
+      deadlocks: Math.max(0, delta('deadlocks') - this.deadlockRepeats),
       hotspots: this._hotspots(ts.nodeWait),
       deadlockEvents: this.deadlockEvents.map((e) => ({ ...e, nodes: e.nodes.slice(), vehicles: e.vehicles.slice() })),
     };

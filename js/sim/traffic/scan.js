@@ -1,4 +1,5 @@
-// Route-ahead scans for the traffic engine: nearest obstacle ahead ("leader") and controlled-cell lock requests.
+// Route-ahead scans for the traffic engine: nearest obstacle ahead ("leader"), controlled-cell lock requests (chains,
+// bends, swing of long vehicles) and the locks a long vehicle needs to turn on the spot.
 // All functions take the TrafficSystem `sys` and only READ vehicle state from the start of the tick, so the result
 // does not depend on the order in which vehicles are processed.
 //
@@ -6,11 +7,15 @@
 // sits at Q = i * cellSize; its cell spans [i*L - L/2, i*L + L/2]. A vehicle's footprint is [Q - len/2, Q + len/2].
 
 const EPS = 1e-9;
+const SWING_CLEARANCE = 0.1; // m that must be free between the swing disk of a turning long vehicle and another vehicle
 /**
- * Followers add this multiple of the corner shortening to their gap: the rigid bodies of two vehicles in a tight
- * corner come closer than their centres, by about as much again (measured on one-way loops, see the traffic tests).
+ * Extra gap (m) a follower keeps when corners lie between it and its leader, on top of the exact shortening of the
+ * path (centre to centre): rigid bodies in a tight corner come a little closer than the lane distance of their centres
+ * (measured on one-way loops, see the traffic tests). It is capped and not charged per corner - the deficit belongs to
+ * the corner the bodies are in - so a long run of corners between two vehicles cannot make a follower stop behind a
+ * leader that is physically far away (two vehicles in a small loop would block each other).
  */
-const CORNER_SAFETY = 2;
+const CORNER_EXTRA = 0.1;
 
 /** Edge j of the route, or (beyond the end) of the straight-line extension; -1 if none. */
 function edgeAhead(tv, j) {
@@ -29,14 +34,24 @@ export function nodeAhead(sys, tv, i) {
 }
 
 /**
- * Does the vehicle need the lock of `node` before it may enter? Controlled cells always do. Any other cell does
- * while somebody else holds it (a vehicle parked on a bend), and a final node on a bend does so that the parked
- * vehicle cannot be hit by traffic turning through the same small cell.
+ * Is the vehicle one whose body swings wide of its lane when it turns (longer than a cell) and does its route turn
+ * at route node i? Such a vehicle takes the lock of the cell it turns in: the rear of a rigid body sweeps into the
+ * opposite lane there, beyond what the lane separation of a two-way road leaves free.
  */
-export function needsLock(sys, tv, node, isFinal) {
+function swingsAt(sys, tv, i) {
+  return tv.length > sys.swingLength && i >= 1 && sys.geo.isCorner(edgeAhead(tv, i - 1), edgeAhead(tv, i));
+}
+
+/**
+ * Does the vehicle need the lock of `node` (route node i, `isFinal` = the last one) before it may enter? Controlled
+ * cells always do. Any other cell does while somebody else holds it (a vehicle parked on a bend), a final node on a
+ * bend does so that the parked vehicle cannot be hit by traffic turning through the same small cell, and so does a
+ * bend in which the vehicle swings (see swingsAt).
+ */
+export function needsLock(sys, tv, node, i, isFinal) {
   const holder = sys._lock[node];
   if (sys.graph.controlled[node] === 1 || holder !== null) return holder !== tv;
-  return isFinal && sys._bend[node] === 1;
+  return sys._bend[node] === 1 && (isFinal || swingsAt(sys, tv, i));
 }
 
 /** A vehicle that is in, leaving or about to enter the cell of `node` from a lane other than `ownEdge`, or null. */
@@ -59,9 +74,84 @@ function cellOccupant(sys, tv, node, ownEdge) {
 }
 
 /**
+ * Another vehicle in the way of a long vehicle that turns in the cell `node`: its body sweeps round the corner (rear
+ * on the road it comes from, nose on the road it leaves by), reaching up to half a cell plus half its length from the
+ * centre of the cell. Vehicles waiting for the lock stand outside this distance (see TrafficSystem._standoff).
+ */
+function swingOccupant(sys, tv, node) {
+  const gx = sys.graph.x(node);
+  const gy = sys.graph.y(node);
+  const clearance = Math.min(SWING_CLEARANCE, sys.headway / 2);
+  for (const o of sys.vehicles) {
+    if (o === tv || !o.onRoad) continue;
+    const reach = sys.r + (tv.length + o.length) / 2 + clearance;
+    const dx = o.x - gx;
+    const dy = o.y - gy;
+    if (dx * dx + dy * dy < reach * reach) return o;
+  }
+  return null;
+}
+
+/**
+ * A long vehicle that already holds the lock of the cell it turns in next (it took it with an earlier request, or
+ * with the nose of its previous stop) must still not swing into another vehicle: if one is in the way, the vehicle
+ * stops at the stop line of that cell (tv._swingNode) and waits for it (tv._gate).
+ */
+function checkHeldSwing(sys, tv, q, dReq) {
+  const half = tv.length / 2;
+  for (let i = tv._ri + 1; i < tv._route.length; i++) {
+    if (i * sys.L - sys.r - half - sys.standoff - q > dReq) return;
+    const node = tv._nodes[i];
+    if (sys._lock[node] !== tv || !swingsAt(sys, tv, i)) continue;
+    const occupant = swingOccupant(sys, tv, node);
+    if (occupant !== null) {
+      tv._swingNode = node;
+      tv._gate = occupant;
+    }
+    return;
+  }
+}
+
+/**
+ * A long vehicle that turns on the spot (the dead-end U-turn, or easing onto its lane line) sweeps a disk that
+ * reaches into every cell next to its node, and ends up with its body along another road than the one it parked on.
+ * Before it starts it therefore needs the locks of all junctions and bends around the node (the request is granted
+ * by grantLocks like any other; tv._req >= 0 until then). Cells on the route are held until the rear has passed
+ * them, the others are let go as soon as the vehicle moves.
+ */
+export function evaluateSpin(sys, tv) {
+  if (tv.length / 2 <= sys.r) { // the body stays within its own cell
+    cancelRequest(sys, tv);
+    return;
+  }
+  const wanted = [];
+  for (const m of sys._neighbours(tv._nodes[tv._ri])) if (sys._lockable[m] === 1 && sys._lock[m] !== tv) wanted.push(m);
+  if (wanted.length === 0) {
+    cancelRequest(sys, tv);
+    return;
+  }
+  if (tv._req !== wanted[0]) {
+    cancelRequest(sys, tv);
+    tv._req = wanted[0];
+    sys._pending.push(tv);
+  }
+  tv._chainN.length = 0;
+  tv._chainQ.length = 0;
+  let gate = null;
+  for (const m of wanted) {
+    tv._chainN.push(m);
+    tv._chainQ.push(m === tv._nodes[tv._ri + 1] ? (tv._ri + 1) * sys.L + sys.r : tv._ri * sys.L - sys.r);
+    const holder = sys._lock[m];
+    if (gate === null && holder !== null) gate = holder;
+  }
+  tv._gate = gate;
+  tv._elig = gate === null;
+}
+
+/**
  * Centre coordinate of the stop line in front of route node i: the front bumper stays `sys.standoff` before the cell
- * boundary (one headway to whatever is inside the cell, plus the overhang of the longest vehicle beyond a cell),
- * never behind the vehicle itself.
+ * boundary (one headway to whatever is inside the cell, plus the reach of the nose of the longest vehicle that swings
+ * round the cell), never behind the vehicle itself.
  */
 export function stopLineQ(sys, tv, i, q) {
   return Math.max(i * sys.L - sys.r - tv.length / 2 - sys.standoff, q);
@@ -78,9 +168,9 @@ function bodyInLane(tv, j, x) {
 }
 
 /**
- * Index (> route length) of the first cell beyond the end of the route that needs a lock and that the vehicle's
- * nose reaches into once it rests on its final node, and whose lock it does not hold; -1 if none. Only vehicles
- * longer than one cell have such cells.
+ * Index (> route length) of the first cell beyond the end of the route that can be locked (a junction or a bend) and
+ * that the vehicle's nose reaches into once it rests on its final node, and whose lock it does not hold; -1 if none.
+ * Only vehicles longer than one cell have such cells.
  */
 export function firstExtensionCell(sys, tv) {
   if (tv._ext.length === 0 || tv.length / 2 <= sys.r) return -1; // the nose stays within its own cell
@@ -88,7 +178,8 @@ export function firstExtensionCell(sys, tv) {
   const finalQ = n * sys.L;
   for (let k = n + 1; k <= n + tv._ext.length; k++) {
     if (k * sys.L - sys.r - tv.length / 2 >= finalQ - EPS) return -1;
-    if (needsLock(sys, tv, nodeAhead(sys, tv, k), false)) return k;
+    const nd = nodeAhead(sys, tv, k);
+    if (sys._lockable[nd] === 1 && sys._lock[nd] !== tv) return k;
   }
   return -1;
 }
@@ -131,7 +222,8 @@ function scanHead(sys, tv, e, j) {
  * Find the nearest obstacle ahead of `tv` within `dLimit` metres of its front: the rear-most vehicle of each edge on
  * the route (and on its straight continuation), parked vehicles on node centres, and vehicles that have turned off
  * onto a sibling edge but whose rear still sticks back into the lane the observer is driving in.
- * Sets tv._ldQ (rear coordinate, Infinity if none), tv._ldTv, tv._ldV and tv._ldDec.
+ * Sets tv._ldRaw (rear coordinate of the obstacle on the route, Infinity if none), tv._ldQ (the same, shortened by the
+ * corners in between: the gap to keep along the real path), tv._ldTv, tv._ldV and tv._ldDec.
  */
 function scanLeader(sys, tv, dLimit) {
   const L = sys.L;
@@ -158,10 +250,46 @@ function scanLeader(sys, tv, dLimit) {
   const x = tv._ldTv;
   tv._ldV = x === null ? 0 : x.v;
   tv._ldDec = x === null ? 1 : x.decel;
-  if (x !== null) tv._ldQ -= pathCompression(sys, tv, ri * L + tv.s + tv.length / 2, tv._ldQ);
+  tv._ldRaw = tv._ldQ;
+  if (x !== null) tv._ldQ -= gapAllowance(sys, tv, x);
 }
 
-/** Extra gap needed for the corners (see Geometry.compression) of the route between route coordinates a and b. */
+/**
+ * How far a body lags behind its route coordinate while its centre is in the corner zone of its own route
+ * (0 on straights): the part of Geometry.compression the centre has passed. A vehicle that has already turned off
+ * onto another branch than the one the observer takes lags by its own corner.
+ */
+function centreLag(sys, x) {
+  const { L, r, geo } = sys;
+  if (!x.driving || x._route === null || x._turn >= 0) return 0;
+  const i = x.s >= r ? x._ri + 1 : x._ri;
+  const prev = i > 0 ? edgeAhead(x, i - 1) : x._prev;
+  const next = edgeAhead(x, i);
+  if (!geo.isCorner(prev, next)) return 0;
+  return (geo.compression(prev, next) * Math.min(2 * r, Math.max(0, x._ri * L + x.s - (i * L - r)))) / (2 * r);
+}
+
+/**
+ * Extra gap the follower `tv` keeps behind its leader `x` for the corners in between. A body sits where its centre
+ * is, so the corners between the two centres count, along the follower's route and, for the corner the leader is in
+ * right now, along the leader's own.
+ */
+function gapAllowance(sys, tv, x) {
+  const own = pathCompression(sys, tv, tv._ri * sys.L + tv.s, tv._ldQ + x.length / 2);
+  const lag = centreLag(sys, x);
+  const total = lag > own ? Math.max(own, lag - centreLag(sys, tv)) : own;
+  return total + Math.min(total, CORNER_EXTRA);
+}
+
+/** Leader scan only (no lock request): for a vehicle that manoeuvres in place and needs to know what is ahead of it. */
+export function scanAhead(sys, tv, dLimit) {
+  scanLeader(sys, tv, dLimit);
+}
+
+/**
+ * Shortening of the path caused by the corners (see Geometry.compression) of the follower's route between route
+ * coordinates a and b: the gap along the road between two bodies is shorter than the difference of their coordinates.
+ */
 function pathCompression(sys, tv, a, b) {
   const { L, r, geo } = sys;
   let total = 0;
@@ -171,7 +299,7 @@ function pathCompression(sys, tv, a, b) {
     if (hi <= lo) continue;
     const prev = i > 0 ? edgeAhead(tv, i - 1) : -1;
     const next = edgeAhead(tv, i);
-    if (prev >= 0 && next >= 0) total += (CORNER_SAFETY * geo.compression(prev, next) * (hi - lo)) / (2 * r);
+    if (geo.isCorner(prev, next)) total += (geo.compression(prev, next) * (hi - lo)) / (2 * r);
   }
   return total;
 }
@@ -188,11 +316,16 @@ export function cancelRequest(sys, tv) {
 
 /**
  * Update the vehicle's lock request and look for the nearest obstacle ahead (`dShort` metres, more if the request
- * needs to see the room beyond the exit). The target is the first controlled cell on the route whose lock the vehicle
- * does not hold, once its stop line is within `dReq`. Besides the cell itself the request covers every further
- * controlled cell the vehicle would still overlap while clearing it (atomic acquisition, so two vehicles can never
- * each hold half of a pair of adjacent cells). It is eligible only if nothing stands in the room beyond the exit
- * that the vehicle needs to come to rest (length + headway): no box-blocking.
+ * needs to see the room beyond the exit). The target is the first cell on the route that needs a lock the vehicle
+ * does not hold, once its stop line is within `dReq`. Besides the cell itself the request covers every further cell
+ * that can be locked (junctions and bends) which the vehicle could still be waiting in front of while its rear is
+ * inside the last cell of the request: a vehicle never holds a cell while it waits for another one (no
+ * hold-and-wait), so two vehicles can never each hold half of a row of adjacent cells, and nobody can dock in a bend
+ * the vehicle is about to cross. The request is eligible only if
+ *   * no foreign lock lies in the chain and no vehicle docked in, or committed to, a bend where the vehicle will stop,
+ *   * no vehicle is within the swing of a long vehicle that turns in one of the cells (see swingOccupant), and
+ *   * nothing stands in the room beyond the exit of the LAST cell that the vehicle needs to come to rest
+ *     (length + headway): no box-blocking.
  */
 export function evaluateRequest(sys, tv, dReq, dShort) {
   const { graph, L, r, headway } = sys;
@@ -205,15 +338,17 @@ export function evaluateRequest(sys, tv, dReq, dShort) {
   for (let i = tv._ri + 1; i <= n; i++) {
     if (i * L - r - half - sys.standoff - q > dReq) break;
     const node = nodes[i];
-    if ((lockable[node] === 1 || sys._lock[node] !== null) && needsLock(sys, tv, node, i === n)) { target = i; break; }
+    if ((lockable[node] === 1 || sys._lock[node] !== null) && needsLock(sys, tv, node, i, i === n)) { target = i; break; }
   }
   if (target < 0) {
     const k = firstExtensionCell(sys, tv);
     if (k >= 0 && stopLineQ(sys, tv, k, q) - q <= dReq) target = k;
   }
+  tv._swingNode = -1;
   if (target < 0) {
     scanLeader(sys, tv, dShort);
     if (tv._req >= 0) cancelRequest(sys, tv);
+    if (tv.length > sys.swingLength) checkHeldSwing(sys, tv, q, dReq);
     return;
   }
   const node = nodeAhead(sys, tv, target);
@@ -222,31 +357,41 @@ export function evaluateRequest(sys, tv, dReq, dShort) {
     tv._req = node;
     sys._pending.push(tv);
   }
-  const exitQ = target * L + r;
-  const zoneEnd = Math.min(exitQ + tv.length, n * L + half);
   tv._chainN.length = 0;
   tv._chainQ.length = 0;
+  let lastExit = target * L + r;
   let gate = null;
   for (let k = target; ; k++) {
-    // A later cell is part of the request if the vehicle could end up waiting at its stop line while its rear is
-    // still inside the first cell - otherwise it would hold one cell while waiting for the next (hold and wait).
     const lineQ = k * L - r - half - sys.standoff;
-    if (k > target && (lineQ - half >= exitQ - EPS || lineQ >= n * L - EPS)) break;
+    if (k > target && (lineQ - half >= lastExit - EPS || (k > n && k * L - r >= n * L + half - EPS))) break; // or beyond the nose at rest
     const nd = nodeAhead(sys, tv, k);
     if (nd < 0) break;
+    if (k !== target && sys._lockable[nd] !== 1) continue; // plain road cannot be locked
     const holder = sys._lock[nd];
-    if (k !== target && graph.controlled[nd] !== 1 && (holder === null || holder === tv)) continue;
     tv._chainN.push(nd);
     tv._chainQ.push(k * L + r);
+    lastExit = k * L + r;
     if (gate === null && holder !== null && holder !== tv) gate = holder;
+    if (gate === null && k >= n && sys._bend[nd] === 1 && graph.controlled[nd] !== 1) gate = cellOccupant(sys, tv, nd, k > 0 ? edgeAhead(tv, k - 1) : -1);
+    if (gate === null && swingsAt(sys, tv, k)) gate = swingOccupant(sys, tv, nd);
   }
-  if (gate === null && sys._bend[node] === 1 && graph.controlled[node] !== 1) {
-    gate = cellOccupant(sys, tv, node, target > 0 ? edgeAhead(tv, target - 1) : -1);
-  }
+  const zoneEnd = Math.min(lastExit + tv.length, n * L + half);
   scanLeader(sys, tv, Math.max(dShort, zoneEnd + headway - (q + half) + 1)); // must see the room beyond the exit
-  if (gate === null && tv._ldQ < zoneEnd + headway - EPS) gate = tv._ldTv;
+  if (gate === null && roomBeyond(sys, tv, lastExit) < zoneEnd + headway - EPS) gate = tv._ldTv;
   tv._gate = gate;
   tv._elig = gate === null;
+}
+
+/**
+ * Route coordinate of the nearest obstacle ahead as far as the room beyond route coordinate `exitQ` is concerned: the
+ * corners between the exit and the obstacle count (the follower comes to rest earlier), those before it do not. The
+ * measure must not depend on where the vehicle turns inside the cells it is about to take, or two requests for the
+ * same cell and the same exit would not be equally eligible and the younger could overtake the older.
+ */
+function roomBeyond(sys, tv, exitQ) {
+  if (tv._ldRaw === Infinity) return Infinity;
+  const total = pathCompression(sys, tv, exitQ, tv._ldRaw);
+  return tv._ldRaw - total - Math.min(total, CORNER_EXTRA);
 }
 
 /** Grant pending requests in FIFO order to every vehicle that is eligible and whose whole cell chain is free. */
@@ -264,7 +409,13 @@ export function grantLocks(sys) {
     if (blocker !== null) { tv._gate = blocker; k++; continue; }
     for (let c = 0; c < chain.length; c++) {
       sys._lock[chain[c]] = tv;
-      if (!tv._held.includes(chain[c])) { tv._held.push(chain[c]); tv._heldQ.push(tv._chainQ[c]); }
+      const at = tv._held.indexOf(chain[c]);
+      if (at < 0) {
+        tv._held.push(chain[c]);
+        tv._heldQ.push(tv._chainQ[c]);
+      } else if (tv._chainQ[c] > tv._heldQ[at]) {
+        tv._heldQ[at] = tv._chainQ[c]; // the route visits a cell the vehicle already holds again: keep it until then
+      }
     }
     tv._req = -1;
     tv._gate = null;

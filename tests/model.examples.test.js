@@ -5,6 +5,12 @@ import { validateLayout } from '../js/model/validate.js';
 import * as L from '../js/model/layout.js';
 import { FLEET_PRESETS } from '../js/model/defaults.js';
 import { DX, DY, opposite, parseKey } from '../js/util/grid.js';
+import { createRng } from '../js/util/rng.js';
+import { buildGraph } from '../js/sim/graph.js';
+import { TrafficSystem } from '../js/sim/traffic.js';
+import { Logistics } from '../js/sim/logistics.js';
+import { Stats } from '../js/sim/stats.js';
+import { generateInsights, TRAFFIC_WAIT_SHARE, FLEET_SATURATED_UTILIZATION } from '../js/sim/insights.js';
 
 const built = EXAMPLES.map((example) => ({ example, layout: example.build() }));
 const byId = (id) => built.find((b) => b.example.id === id).layout;
@@ -192,7 +198,90 @@ test('Congestion lab: one-way loop, a crossing, docks on the aisle and more vehi
   const packing = stationNamed(l, 'Packing');
   const cyclesPerHour = (3600 / packing.params.cycle.mean) * packing.params.machines;
   for (const source of l.stations.filter((s) => s.type === 'source')) {
-    assert.ok(3600 / source.params.interArrival.mean < cyclesPerHour, `${source.name}: one load per cycle, so the workstation itself is not the bottleneck`);
+    const loadsPerHour = (3600 / source.params.interArrival.mean) * source.params.batch;
+    assert.ok(loadsPerHour < cyclesPerHour, `${source.name}: one load per cycle, so the workstation itself is not the bottleneck`);
+    assert.ok(source.params.batch >= 2 && source.params.outCap >= 2 * source.params.batch, `${source.name}: trucks unload in bunches that fit two deep into the yard buffer`);
   }
   assert.ok(l.labels.length >= 2, 'the lab explains itself on the baseplate');
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// The examples in the real simulation: what the descriptions and tips promise is what happens
+// ---------------------------------------------------------------------------------------------------------
+
+/** graph + traffic + logistics + stats wired the way the engine does it; returns the KPI report and the insights. */
+function simulate(layout, hours = 2) {
+  const graph = buildGraph(layout);
+  const traffic = new TrafficSystem(graph, { handedness: layout.settings.handedness, resolveDeadlocks: layout.settings.deadlock === 'resolve' });
+  const sim = { time: 0, layout, graph, traffic, settings: layout.settings };
+  const stats = new Stats(sim);
+  sim.logistics = new Logistics({ layout, graph, traffic, rng: createRng(layout.settings.seed), emit: (name, payload) => stats.onEvent(name, payload) });
+  const { dt, warmup } = layout.settings;
+  let measuring = false;
+  for (let t = 0; t < hours * 3600; t += dt) {
+    if (!measuring && t >= warmup) {
+      stats.reset();
+      measuring = true;
+    }
+    sim.logistics.step(dt, t);
+    traffic.step(dt);
+    sim.time = t + dt;
+    stats.sample(dt);
+  }
+  const report = stats.report();
+  return { report, insights: generateInsights(report, layout) };
+}
+
+/** A fresh copy of an example with `edit` applied through the model API. */
+function variant(id, edit) {
+  const layout = EXAMPLES.find((e) => e.id === id).build();
+  edit(layout);
+  return layout;
+}
+
+test('Congestion lab in the simulation: the queues are real for several random seeds, and the Results tab says so', () => {
+  for (const seed of [1, 2, 3]) {
+    const { report, insights } = simulate(variant('congestion-lab', (l) => L.updateSettings(l, { seed })));
+    assert.ok(report.traffic.waitShare >= TRAFFIC_WAIT_SHARE + 0.03, `seed ${seed}: vehicles wait ${(report.traffic.waitShare * 100).toFixed(1)} % of their driving time`);
+    assert.equal(report.traffic.deadlocks, 0, `seed ${seed}: congestion, not a deadlock`);
+    assert.ok(insights.some((i) => i.id === 'traffic'), `seed ${seed}: ${insights.map((i) => i.id)}`);
+    assert.ok(!insights.some((i) => i.severity === 'good'), `seed ${seed}: no all-clear`);
+    assert.ok(report.throughput.perHour > 30, `seed ${seed}: the plant still delivers ${report.throughput.perHour.toFixed(1)} loads/h`);
+  }
+});
+
+test('Congestion lab tips are true: the queue sits at the Packing docks, extra vehicles add no output, bigger loads and faster hand-over shorten the queues', () => {
+  const base = simulate(variant('congestion-lab', () => {}));
+  const lab = EXAMPLES.find((e) => e.id === 'congestion-lab').build();
+  const dockCells = L.docksOf(lab, stationNamed(lab, 'Packing').id);
+  const hottest = base.report.traffic.hotspots[0];
+  const distance = Math.min(...dockCells.map(([cx, cy]) => Math.abs(cx - hottest.cx) + Math.abs(cy - hottest.cy)));
+  assert.ok(distance <= 2, `the hottest cell (${hottest.cx},${hottest.cy}) is ${distance} cells from a Packing dock`);
+
+  const fleetId = lab.fleets[0].id;
+  const edit = (patch) => simulate(variant('congestion-lab', (l) => L.updateFleet(l, fleetId, patch)));
+  const fewer = edit({ count: 6 });
+  assert.ok(fewer.report.throughput.perHour > 0.95 * base.report.throughput.perHour, 'three AGVs fewer deliver the same');
+  assert.ok(fewer.report.traffic.waitShare < base.report.traffic.waitShare, 'and queue less');
+  const carrying = edit({ capacity: 2 });
+  assert.ok(carrying.report.traffic.waitShare < 0.65 * base.report.traffic.waitShare, `capacity 2: ${carrying.report.traffic.waitShare.toFixed(3)} against ${base.report.traffic.waitShare.toFixed(3)}`);
+  const quick = edit({ loadTime: 12, unloadTime: 12 });
+  assert.ok(quick.report.traffic.waitShare < 0.65 * base.report.traffic.waitShare, `12 s hand-over: ${quick.report.traffic.waitShare.toFixed(3)} against ${base.report.traffic.waitShare.toFixed(3)}`);
+  assert.equal(lab.fleets[0].loadTime, 24, 'the tip names the real hand-over time');
+});
+
+test('Two lines in the simulation: no fleet sits at the edge of saturation, and +30 % demand saturates the AGVs before the forklifts', () => {
+  const l = EXAMPLES.find((e) => e.id === 'two-lines').build();
+  const forklifts = l.fleets.find((f) => f.preset === 'forklift');
+  const agvs = l.fleets.find((f) => f.preset === 'agv');
+  const base = simulate(variant('two-lines', () => {}));
+  for (const fleet of [forklifts, agvs]) {
+    assert.ok(base.report.fleets[fleet.id].utilization < FLEET_SATURATED_UTILIZATION - 0.05, `${fleet.name}: ${base.report.fleets[fleet.id].utilization.toFixed(2)}`);
+  }
+  assert.ok(!base.insights.some((i) => i.severity === 'critical' || i.severity === 'warning'), base.insights.map((i) => i.id).join());
+  const busy = simulate(variant('two-lines', (layout) => L.updateSettings(layout, { demandFactor: 1.3 })));
+  assert.ok(busy.report.fleets[agvs.id].utilization >= FLEET_SATURATED_UTILIZATION, 'the AGVs run out of capacity first');
+  assert.ok(busy.report.fleets[forklifts.id].utilization < FLEET_SATURATED_UTILIZATION, 'the forklifts still have room');
+  assert.ok(busy.insights.some((i) => i.id === `fleet-saturated:${agvs.id}`), busy.insights.map((i) => i.id).join());
+  assert.ok(busy.report.throughput.perHour > 1.2 * base.report.throughput.perHour, 'and the plant really delivers more');
 });

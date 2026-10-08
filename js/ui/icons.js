@@ -1,5 +1,6 @@
 // Inline SVG icon set for the LogiPlan UI. Hand-drawn on a 24x24 grid: 1.75 stroke, round caps and joins,
-// stroke = currentColor (so an icon takes the colour of its button or text). Designed to stay legible at 16-20 px.
+// stroke = currentColor (so an icon takes the colour of its button or text). Designed to stay legible at 16-20 px;
+// the few icons whose detail merges into a blob below 18 px have a simplified variant for those sizes (COMPACT).
 //
 //   import { icon } from './icons.js';
 //   button.append(icon('play', { size: 16 }));       // SVGElement (browser)
@@ -44,14 +45,14 @@ const SHAPES = {
   zoomin: '<circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.3 15.3l5.2 5.2M10.5 8v5M8 10.5h5"/>',
   zoomout: '<circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.3 15.3l5.2 5.2M8 10.5h5"/>',
   grid: '<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M4 9.33h16M4 14.67h16M9.33 4v16M14.67 4v16"/>',
-  heat: '<path d="M12 3c.9 3.4 5.5 5.2 5.5 10a5.5 5.5 0 0 1-11 0c0-2 .9-3.2 2-4.2.1 1.5.9 2.4 1.9 2.7C10 8.8 10.7 5.6 12 3z"/>',
+  heat: '<path d="M12 4.25c.9 3.4 5.5 5.2 5.5 10a5.5 5.5 0 0 1-11 0c0-2 .9-3.2 2-4.2.1 1.5.9 2.4 1.9 2.7C10 10.05 10.7 6.85 12 4.25z"/>',
   flows: '<path d="M3.5 12H8c3.5 0 3.5-6 7-6h4.5M8 12c3.5 0 3.5 6 7 6h4.5"/><path d="M17 3.5L19.5 6 17 8.5M17 15.5l2.5 2.5-2.5 2.5"/>',
   layers: '<path d="M12 3.5l9 4.8-9 4.8-9-4.8z"/><path d="M3 12.4l9 4.8 9-4.8M3 16.6l9 4.8 9-4.8"/>',
 
   // ---- files, sharing
   share: '<circle cx="6" cy="12" r="2.6"/><circle cx="18" cy="5.8" r="2.6"/><circle cx="18" cy="18.2" r="2.6"/><path d="M8.3 10.8l7.4-3.7M8.3 13.2l7.4 3.7"/>',
-  export: '<path d="M14 3H7.5A2.5 2.5 0 0 0 5 5.5v13A2.5 2.5 0 0 0 7.5 21h9a2.5 2.5 0 0 0 2.5-2.5V8z"/><path d="M14 3v5h5"/><path d="M12 17.5v-6M9.5 14l2.5-2.5 2.5 2.5"/>',
-  import: '<path d="M14 3H7.5A2.5 2.5 0 0 0 5 5.5v13A2.5 2.5 0 0 0 7.5 21h9a2.5 2.5 0 0 0 2.5-2.5V8z"/><path d="M14 3v5h5"/><path d="M12 11.5v6M9.5 15l2.5 2.5 2.5-2.5"/>',
+  export: '<path d="M14 3H7.5A2.5 2.5 0 0 0 5 5.5v13A2.5 2.5 0 0 0 7.5 21h9a2.5 2.5 0 0 0 2.5-2.5V8z"/><path d="M14 3v5h5"/><path d="M12 18.5v-8.5M8.5 13.5L12 10l3.5 3.5"/>',
+  import: '<path d="M14 3H7.5A2.5 2.5 0 0 0 5 5.5v13A2.5 2.5 0 0 0 7.5 21h9a2.5 2.5 0 0 0 2.5-2.5V8z"/><path d="M14 3v5h5"/><path d="M12 10v8.5M8.5 15L12 18.5 15.5 15"/>',
   download: '<path d="M12 4v11M7.5 10.5L12 15l4.5-4.5M5 20h14"/>',
   upload: '<path d="M12 16V5M7.5 9.5L12 5l4.5 4.5M5 20h14"/>',
   folder: '<path d="M3.5 6.5A1.5 1.5 0 0 1 5 5h4.2l2 2.3H19a1.5 1.5 0 0 1 1.5 1.5v9.2A1.5 1.5 0 0 1 19 19.5H5A1.5 1.5 0 0 1 3.5 18z"/>',
@@ -99,6 +100,19 @@ const SHAPES = {
   route: '<circle cx="5.5" cy="18.5" r="2"/><circle cx="18.5" cy="4.5" r="2"/><path d="M7.5 18.5h6a3.5 3.5 0 0 0 0-7h-3a3.5 3.5 0 0 1 0-7h6"/>',
 };
 
+/**
+ * Simplified art for icons drawn below COMPACT_BELOW px. At 16 px one icon unit is two thirds of a pixel, so strokes
+ * closer than about 2 units merge: these variants drop the ticks, bolts and cab details of their full-size icons.
+ */
+const COMPACT = {
+  storage: '<path d="M4 3.5v17M20 3.5v17M4 12h16M4 20.5h16"/><path d="M8 12V6.5h5.5V12M11 20.5v-5h5.5v5"/>',
+  speedzone: '<path d="M4.2 17a8 8 0 1 1 15.6 0"/><path d="M12 15.5l3.6-5.2"/><circle cx="12" cy="15.5" r="1.8" fill="currentColor" stroke="none"/>',
+  oneway: '<path d="M6 3.5L2.5 20.5M18 3.5l3.5 17"/><path d="M12 19.5V6M7.5 10.5L12 6l4.5 4.5"/>',
+  depot: '<rect x="3.5" y="3.5" width="17" height="17" rx="3.5"/><path d="M9 17.5V6.5h3.4a3.2 3.2 0 0 1 0 6.4H9"/>',
+  forklift: '<path d="M18 3.5V17.5M18 17.5h4"/><path d="M3 16.5v-6h11.5v6M6.5 10.5v-5h6v5"/><circle cx="6.5" cy="18.8" r="1.9" fill="currentColor" stroke="none"/><circle cx="13" cy="18.8" r="1.9" fill="currentColor" stroke="none"/>',
+};
+const COMPACT_BELOW = 18;
+
 /** Shown for an unknown name so a typo is visible instead of throwing. */
 const MISSING = '<rect x="4" y="4" width="16" height="16" rx="3" stroke-dasharray="3 3"/>';
 
@@ -106,31 +120,33 @@ const MISSING = '<rect x="4" y="4" width="16" height="16" rx="3" stroke-dasharra
 export const ICON_NAMES = Object.freeze(Object.keys(SHAPES));
 
 const normalizeSize = (size) => (Number.isFinite(size) && size > 0 ? size : 18);
+const isCompact = (name, px) => px < COMPACT_BELOW && Object.hasOwn(COMPACT, name);
 
 /**
  * Icon as an SVG markup string (for HTML templates and report export).
  * @param {string} name one of ICON_NAMES (unknown names render a dashed placeholder)
- * @param {{ size?: number, class?: string }} [opts] size in px (default 18); extra CSS class
+ * @param {{ size?: number, class?: string }} [opts] size in px (default 18; below 18 a few icons switch to their simplified variant); extra CSS class
  * @returns {string}
  */
 export function iconSvg(name, { size = 18, class: className } = {}) {
   const known = Object.hasOwn(SHAPES, name);
   const px = normalizeSize(size);
   const classes = ['icon', known ? `icon--${name}` : 'icon--missing', className].filter(Boolean).join(' ');
+  const shape = !known ? MISSING : isCompact(name, px) ? COMPACT[name] : SHAPES[name];
   return `<svg xmlns="http://www.w3.org/2000/svg" class="${escapeHtml(classes)}" width="${px}" height="${px}" viewBox="0 0 24 24" `
     + 'fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" '
-    + `aria-hidden="true" focusable="false">${known ? SHAPES[name] : MISSING}</svg>`;
+    + `aria-hidden="true" focusable="false">${shape}</svg>`;
 }
 
 const prototypes = new Map();
 
-/** Parsed prototype per icon name; cloning it is much cheaper than re-parsing markup. */
-function prototype(name) {
-  const key = Object.hasOwn(SHAPES, name) ? name : '';
+/** Parsed prototype per icon name and variant (full or compact); cloning it is much cheaper than re-parsing markup. */
+function prototype(name, compact) {
+  const key = Object.hasOwn(SHAPES, name) ? `${name}${compact ? ':compact' : ''}` : '';
   let proto = prototypes.get(key);
   if (!proto) {
     const template = document.createElement('template');
-    template.innerHTML = iconSvg(name);
+    template.innerHTML = iconSvg(name, { size: compact ? COMPACT_BELOW - 1 : COMPACT_BELOW });
     proto = template.content.firstElementChild;
     prototypes.set(key, proto);
   }
@@ -140,14 +156,14 @@ function prototype(name) {
 /**
  * Icon as a detached inline <svg> element (24x24 viewBox, currentColor, aria-hidden).
  * @param {string} name one of ICON_NAMES
- * @param {{ size?: number, class?: string }} [opts] size in px (default 18); extra CSS class
+ * @param {{ size?: number, class?: string }} [opts] size in px (default 18; below 18 a few icons switch to their simplified variant); extra CSS class
  * @returns {SVGElement}
  */
 export function icon(name, { size = 18, class: className } = {}) {
-  const el = prototype(name).cloneNode(true);
-  const px = String(normalizeSize(size));
-  el.setAttribute('width', px);
-  el.setAttribute('height', px);
+  const px = normalizeSize(size);
+  const el = prototype(name, isCompact(name, px)).cloneNode(true);
+  el.setAttribute('width', String(px));
+  el.setAttribute('height', String(px));
   if (className) el.setAttribute('class', `${el.getAttribute('class')} ${className}`);
   return el;
 }

@@ -140,7 +140,7 @@ test('yield: a parked vehicle that cannot leave because an idle vehicle stands o
 });
 
 test('yield: a plant with one-way lines, batteries and breakdowns never keeps a vehicle waiting behind an idle one for long', () => {
-  for (const seed of [3, 5, 12, 17, 70, 92]) {
+  for (const seed of [3, 5, 12, 17, 70, 92, 310, 362]) {
     const w = createRealWorld(hostilePlant(seed), { dt: 0.25 });
     let worst = 0;
     for (let i = 0; i < 90; i++) {

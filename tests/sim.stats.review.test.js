@@ -5,9 +5,15 @@
 //   2. cross-checks against the REAL graph + TrafficSystem + Logistics (no engine exists yet, so a small one is wired here
 //      the way docs/ARCHITECTURE.md 5.5 describes it) - Stats must agree with counters the other modules keep themselves;
 //   3. properties of the insights on hand-built reports and on real runs (advice must not contradict itself);
-//   4. defects: tests whose name starts with "DEFECT" currently FAIL and describe behaviour a planner would be misled by.
+//   4. defects: tests whose name starts with "DEFECT" failed when the review was written (each describes behaviour a planner
+//      would be misled by). The fixes are in, so they now run as regression tests; the prefix stays so that the history is clear.
 //
-// Tests without that prefix pass today and guard behaviour that was verified correct during the review.
+// Tests without that prefix guarded behaviour that was verified correct during the review.
+//
+// Three of the defect tests and the exact field list were adjusted when the defects were fixed, because the reviewer's own
+// suggested fixes change what they assert: the report gained flows[].avgBacklog and fleets[].unplaced (exact key lists), the
+// battery plant is no longer reported as "oversized" at all (so its precondition could not hold any more) and the deadlock
+// insight test must feed a report that is past the warm-up (insights ignore warm-up reports).
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -968,7 +974,7 @@ test('a valid-but-odd report (no layout, no fleets, no stations, no throughput) 
 });
 
 // =========================================================================================================================
-// 4. DEFECTS (these tests fail today)
+// 4. DEFECTS (failed when the review was written, fixed since)
 // =========================================================================================================================
 
 test('DEFECT backlog counts loads a vehicle has already claimed, so "waiting for a vehicle" advice is wrong', () => {

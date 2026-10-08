@@ -373,7 +373,7 @@ body {
   width: 100%;
   height: var(--control-h);
   padding: 0 10px;
-  border: 1px solid var(--border-strong);
+  border: 1px solid var(--control-border);
   border-radius: var(--radius-md);
   background: var(--surface);
   color: var(--text);
@@ -389,12 +389,14 @@ body {
 }
 
 .input:hover {
-  border-color: var(--border-hover);
+  border-color: var(--control-border-hover);
 }
 
+/* A real outline (not just a glow), so keyboard focus also survives forced-colours mode. */
 .input:focus-visible {
-  outline: none;
-  border-color: var(--accent);
+  outline: var(--focus-ring);
+  outline-offset: -1px;
+  border-color: var(--focus-color);
   box-shadow: var(--focus-glow);
 }
 
@@ -454,11 +456,13 @@ select.input--sm {
   border-color: var(--bad);
 }
 
+/* Invalid and focused: the red border stays visible inside the focus ring. */
 .input[aria-invalid='true']:focus-visible,
 .input.is-invalid:focus-visible,
 .field.is-invalid .input:focus-visible {
   border-color: var(--bad);
-  box-shadow: 0 0 0 3px var(--bad-soft);
+  outline-offset: 1px;
+  box-shadow: none;
 }
 
 /* Input with a unit or prefix addon: the group owns the border, the input inside is bare. */
@@ -468,18 +472,20 @@ select.input--sm {
   width: 100%;
   height: var(--control-h);
   overflow: hidden;
-  border: 1px solid var(--border-strong);
+  border: 1px solid var(--control-border);
   border-radius: var(--radius-md);
   background: var(--surface);
   transition: border-color var(--t-fast) var(--ease), box-shadow var(--t-fast) var(--ease);
 }
 
 .input-group:hover {
-  border-color: var(--border-hover);
+  border-color: var(--control-border-hover);
 }
 
 .input-group:focus-within {
-  border-color: var(--accent);
+  outline: var(--focus-ring);
+  outline-offset: -1px;
+  border-color: var(--focus-color);
   box-shadow: var(--focus-glow);
 }
 
@@ -495,6 +501,7 @@ select.input--sm {
 }
 
 .input-group > .input:focus-visible {
+  outline: none;
   box-shadow: none;
 }
 
@@ -509,7 +516,8 @@ select.input--sm {
 
 .input-group.is-invalid:focus-within,
 .field.is-invalid .input-group:focus-within {
-  box-shadow: 0 0 0 3px var(--bad-soft);
+  outline-offset: 1px;
+  box-shadow: none;
 }
 
 .input-group.is-disabled {
@@ -552,7 +560,7 @@ select.input--sm {
   width: 16px;
   height: 16px;
   margin: 1px 0 0;
-  border: 1px solid var(--border-strong);
+  border: 1px solid var(--control-border);
   border-radius: var(--radius-sm);
   background-color: var(--surface);
   background-repeat: no-repeat;
@@ -563,7 +571,7 @@ select.input--sm {
 }
 
 .check input:hover {
-  border-color: var(--border-hover);
+  border-color: var(--control-border-hover);
 }
 
 .check input[type='radio'] {
@@ -622,7 +630,7 @@ select.input--sm {
   width: 28px;
   height: 16px;
   border-radius: var(--radius-pill);
-  background: var(--track);
+  background: var(--control-track);
   transition: background-color var(--t-base) var(--ease);
 }
 
@@ -661,6 +669,8 @@ select.input--sm {
 /* Segmented control: buttons with aria-pressed, or labels wrapping radio inputs. */
 .segmented {
   display: inline-flex;
+  width: fit-content;
+  max-width: 100%;
   gap: 2px;
   padding: 2px;
   border-radius: var(--radius-lg);
@@ -673,7 +683,7 @@ select.input--sm {
   align-items: center;
   justify-content: center;
   gap: 6px;
-  min-height: calc(var(--control-h) - 6px);
+  min-height: calc(var(--control-h) - 4px);
   padding: 0 var(--sp-3);
   border: 0;
   border-radius: var(--radius-md);
@@ -714,12 +724,13 @@ select.input--sm {
 }
 
 .segmented--sm .segmented__item {
-  min-height: 22px;
+  min-height: calc(var(--control-h-sm) - 4px);
   padding: 0 var(--sp-2);
 }
 
 .segmented--block {
   display: flex;
+  width: 100%;
 }
 
 .segmented--block .segmented__item {
@@ -731,18 +742,20 @@ select.input--sm {
    --p (0..1) and data-value are set from JS on input events (see docs/UI-KIT.md). */
 .range {
   --p: 0;
-  --fill: calc(var(--p) * (100% - 16px) + 8px);
+  --thumb: 16px;
+  --fill: calc(var(--p) * (100% - var(--thumb)) + var(--thumb) / 2);
   position: relative;
   display: flex;
   align-items: center;
   width: 100%;
-  height: 20px;
+  height: 24px;
 }
 
 .range input[type='range'] {
   width: 100%;
-  height: 20px;
+  height: 100%;
   margin: 0;
+  border-radius: var(--radius-md);
   background: transparent;
   cursor: pointer;
   appearance: none;
@@ -750,28 +763,29 @@ select.input--sm {
 }
 
 .range input[type='range']:focus-visible {
-  outline: none;
+  outline: var(--focus-ring);
+  outline-offset: 1px;
 }
 
 .range input[type='range']::-webkit-slider-runnable-track {
   height: 4px;
   border-radius: var(--radius-pill);
-  background: linear-gradient(to right, var(--accent) var(--fill), var(--track) var(--fill));
+  background: linear-gradient(to right, var(--accent) var(--fill), var(--control-track) var(--fill));
 }
 
 .range input[type='range']::-moz-range-track {
   height: 4px;
   border-radius: var(--radius-pill);
-  background: linear-gradient(to right, var(--accent) var(--fill), var(--track) var(--fill));
+  background: linear-gradient(to right, var(--accent) var(--fill), var(--control-track) var(--fill));
 }
 
 .range input[type='range']::-webkit-slider-thumb {
   appearance: none;
   -webkit-appearance: none;
-  width: 16px;
-  height: 16px;
-  margin-top: -6px;
-  border: 1px solid var(--border-strong);
+  width: var(--thumb);
+  height: var(--thumb);
+  margin-top: calc((4px - var(--thumb)) / 2);
+  border: 1px solid var(--control-border);
   border-radius: 50%;
   background: #ffffff;
   box-shadow: 0 1px 3px rgba(20, 30, 50, 0.28);
@@ -779,9 +793,9 @@ select.input--sm {
 }
 
 .range input[type='range']::-moz-range-thumb {
-  width: 14px;
-  height: 14px;
-  border: 1px solid var(--border-strong);
+  width: calc(var(--thumb) - 2px);
+  height: calc(var(--thumb) - 2px);
+  border: 1px solid var(--control-border);
   border-radius: 50%;
   background: #ffffff;
   box-shadow: 0 1px 3px rgba(20, 30, 50, 0.28);
@@ -906,18 +920,20 @@ select.input--sm {
   align-items: stretch;
   height: var(--control-h);
   overflow: hidden;
-  border: 1px solid var(--border-strong);
+  border: 1px solid var(--control-border);
   border-radius: var(--radius-md);
   background: var(--surface);
   transition: border-color var(--t-fast) var(--ease), box-shadow var(--t-fast) var(--ease);
 }
 
 .stepper:hover {
-  border-color: var(--border-hover);
+  border-color: var(--control-border-hover);
 }
 
 .stepper:focus-within {
-  border-color: var(--accent);
+  outline: var(--focus-ring);
+  outline-offset: -1px;
+  border-color: var(--focus-color);
   box-shadow: var(--focus-glow);
 }
 
@@ -1877,6 +1893,8 @@ dialog.modal::backdrop {
 }
 
 .toast {
+  --focus-color: var(--inverse-accent);
+  --focus-ring: 2px solid var(--focus-color);
   display: flex;
   align-items: flex-start;
   gap: 10px;
@@ -1908,9 +1926,14 @@ dialog.modal::backdrop {
 }
 
 .toast__action {
+  display: inline-flex;
+  align-items: center;
   flex: none;
-  padding: 0 4px;
+  min-height: 24px;
+  margin: -3px 0;
+  padding: 0 6px;
   border: 0;
+  border-radius: var(--radius-sm);
   background: transparent;
   color: var(--inverse-accent);
   font-weight: var(--fw-semibold);
@@ -1924,9 +1947,9 @@ dialog.modal::backdrop {
   flex: none;
   display: inline-grid;
   place-items: center;
-  width: 20px;
-  height: 20px;
-  margin: -1px -4px 0 0;
+  width: 24px;
+  height: 24px;
+  margin: -3px -6px -3px 0;
   padding: 0;
   border: 0;
   border-radius: var(--radius-sm);
@@ -1988,6 +2011,15 @@ dialog.modal::backdrop {
   flex: none;
   width: 16px;
   color: var(--text-dim);
+}
+
+/* Check items (role="menuitemcheckbox" / "menuitemradio"): the icon slot holds the tick only while checked. */
+.menu__item[aria-checked='false'] .menu__icon {
+  visibility: hidden;
+}
+
+.menu__item[aria-checked='true'] .menu__icon {
+  color: var(--accent-text);
 }
 
 .menu__kbd {
@@ -2224,7 +2256,7 @@ dialog.modal::backdrop {
   display: flex;
   flex-wrap: wrap;
   gap: 4px var(--sp-4);
-  margin: 0;
+  margin: 0 0 0 -4px; /* the items' own padding lines their text up with the chart */
   padding: 0;
   color: var(--text-dim);
   font-size: var(--fs-sm);
@@ -2235,8 +2267,10 @@ dialog.modal::backdrop {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+  min-height: 24px;
   padding: 2px 4px;
-  margin: 0 -4px;
   border: 0;
   border-radius: var(--radius-sm);
   background: transparent;
@@ -2253,9 +2287,20 @@ button.chart-legend__item:hover {
   color: var(--text);
 }
 
+.chart-legend__item > :not(.chart-legend__key) {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  text-align: left;
+}
+
+/* A hidden series stays readable text (AA): struck through, with a faded key. */
 button.chart-legend__item[aria-pressed='false'] {
-  opacity: 0.45;
+  color: var(--text-faint);
   text-decoration: line-through;
+}
+
+button.chart-legend__item[aria-pressed='false'] .chart-legend__key {
+  opacity: 0.4;
 }
 
 .chart-legend__key {
@@ -2281,11 +2326,24 @@ button.chart-legend__item[aria-pressed='false'] {
   display: block;
 }
 
+/* The dial is a semi-circle: its canvas is half as high as it is wide, plus 24 px for the scale ends. The width is set
+   from JS (--gauge-size) and shrinks with a narrow container; container-query units keep the height in step with it. */
 .gauge {
+  container-type: inline-size;
   display: inline-flex;
   flex-direction: column;
   align-items: center;
   max-width: 100%;
+}
+
+.chart--gauge {
+  height: calc(var(--gauge-size, 160px) / 2 + 24px);
+}
+
+@supports (width: 1cqw) {
+  .chart--gauge {
+    height: calc(50cqw + 24px);
+  }
 }
 
 .gauge__readout {
@@ -2298,8 +2356,11 @@ button.chart-legend__item[aria-pressed='false'] {
   pointer-events: none;
 }
 
+/* The number sits inside the dial: long text (123,456 units) shrinks with the dial width instead of overflowing it. */
 .gauge__value {
   font-size: var(--fs-2xl);
+  font-size: clamp(11px, calc(107cqw / var(--gauge-chars, 4)), var(--fs-2xl));
+  white-space: nowrap;
   font-weight: var(--fw-semibold);
   line-height: 1.1;
   letter-spacing: -0.01em;
@@ -2325,6 +2386,221 @@ button.chart-legend__item[aria-pressed='false'] {
 /* ==========================================================================
    15. Accessibility and print
    ========================================================================== */
+
+/* Touch screens: rows and small controls grow towards the 40 px control height (34 px for the small ones). */
+@media (pointer: coarse) {
+  .check,
+  .switch {
+    align-items: center;
+    min-height: var(--control-h);
+  }
+
+  .check input {
+    margin: 0;
+  }
+
+  .range {
+    --thumb: 24px;
+    height: var(--control-h);
+  }
+
+  .menu__item {
+    min-height: var(--control-h);
+  }
+
+  .chart-legend__item {
+    min-height: var(--control-h-sm);
+  }
+
+  .toast {
+    align-items: center;
+  }
+
+  .toast__action,
+  .toast__close {
+    min-width: var(--control-h-sm);
+    min-height: var(--control-h-sm);
+    margin-block: 0;
+  }
+
+  .toast__close {
+    width: var(--control-h-sm);
+    height: var(--control-h-sm);
+  }
+}
+
+/* Forced colours (Windows high contrast): the browser swaps every colour for the user's palette, drops box-shadows
+   and background gradients and paints backgrounds in the canvas colour. Text, borders and focus outlines follow the
+   palette on their own; what is left is state that normally rides on a background, a gradient or a shadow. Those
+   get a border, an outline or system colours here. Charts are canvases and keep their colours (labels carry the meaning). */
+@media (forced-colors: active) {
+  /* Checkbox and radio: the native control draws itself in the palette (tick, dash and dot included). */
+  .check input,
+  .check input:checked,
+  .check input:indeterminate {
+    appearance: auto;
+    -webkit-appearance: auto;
+    border: revert;
+    background: revert;
+  }
+
+  /* Switch: outlined track, solid thumb; on = filled with the selection colour. */
+  .switch__track {
+    forced-color-adjust: none;
+    border: 1px solid CanvasText;
+    background: Canvas;
+  }
+
+  .switch__track::after {
+    top: 1px;
+    left: 1px;
+    background: CanvasText;
+    box-shadow: none;
+  }
+
+  .switch__input:checked + .switch__track {
+    border-color: Highlight;
+    background: Highlight;
+  }
+
+  .switch__input:checked + .switch__track::after {
+    background: HighlightText;
+  }
+
+  .switch__input:disabled + .switch__track {
+    border-color: GrayText;
+  }
+
+  .switch__input:disabled + .switch__track::after {
+    background: GrayText;
+  }
+
+  /* Selected / pressed: selection colours (hover included, or its tint would replace them). */
+  .segmented {
+    outline: 1px solid CanvasText;
+    outline-offset: -1px;
+  }
+
+  .segmented__item[aria-pressed='true'],
+  .segmented__item[aria-checked='true'],
+  .segmented__item.is-active,
+  .segmented__item:has(input:checked),
+  .btn[aria-pressed='true'],
+  .btn[aria-pressed='true']:hover,
+  .btn.is-active,
+  .btn.is-active:hover,
+  .toolbar .btn[aria-pressed='true'],
+  .toolbar .btn.is-active {
+    forced-color-adjust: none;
+    border-color: Highlight;
+    background: Highlight;
+    color: HighlightText;
+    box-shadow: none;
+  }
+
+  .tab[aria-selected='true']::after {
+    forced-color-adjust: none;
+    background: Highlight;
+  }
+
+  .card--selected,
+  .table tbody tr.is-selected {
+    outline: 2px solid Highlight;
+    outline-offset: -2px;
+  }
+
+  .menu__item:hover,
+  .menu__item.is-focused {
+    forced-color-adjust: none;
+    background: Highlight;
+    color: HighlightText;
+  }
+
+  .menu__item:hover .menu__icon,
+  .menu__item.is-focused .menu__icon,
+  .menu__item:hover .menu__kbd,
+  .menu__item.is-focused .menu__kbd {
+    color: HighlightText;
+  }
+
+  /* Slider and progress: an outlined rail with a selection-coloured fill. */
+  .range input[type='range'] {
+    forced-color-adjust: none;
+  }
+
+  /* Vendor pseudo-elements get separate rules: one unknown selector would drop the whole list. */
+  .range input[type='range']::-webkit-slider-runnable-track {
+    box-sizing: border-box;
+    height: 6px;
+    border: 1px solid CanvasText;
+    background: linear-gradient(to right, Highlight var(--fill), Canvas var(--fill));
+  }
+
+  .range input[type='range']::-moz-range-track {
+    box-sizing: border-box;
+    height: 6px;
+    border: 1px solid CanvasText;
+    background: linear-gradient(to right, Highlight var(--fill), Canvas var(--fill));
+  }
+
+  .range input[type='range']::-webkit-slider-thumb {
+    margin-top: calc((6px - var(--thumb)) / 2);
+    border: 2px solid CanvasText;
+    background: ButtonFace;
+    box-shadow: none;
+  }
+
+  .range input[type='range']::-moz-range-thumb {
+    border: 2px solid CanvasText;
+    background: ButtonFace;
+    box-shadow: none;
+  }
+
+  .progress {
+    outline: 1px solid CanvasText;
+    outline-offset: -1px;
+  }
+
+  .progress__bar {
+    forced-color-adjust: none; /* stacked segments keep their state colours */
+  }
+
+  .progress:not(.progress--stacked) .progress__bar {
+    background: Highlight;
+  }
+
+  /* Status colours are information, not decoration: keep them (they always sit next to a label). */
+  .dot,
+  .swatch,
+  .chart-legend__key,
+  .chart-tooltip__key {
+    forced-color-adjust: none;
+  }
+
+  /* The best / worst glyph is a mask over currentColor: without this the mask paints in the canvas colour. */
+  .table td.is-best::before,
+  .table td.is-worst::before {
+    forced-color-adjust: none;
+    color: CanvasText;
+  }
+
+  /* Surfaces that are told apart from the page by a fill or a shadow need an edge. */
+  [data-tip]::after,
+  .range[data-value]::after,
+  .toast,
+  .callout,
+  .chip,
+  .badge {
+    border: 1px solid CanvasText;
+  }
+
+  .divider,
+  .toolbar__sep,
+  .menu__sep {
+    forced-color-adjust: none;
+    background: CanvasText;
+  }
+}
 
 @media (prefers-reduced-motion: reduce) {
   *,

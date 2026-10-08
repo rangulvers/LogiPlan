@@ -19,7 +19,7 @@ import { defaultStationParams } from '../../model/defaults.js';
 import { sampleDist } from '../../util/rng.js';
 import { Swrr } from './swrr.js';
 import {
-  EPS, MAX_CYCLES_PER_STEP, MAX_MACHINES, MIN_CYCLE, MIN_GAP, MIN_REPAIR, atLeast, cleanDist, removeFromQueue, whole,
+  EPS, MAX_CYCLES_PER_STEP, MAX_MACHINES, MIN_CYCLE, MIN_GAP, MIN_REPAIR, YARD_LIMIT, atLeast, cleanDist, removeFromQueue, whole,
 } from './common.js';
 
 /** Upper bound of the state changes (cycle ends, failures, repairs) one machine goes through within a single tick. */
@@ -96,6 +96,8 @@ export class StationRT {
     const { interArrival, startDelay } = this.params;
     this.rngArrival = this.rng.fork('arrival');
     this.yardQ = [];
+    /** Loads that were never created because the yard was full (YARD_LIMIT). */
+    this.dropped = 0;
     /** A source whose mean inter-arrival time is 0 never produces. */
     this.enabled = interArrival.mean > 0;
     this.nextArrival = this.enabled ? startDelay : Infinity;
@@ -346,9 +348,11 @@ function stepSource(st, t, lg) {
   const { batch } = st.params;
   while (st.nextArrival <= t + EPS) {
     const at = st.nextArrival;
-    for (let i = 0; i < batch; i++) st.yardQ.push(lg.createLoad(st, at, t, 'source'));
+    const made = Math.min(batch, YARD_LIMIT - st.yardQ.length);
+    for (let i = 0; i < made; i++) st.yardQ.push(lg.createLoad(st, at, t, 'source'));
+    st.dropped += batch - made;
     st.arrivals++;
-    st.produced += batch;
+    st.produced += made;
     st.nextArrival = at + nextGap(st, lg);
   }
   flushYard(st, t, lg);
@@ -487,7 +491,8 @@ function repairMachine(st, m, at, lg, t) {
 
 /**
  * demandFactor changed: the pending arrival keeps its place in the (rescaled) arrival process, so a slider
- * drag takes effect at once instead of after the next, possibly very distant, arrival.
+ * drag takes effect at once instead of after the next, possibly very distant, arrival. The first arrival of a source
+ * is not part of that process: it comes at startDelay, a fixed offset, whatever the demand.
  */
 export function rescaleArrivals(st, oldFactor, newFactor, now, lg) {
   if (!st.enabled) return;
@@ -496,6 +501,7 @@ export function rescaleArrivals(st, oldFactor, newFactor, now, lg) {
     st.nextArrival = st.arrivals === 0 ? Math.max(st.params.startDelay, now) : now + nextGap(st, lg);
     return;
   }
+  if (st.arrivals === 0) return;
   st.nextArrival = now + Math.max(0, st.nextArrival - now) * (oldFactor / newFactor);
 }
 

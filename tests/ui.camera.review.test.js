@@ -1,5 +1,6 @@
-// Independent review of js/ui/camera.js (pure math, runs in Node). Tests whose name starts with "DEFECT" fail
-// today and pin a real defect; the others guard behaviour that is correct and must stay so.
+// Independent review of js/ui/camera.js (pure math, runs in Node). The first block guards behaviour that was
+// found correct; the "CAM-n" tests pin defects the review found (fit() cut big plants off, non-finite input leaked
+// into the camera state) and stay as regression tests.
 //
 //   node --test tests/ui.camera.review.test.js
 
@@ -88,14 +89,17 @@ test('camera: fitRect honours maxZoom (a single station is not blown up)', () =>
   assert.deepEqual([cam.x, cam.y], [11, 11]);
 });
 
-// ---- defects -----------------------------------------------------------------------------------------------
+// ---- regressions of review findings ------------------------------------------------------------------------
 
-test('DEFECT CAM-1 (medium): fit() must show the whole plant, but MIN_ZOOM 4 px/m cuts off big plants and ignores the padding on phones', () => {
-  // docs/ARCHITECTURE.md 6.2: fit() "centres and scales a layout"; model GRID_LIMITS allow 160 x 160 cells of up to 10 m.
+test('CAM-1: fit() shows the whole plant inside the padding for every grid the model allows, on laptops and phones', () => {
+  // docs/ARCHITECTURE.md 6.2: fit() "centres and scales a layout"; GRID_LIMITS allow 160 x 160 cells of up to 10 m.
   const cases = [
     ['default plant (96 x 64 m) on a 390 x 700 phone, 32 px padding', layoutOf(48, 32, 2), 390, 700, 32],
     ['160 x 160 cells of 2 m (320 m) on a 1440 x 900 laptop', layoutOf(GRID_LIMITS.maxCols, GRID_LIMITS.maxRows, 2), 1440, 900, 32],
     ['100 x 60 cells of 5 m (500 x 300 m) on 1440 x 900', layoutOf(100, 60, 5), 1440, 900, 32],
+    ['largest allowed grid (1600 x 1600 m) on 1440 x 900', layoutOf(GRID_LIMITS.maxCols, GRID_LIMITS.maxRows, GRID_LIMITS.maxCell), 1440, 900, 32],
+    ['largest allowed grid on a 390 x 700 phone', layoutOf(GRID_LIMITS.maxCols, GRID_LIMITS.maxRows, GRID_LIMITS.maxCell), 390, 700, 32],
+    ['smallest allowed grid (4 x 4 m) on 1440 x 900', layoutOf(GRID_LIMITS.minCols, GRID_LIMITS.minRows, GRID_LIMITS.minCell), 1440, 900, 32],
   ];
   const failures = [];
   for (const [label, layout, w, h, pad] of cases) {
@@ -105,23 +109,35 @@ test('DEFECT CAM-1 (medium): fit() must show the whole plant, but MIN_ZOOM 4 px/
     if (x0 < pad - eps || y0 < pad - eps || x1 > w - pad + eps || y1 > h - pad + eps) {
       failures.push(`${label}: zoom ${cam.zoom.toFixed(2)} puts the plant at [${[x0, y0, x1, y1].map(Math.round)}] in a ${w} x ${h} viewport`);
     }
+    assert.ok(cam.zoom >= MIN_ZOOM && cam.zoom <= MAX_ZOOM, label);
   }
   assert.deepEqual(failures, [], 'fit() leaves the plant outside the padded viewport');
 });
 
-test('DEFECT CAM-2 (low): a non-finite or absurd grid must not poison the camera state', () => {
-  const cam = new Camera();
-  cam.fit({ grid: { cols: Infinity, rows: 10, cellSize: 2 } }, 800, 600);
-  assert.ok(Number.isFinite(cam.x) && Number.isFinite(cam.y), `fit() left the camera at (${cam.x}, ${cam.y})`);
+test('CAM-2: a non-finite or absurd grid must not poison the camera state', () => {
+  for (const grid of [{ cols: Infinity, rows: 10, cellSize: 2 }, { cols: 10, rows: NaN, cellSize: 2 }, { cols: 1e300, rows: 1e300, cellSize: 1e300 }]) {
+    const cam = new Camera();
+    cam.fit({ grid }, 800, 600);
+    assert.ok(Number.isFinite(cam.x) && Number.isFinite(cam.y) && Number.isFinite(cam.zoom), `fit() left the camera at (${cam.x}, ${cam.y}, ${cam.zoom}) for ${JSON.stringify(grid)}`);
+  }
+  const rect = new Camera().fitRect({ x: Infinity, y: NaN, w: Infinity, h: -4 }, 800, 600);
+  assert.ok(Number.isFinite(rect.x) && Number.isFinite(rect.y) && Number.isFinite(rect.zoom));
 });
 
-test('DEFECT CAM-3 (low): fitRect with a maxZoom below MIN_ZOOM must keep the zoom invariant [MIN_ZOOM, MAX_ZOOM]', () => {
-  const cam = new Camera().fitRect({ x: 0, y: 0, w: 10, h: 10 }, 800, 600, 32, 2);
-  assert.ok(cam.zoom >= MIN_ZOOM, `zoom ${cam.zoom} < MIN_ZOOM ${MIN_ZOOM}`);
+test('CAM-3: fitRect with a maxZoom below MIN_ZOOM (or junk) keeps the zoom invariant [MIN_ZOOM, MAX_ZOOM]', () => {
+  for (const maxZoom of [0.001, 0, -3, NaN, 1e9, undefined]) {
+    const cam = new Camera().fitRect({ x: 0, y: 0, w: 10, h: 10 }, 800, 600, 32, maxZoom);
+    assert.ok(cam.zoom >= MIN_ZOOM && cam.zoom <= MAX_ZOOM, `maxZoom ${maxZoom} gave zoom ${cam.zoom}`);
+  }
 });
 
-test('DEFECT CAM-4 (low): screenToCell is documented to ignore non-finite input but returns NaN cells', () => {
-  const cam = new Camera({ width: 800, height: 600 });
-  const cell = cam.screenToCell(NaN, 5, 2);
-  assert.ok(cell.every(Number.isFinite), `got ${JSON.stringify(cell)}`);
+test('CAM-4: screenToCell ignores non-finite input (the viewport centre is used) instead of returning NaN cells', () => {
+  const cam = new Camera({ x: 20, y: 10, zoom: 10, width: 800, height: 600 });
+  const centre = cam.screenToCell(400, 300, 2);
+  assert.deepEqual(centre, [10, 5]);
+  for (const [px, py] of [[NaN, 300], [400, undefined], [Infinity, -Infinity], ['x', null]]) {
+    const cell = cam.screenToCell(px, py, 2);
+    assert.ok(cell.every(Number.isFinite), `got ${JSON.stringify(cell)} for (${px}, ${py})`);
+  }
+  assert.deepEqual(cam.screenToCell(NaN, 100, 2), [centre[0], cam.screenToCell(400, 100, 2)[1]], 'only the broken axis falls back');
 });

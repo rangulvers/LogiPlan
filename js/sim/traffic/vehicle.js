@@ -48,6 +48,7 @@ export class TV {
     this._lane = -1; // edge whose lane list holds this vehicle (-1: in a fresh list or off road)
     this._ls = 0; // position within that lane (= s while driving, cellSize while parked at the head of lastEdge)
     this._turn = -1; // progress 0..1 of an in-place manoeuvre (U-turn or easing into the lane), -1 when none
+    this._turnGo = false; // the swept area of the manoeuvre is free this tick (set by the planning phase)
     this._x0 = 0; // standstill pose the easing manoeuvre starts from
     this._y0 = 0;
     this._h0 = 0;
@@ -58,7 +59,9 @@ export class TV {
     this._chainQ = [];
     this._elig = false; // can fully clear the requested cell (room beyond the exit)
     this._gate = null; // vehicle that currently prevents the grant
-    this._ldQ = Infinity; // route coordinate of the nearest obstacle rear ahead
+    this._swingNode = -1; // held cell the vehicle must not enter yet because another vehicle is in the way of its turn
+    this._ldQ = Infinity; // route coordinate of the nearest obstacle rear ahead, less the corner allowance (the gap to keep)
+    this._ldRaw = Infinity; // the same without the corner allowance
     this._ldTv = null;
     this._ldV = 0;
     this._ldDec = 1;

@@ -60,12 +60,25 @@ function buildLayout() {
   add(5, 9, 6, 2, 'rack'); add(20, 9, 9, 2, 'rack'); add(20, 12, 9, 2, 'rack'); add(26, 18, 2, 3, 'rack');
   add(9, 12, 1, 1, 'column'); add(19, 11, 1, 1, 'column'); add(30, 9, 1, 1, 'column'); add(30, 12, 1, 1, 'column');
   for (let x = 25; x <= 30; x++) layout.roads[x + ',6'].limit = 0.5; // speed zone in front of the sink
+  // label size = text height in grid cells (js/model/layout.js): 0.6 cells of 2 m is a 1.2 m tall caption
   layout.labels.push(
-    { id: 'l1', x: 7.5, y: 2.2, text: 'Inbound' },
-    { id: 'l2', x: 17.5, y: 1.9, text: 'Production hall', size: 1.4 },
-    { id: 'l3', x: 28.5, y: 2.6, text: 'Outbound' },
+    { id: 'l1', x: 7.5, y: 2.2, text: 'Inbound', size: 0.6 },
+    { id: 'l2', x: 17.5, y: 1.9, text: 'Production hall', size: 0.9 },
+    { id: 'l3', x: 28.5, y: 2.6, text: 'Outbound', size: 0.6 },
   );
   return layout;
+}
+
+/** A small plant whose first two stations touch (a flow badge instead of an arrow) next to a normal arrow. */
+function buildTouchingLayout() {
+  const l = layoutFromAscii(['AABB..CC..', 'AABB..CC..', '++++++++++', '..........', '..........', '..........', '..........', '..........'], {
+    name: 'Touching stations',
+    stations: { A: { type: 'source', name: 'Goods in' }, B: { type: 'process', name: 'Press' }, C: { type: 'sink', name: 'Shipping' } },
+    flows: [['A', 'B'], ['B', 'C']],
+    fleets: [{ count: 1 }],
+  });
+  l.grid = { cols: 16, rows: 8, cellSize: CS };
+  return l;
 }
 
 const layout = buildLayout();
@@ -169,6 +182,8 @@ function readPixel(x, y) {
   return Array.from(scratchCtx.getImageData(0, 0, 1, 1).data.slice(0, 3));
 }
 
+const touching = buildTouchingLayout();
+
 window.harness = {
   ready: false,
   readPixel,
@@ -205,6 +220,16 @@ window.harness = {
     camera.fit(layout, canvas.clientWidth, canvas.clientHeight, padding);
     drawNow();
   },
+  /** Swap in the small touching-stations plant (edit mode) or back to the sample plant. */
+  showTouching(on) {
+    const target = on ? touching : layout;
+    renderer.layout = target;
+    renderer.sim = null;
+    camera.fit(target, canvas.clientWidth, canvas.clientHeight, 24);
+    drawNow();
+    return target;
+  },
+  touchingLayout: touching,
   setDeadlock(on) {
     sim.traffic.activeDeadlocks = on ? [{ nodes: [6 * COLS + 17, 6 * COLS + 18] }] : [];
     drawNow();

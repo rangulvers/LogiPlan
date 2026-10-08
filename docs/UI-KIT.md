@@ -12,6 +12,10 @@ set and dependency-free charts. Everything is plain CSS and ES modules, no build
 | `tests/e2e/uikit-demo.html` | Kitchen sink with every component and chart. **Copy markup from here.** |
 | `tests/e2e/uikit-visual.mjs` | Screenshots (light, dark, 390 px) and automated checks: `node tests/e2e/uikit-visual.mjs` |
 
+`docs/ARCHITECTURE.md` section 6.6 predates the code and names the chart factories `lineChart`, `barChart`, `stackedBar`,
+`sparkline` and `gauge/donut`. The implemented names are the `create*` functions listed above (`createLineChart` ...,
+`createGauge`); there is no donut, the semi-circle dial is the only gauge. `npm run check` fails on any other spelling.
+
 The kit contains **styling and drawing only**. Behaviour (opening a menu, trapping focus in a dialog, arrow keys in
 tabs, stepping a stepper) belongs to the panel or dialog code; the markup below carries the right ARIA attributes.
 
@@ -58,8 +62,9 @@ Use tokens, never hex values, in component CSS: `color: var(--text-dim)`.
 | Group | Tokens | Notes |
 |---|---|---|
 | Surfaces | `--bg` `--surface` `--surface-2` `--surface-3` | page, panel/card/input, subtle fill (table header, input addon), hover/pressed fill |
-| Lines | `--border` `--border-strong` `--border-hover` | hairline between regions, control outline, control outline on hover |
-| Overlays | `--hover` `--pressed` (translucent), `--track` (switch/slider/progress track), `--scrim` | `--hover`/`--pressed` work on any background |
+| Lines | `--border` `--border-strong` `--border-hover` | hairline between regions, outline of buttons and keycaps, the same on hover |
+| Controls | `--control-border` `--control-border-hover` `--control-track` | outline of inputs, input groups, steppers, checkboxes and radios; off state of a switch and the unfilled slider rail. **At least 3:1 on `--surface` and `--bg`** (WCAG 1.4.11), unlike the decorative `--border-strong` |
+| Overlays | `--hover` `--pressed` (translucent), `--track` (progress track), `--scrim` | `--hover`/`--pressed` work on any background |
 | Text | `--text` `--text-dim` `--text-faint` | primary, secondary, hints/placeholders/axis labels. All three are AA (4.5:1) on `--surface`, `--bg`, `--surface-2`, `--surface-3` |
 | Accent | `--accent` `--accent-solid` `--accent-hover` `--accent-active` `--accent-soft` `--accent-line` `--accent-glow` `--accent-text` `--on-accent` | `--accent` = brand blue for selection, focus and graphics. **Text on an accent fill must use `--accent-solid` + `--on-accent`** (AA). Accent-coloured text uses `--accent-text` |
 | Semantic | `--good` `--warn` `--bad` `--info`, each with `-soft` (tinted background) and `-text` (AA text on the soft and plain surface); `--bad-solid` + `--bad-hover` for destructive fills | icons and fills use the plain token, words use `-text` |
@@ -71,7 +76,7 @@ Use tokens, never hex values, in component CSS: `color: var(--text-dim)`.
 | Spacing | `--sp-1` 4 px, `--sp-2` 8, `--sp-3` 12, `--sp-4` 16, `--sp-5` 20, `--sp-6` 24, `--sp-7` 32, `--sp-8` 48 | 4 px base |
 | Radii | `--radius-xs` 3, `-sm` 4, `-md` 6 (controls), `-lg` 8 (cards), `-xl` 12 (dialogs), `-pill` | |
 | Type | `--font-sans` `--font-mono`; `--fs-xs` 11, `-sm` 12, `-md` 13 (base), `-lg` 15, `-xl` 18, `-2xl` 22, `-3xl` 28 (KPI); `--fw-regular` `--fw-medium` `--fw-semibold`; `--lh` 1.45, `--lh-tight` 1.25 | `.tnum` gives tabular figures for columns of numbers |
-| Controls | `--control-h` 32 px, `--control-h-sm` 26 px (40/34 on coarse pointers), `--focus-ring`, `--focus-offset`, `--focus-glow` | |
+| Sizes, focus | `--control-h` 32 px, `--control-h-sm` 26 px (40/34 on coarse pointers), `--focus-color`, `--focus-ring`, `--focus-offset`, `--focus-glow` | `--focus-ring` is `2px solid var(--focus-color)`; surfaces where the accent is hard to see (`.toast`) redeclare **both** `--focus-color` and `--focus-ring` (a custom property is resolved where it is declared) |
 | Layers | `--z-raised` 1, `--z-sticky` 10, `--z-float` 20 (controls over the canvas), `--z-drawer` 40, `--z-dropdown` 60, `--z-modal` 80, `--z-toast` 90, `--z-tooltip` 100 | |
 | Motion | `--t-fast` 100 ms, `--t-base` 160 ms, `--t-slow` 260 ms, `--ease` | all `0ms` under `prefers-reduced-motion` |
 
@@ -224,8 +229,13 @@ Every example is real markup from `tests/e2e/uikit-demo.html`; `<icon:name>` sta
 
 `checkbox.indeterminate = true` shows the dash state. Native number spinners are hidden (use the stepper).
 
+Outlines use `--control-border` (3:1). Keyboard focus is a real 2 px outline in the focus colour drawn over the border
+(plus a soft glow), on `.input`, on `.input-group` and `.stepper` (`:focus-within`) and around the whole `.range`; an
+invalid field keeps its red border inside the focus ring. Segmented controls take their height from the same grid as
+buttons and inputs (`--control-h`, `--control-h-sm`) and hug their items; `.segmented--block` stretches.
+
 **Range slider.** The fill and the bubble are driven by `--p` (0..1) and `data-value` on the `.range` wrapper; update them
-whenever the input changes (the same snippet works for any panel):
+whenever the input changes (the same snippet works for any panel). The thumb size is `--thumb` (16 px, 24 px on touch screens):
 
 ```html
 <div class="field">
@@ -408,6 +418,9 @@ elements that are not inside a scroll container, or use a JS popover there. It d
 </div>
 ```
 
+Check items (`role="menuitemcheckbox"` or `"menuitemradio"`): keep a `.menu__icon` (the tick) in the item; `aria-checked="false"`
+hides it and keeps its space, `"true"` shows it in the accent colour.
+
 Focus management, Escape, click-outside and `aria-live` for toasts are the caller's job.
 
 ### 3.12 Empty states and loading
@@ -435,17 +448,31 @@ Used by `charts.js`; you only touch these directly to lay charts out.
 | `.chart-block` | a chart plus its legend (what the chart factories return as `el`) |
 | `.chart`, `.chart__canvas`, `.chart__empty`, `.chart--clickable` | canvas wrapper, empty-state text, pointer cursor |
 | `.chart-tooltip` + `__title`, `__row`, `__key`, `__name`, `__value`, `__note` | hover tooltip |
-| `.chart-legend`, `__item`, `__key`, `__key--line`, `__note` | legend (buttons with `aria-pressed` when toggling series) |
-| `.sparkline`, `.gauge`, `.gauge__readout`, `.gauge__value`, `.gauge__caption`, `.gauge__status` | sparkline and gauge parts |
+| `.chart-legend`, `__item`, `__key`, `__key--line`, `__note` | legend (buttons with `aria-pressed` when toggling series; a hidden series is struck through with a faded key, its text stays AA) |
+| `.sparkline`, `.gauge`, `.chart--gauge`, `.gauge__readout`, `.gauge__value`, `.gauge__caption`, `.gauge__status` | sparkline and gauge parts; the gauge canvas is half as high as it is wide plus 24 px, computed in CSS from `--gauge-size` (set by the chart) and container-query units, so a gauge wider than its container shrinks |
 
 `.chart-legend` also works standalone for any colour key (`<ul class="chart-legend"><li class="chart-legend__item"><span class="chart-legend__key tone-driving"></span>Driving</li>...`).
 
 ### 3.14 Accessibility and print
 
-* Every control shows a 2 px accent focus ring on `:focus-visible` (inputs: border + glow). Never remove it.
-* Text colours meet WCAG AA in both themes (checked by `uikit-visual.mjs`: every visible text in the demo plus the token pairs).
-* `prefers-reduced-motion` sets all `--t-*` to 0 and stops animations; coarse pointers get 40 px controls.
-* `@media print`: light palette whatever the screen theme, hides `.no-print`, `.toolbar`, `.tabs`, `.btn`, toasts, modals and menus, drops shadows, keeps bars and tints (`print-color-adjust: exact`), lets tables grow.
+* **Focus.** Every control shows a 2 px focus-colour outline on `:focus-visible` (inputs, input groups, steppers and sliders
+  included; the glow is only a bonus). Never remove it. Buttons inside a `.toast` use `--inverse-accent`.
+* **Contrast.** Text colours meet WCAG AA (4.5:1) in both themes; control outlines, the off state of switches and the slider
+  rail meet 3:1 (`--control-*`). `uikit-visual.mjs` checks every visible text in the demo plus the token pairs.
+* **Forced colours** (Windows high contrast, `@media (forced-colors: active)`). The kit adds what the palette swap would drop:
+  checkboxes and radios fall back to the native control; a switch is an outlined track with a solid thumb and a
+  selection-coloured fill when on; selected and pressed items (segmented control, toolbar and toggle buttons) use
+  `Highlight`/`HighlightText`; the selected tab underline, slider rail and progress fill use `Highlight` with an outline;
+  chips, badges, callouts, toasts and tooltips get a border; dots, swatches and legend keys keep their status colours; the
+  best / worst glyphs and dividers draw in the text colour. Charts are canvases and keep their colours, so their meaning is
+  carried by labels, tooltips and the legend. Verified with Chromium's emulation only (white and black palettes), not with
+  real Windows themes.
+* **Touch.** `@media (pointer: coarse)` raises `--control-h` to 40 px and `--control-h-sm` to 34 px, gives check, switch,
+  menu and legend rows the same minimum height, and enlarges the slider thumb to 24 px. On every pointer the small
+  interactive parts (toast action and close button, legend entries) are at least 24 px, the WCAG 2.5.8 minimum.
+* **Motion.** `prefers-reduced-motion` sets all `--t-*` to 0 and stops animations.
+* **Print.** `@media print`: light palette whatever the screen theme, hides `.no-print`, `.toolbar`, `.tabs`, `.btn`, toasts,
+  modals and menus, drops shadows, keeps bars and tints (`print-color-adjust: exact`), lets tables grow.
 
 ---
 
@@ -462,6 +489,10 @@ html += iconSvg('check', { size: 14 });                     // markup string (re
 * `icon(name, { size = 18, class })`: detached `<svg class="icon icon--name" aria-hidden="true">`; colour follows the text colour of the parent.
   Use 14-16 px in chips and menus, 18 px in buttons, 20-24 px in toolbars and empty states.
 * Unknown names render a dashed placeholder square (`icon--missing`) instead of throwing.
+* **Simplified variants below 18 px.** At 16 px one icon unit is two thirds of a pixel, so strokes closer than about two units
+  merge. `storage` (one shelf instead of three), `speedzone` (no ticks), `oneway` (wider road, bolder arrow), `depot` (the P
+  without the bolt) and `forklift` (solid wheels, no cab detail) switch to simpler art for any `size` under 18; both `icon()`
+  and `iconSvg()` do this, the class names stay the same.
 * Icons are decorative: the button needs `aria-label` or visible text.
 
 | Group | Names |
@@ -482,8 +513,9 @@ Station type to icon: `STATION_TYPES` keys are the icon names (`icon(station.typ
 ## 5. Charts (`js/ui/charts.js`)
 
 Canvas charts with DOM wrappers: hi-dpi, responsive (`ResizeObserver`), theme-aware (CSS tokens are read at draw
-time; the chart redraws when the theme changes), accessible (focusable canvas, arrow keys, `aria-live` readout).
-Each factory returns `{ el, update(patch), destroy() }`.
+time; the chart redraws when the theme changes), accessible (a focusable canvas announced as an "interactive chart"
+with a hidden hint about the keys, arrow-key navigation, an `aria-live` readout). Each factory returns
+`{ el, update(patch), destroy() }`.
 
 ```js
 const chart = createLineChart({ x: times, series: [{ name: 'Throughput', y: values }], xAxis: 'time', yLabel: 'units/h' });
@@ -496,6 +528,9 @@ chart.destroy();                                                     // removes 
 * Charts fill the width of their parent; height is an option (`height`, px) or automatic (bars, stacked bars).
 * Call `destroy()` when a panel is torn down (it also detaches from the shared theme watcher).
 * Gaps: `null` / `NaN` / `undefined` in data are gaps, never errors. Empty data shows the `empty` text.
+* Gridlines, axes, the crosshair and reference lines are hairlines on whole device pixels at any zoom (125 % and 150 % included).
+* Labels never collide or leave the canvas: axis ticks thin out when their labels would touch, value labels that would run into a
+  bar, another label or the edge are left out (the tooltip always carries the value).
 * Colours: `color` accepts a token (`'--series-3'`, `'--st-process'`), a semantic name (`'accent' 'good' 'warn' 'bad' 'info' 'muted'`) or any CSS colour.
   Default: categorical slot by series index (fixed order, never recoloured when another series is hidden).
   Light-mode slots 3, 4 and 5 (aqua, yellow, magenta) are below 3:1 on white, so charts always ship a legend and tooltip.
@@ -511,12 +546,12 @@ Multi-series lines on one shared x axis, min-max bands, reference lines, legend 
 | `xAxis` | `'linear' \| 'time'` | `'time'` reads x as seconds and ticks on minutes / hours (`2 h`, `30 min`) |
 | `xLabel`, `yLabel` | string | axis titles (x below the plot, y above it: put the unit here) |
 | `xUnit`, `yUnit` | string | unit appended to tooltip values |
-| `xFormat(v)`, `yFormat(v)` | function | tick label and tooltip formatters |
+| `xFormat(v)`, `yFormat(v)` | function | tick label and tooltip formatters (long x labels reduce the number of x ticks) |
 | `yMin`, `yMax` | number | fixed y bounds (default: nice ticks around the data) |
 | `includeZero` | boolean | keep 0 on the y axis (default true) |
-| `refLines` | `[{ axis: 'x' \| 'y', value, label? }]` | dashed reference lines (target, current setting, warm-up end) |
+| `refLines` | `[{ axis: 'x' \| 'y', value, label? }]` | dashed reference lines (target, current setting, warm-up end). A `y` line widens the y axis so the target is always visible (unless `yMin` / `yMax` are fixed); a line outside the axis is not drawn; the label of a line at the very top of the chart moves below it |
 | `markers` | `boolean \| 'auto'` | dots on every point (`'auto'`: up to 24 points) |
-| `legend` | `boolean \| 'auto'` | `'auto'`: shown from two series on; entries toggle their series |
+| `legend` | `boolean \| 'auto'` | `'auto'`: shown from two series on; entries toggle their series (the entry keeps keyboard focus, so Tab / Enter / Space can toggle several in a row) |
 | `height` | number | px, default 220 |
 | `empty` | string | text when there is no data |
 | `onPointClick(hit)` | function | `hit = { seriesIndex, index, x, y, series }`: click, or Enter/Space on the keyboard-focused point |
@@ -539,16 +574,18 @@ Keyboard: focus the chart, Left/Right (Home/End) move the crosshair, Enter selec
 ### 5.2 `createBarChart(options)`
 
 Horizontal (default) or vertical bars, single or grouped; bars are at most 18 px thick, 4 px rounded at the data end.
+Negative values are supported (deltas against a baseline): bars grow from the zero line, and room is reserved for their labels
+(left of the bar ends on a horizontal chart, below them on a vertical one) so they never meet the category labels.
 
 | Option | Type | Meaning |
 |---|---|---|
 | `categories` | `string[]` | one label per group (truncated with an ellipsis when long; full text in the tooltip) |
 | `series` | `[{ name?, values, color?, colors? }]` | grouped when several; `colors[i]` overrides the colour of bar `i` (per-bar colours) |
 | `orientation` | `'horizontal' \| 'vertical'` | |
-| `unit`, `digits`, `valueFormat(v)` | | value text on bars and in tooltips |
+| `unit`, `digits`, `valueFormat(v)` | | value text on bars and in tooltips (`valueFormat` also formats the axis; long labels reduce the tick count) |
 | `valueLabel` | string | title of the value axis (put the unit here for grouped columns) |
 | `min`, `max` | number | fixed value-axis bounds (default: 0 to a nice maximum) |
-| `labels` | `boolean \| 'auto'` | value labels at the bar ends; `'auto'` = everywhere except grouped columns (where labels would collide). A label that would touch another bar is left out |
+| `labels` | `boolean \| 'auto'` | value labels at the bar ends; `'auto'` = everywhere except grouped columns (where labels would collide). A label that would touch another bar or label is left out |
 | `highlight` | `'best' \| 'worst' \| 'both' \| null` | marks the best / worst bar of each series: green / red fill plus a "best" / "worst" tag |
 | `better` | `'higher' \| 'lower'` | direction used by `highlight` |
 | `height` | number | px (default: fits the rows when horizontal, 220 when vertical) |
@@ -566,7 +603,8 @@ The whole category row is the hover target, the hovered bar lightens, keyboard: 
 ### 5.3 `createStackedBar(options)`
 
 Horizontal stacks normalised to 100 % of each row: vehicle-state shares per fleet, station-state shares per station.
-Segments get a 2 px surface gap and are labelled in place only when the text fits.
+Segments are separated by a 2 px gap in the surface colour and labelled in place only when the text fits (the ink is chosen for
+at least 4.5:1 on the segment, hovered or not). A thin segment keeps one pixel and never overlaps its neighbours.
 
 | Option | Type | Meaning |
 |---|---|---|
@@ -587,7 +625,7 @@ createStackedBar({ rows: Object.values(report.fleets).map((f) => ({
 
 ### 5.4 `createSparkline(options)`
 
-`{ values, color?, area = true, width?, height = 28, min?, max?, unit? }`. No axes; an end dot marks the latest value;
+`{ values, color?, area = true, width?, height = 28, min?, max?, unit? }`. No axes; the area under the line fades out towards the baseline; an end dot marks the latest value;
 the canvas carries an accessible description (latest, lowest, highest). Fills its container unless `width` is set.
 
 ```js
@@ -599,7 +637,10 @@ kpiCard.querySelector('.kpi__spark').append(createSparkline({ values: report.ser
 Semi-circle dial with threshold bands: `{ value, min = 0, max = 1, thresholds?, label?, format?, unit?, size = 160 }`.
 `thresholds` is `[{ to, color, label? }]` in value units, ascending; the progress arc takes the colour of the band the value
 is in, the band `label` appears as a status line with a dot (so the state is never just a colour). `role="meter"` is set.
-Default value text is a percent when `max <= 1`.
+Default value text is a percent when `max <= 1`. The scale ends under the dial use the same format, or a compact number without the
+unit (`200k`) when `format` is not given; each end gets one half of the dial width and is shortened with an ellipsis if needed,
+so they never meet or leave the canvas. `size` is the width in px; the dial shrinks when its container is narrower, and a long
+value text (`123,456 units`) shrinks with the dial instead of overflowing it.
 
 ```js
 createGauge({ value: report.fleets.f1.utilization, label: 'Fleet utilization', thresholds: [
@@ -610,9 +651,9 @@ createGauge({ value: report.fleets.f1.utilization, label: 'Fleet utilization', t
 
 ### 5.6 Pure helpers (exported, unit-tested)
 
-Importable in Node: `niceTicks(min, max, maxTicks, { integer })`, `timeTicks`, `formatTick`, `formatTimeTick`, `formatValue`,
+Importable in Node: `niceTicks(min, max, maxTicks, { integer })`, `timeTicks`, `fitTicks`, `formatTick`, `formatTimeTick`, `formatValue`,
 `autoDigits`, `stepDecimals`, `linearScale`, `bandScale`, `groupLayout`, `stackSegments`, `segmentRects`, `nearestIndex`,
-`nearestPoint`, `hitRect`, `clampTooltip`, `truncateText`, `crispLine`, `seriesExtent`, `allIntegers`, `finiteRuns`, `bestWorst`,
+`nearestPoint`, `hitRect`, `clampTooltip`, `truncateText`, `crispLine`, `hairlineWidth`, `seriesExtent`, `allIntegers`, `finiteRuns`, `bestWorst`,
 `gaugeFraction`, `gaugeBands`, `gaugeBandAt`, `segmentsFromShares`, `STATE_KEYS`, `STATE_LABELS`. Signatures and edge cases are
 documented in the source and covered by `tests/ui.charts.test.js`.
 
@@ -621,19 +662,38 @@ documented in the source and covered by `tests/ui.charts.test.js`.
 ## 6. Checking changes
 
 ```
-node --test tests/ui.charts.test.js     # pure chart maths + icon registry (fast, Node only)
-node tests/e2e/uikit-visual.mjs         # Playwright: screenshots + automated checks
+node --test tests/ui.charts.test.js tests/ui.charts.review.test.js   # pure chart maths, icon registry, token contrast and parity, docs versus code (Node only, fast)
+node tests/e2e/uikit-visual.mjs                                      # Playwright: screenshots + automated checks (about 20 s)
+node tests/e2e/uikit-review.mjs [step]                               # Playwright: independent review, about 100 s; steps: forced keyboard icons cases lifecycle ratios touch print
 ```
 
 The visual script writes `e2e-output/uikit-{light,dark,mobile-light,mobile-dark}-<section>.png` plus hover, focus and slider
 shots. Open them: it asserts what can be measured (no console errors, every icon and chart renders, tooltips, clicks,
-keyboard access, WCAG AA contrast of every visible text in both themes and of the token pairs, identical dark theme via
-`data-theme` and via the OS scheme, print is light, reduced motion, no horizontal overflow at 390 px) but not taste.
+keyboard access, WCAG AA contrast of every visible text in both themes and of the token pairs including the 3:1 control tokens,
+identical dark theme via `data-theme` and via the OS scheme, print is light, reduced motion, focus outlines, no horizontal
+overflow at 390 px) but not taste.
+
+The review script goes after what the visual script does not measure and exits non-zero while any of it is broken: forced-colours
+rendering of every state, keyboard focus after toggling and a visible focus change on every focusable control (light, dark, forced
+colours), icon legibility at 16 and 24 px (contact sheet `e2e-output/uikit-review-icons-16-and-24px.png`), 43 chart edge cases
+(empty, NaN, huge, negative, long labels) at several widths with every canvas text box checked against the canvas edge and
+against other texts, chart lifecycle (`destroy()` leaves no observers, listeners or frames), resize and hidden-then-shown
+charts, tooltips staying inside their chart, crisp hairlines at 1, 1.25, 1.5, 2 and 3 device pixels per css pixel, touch target
+sizes, control heights, a native `<dialog class="modal">`, and print.
 
 ### Known limits
 
+* Chromium only: Firefox and Safari were not run. Not verified there: the `::-moz-range-*` slider rules, `:has()` for the radio-based
+  segmented control, the select chevron and best / worst glyph (CSS mask) rendering, container-query units for the gauge height
+  (a CSS fallback keeps the fixed size where they are missing).
+* Forced colours were checked with Chromium's emulation (white and black palettes), not with real Windows high-contrast themes.
+  No screen reader was used; touch was emulated.
 * No table twin for charts: values are available through hover/keyboard tooltips and the `aria-live` readout, not as a `<table>`.
 * The range slider needs the `--p` / `data-value` sync snippet; there is no JS helper in the kit.
-* `[data-tip]` tooltips are CSS pseudo-elements and are clipped by scrolling ancestors.
+* `[data-tip]` tooltips are CSS pseudo-elements: they are clipped by scrolling ancestors, they cannot be dismissed with Escape or
+  hovered (WCAG 1.4.13), and touch devices never show them. They never replace `aria-label`; use a JS popover where those matter.
 * Canvas text uses the proportional figures of the system font (CSS `tabular-nums` does not reach canvas).
+* Line chart x values must be ascending: unsorted x draws a zig-zag (hover and click still find the nearest point).
+* Charts follow theme changes made through the `data-theme` or `class` attribute of `<html>`, the OS scheme and print. If the theme
+  is switched another way (rewriting inline CSS variables), call `update({})` on the charts.
 * Tab / menu / dialog keyboard behaviour (roving focus, Escape, focus trap) is not part of the kit.

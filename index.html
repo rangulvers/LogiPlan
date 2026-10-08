@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>LogiPlan – plan factory layouts and in-plant logistics</title>
+  <meta name="description" content="Build a factory on a Lego-style baseplate, define material flows and vehicle fleets, then simulate traffic, queues and deliveries to find the bottleneck before you build.">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#eef1f6" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#12161d" media="(prefers-color-scheme: dark)">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="LogiPlan">
+  <meta property="og:title" content="LogiPlan – plan factory layouts and in-plant logistics">
+  <meta property="og:description" content="Draw roads and stations, add vehicles, run the simulation and compare variants of your plant. Free, in your browser, nothing to install.">
+  <meta name="twitter:card" content="summary">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="css/tokens.css">
+  <link rel="stylesheet" href="css/components.css">
+  <link rel="stylesheet" href="css/layout.css">
+</head>
+<body>
+  <!--
+    Skeleton of the app. js/ui/app.js fills the regions marked data-region (top bar, tools, floating controls, tabs, status line);
+    everything here is already laid out when the script arrives, so the page does not jump while it starts.
+  -->
+  <div id="app" class="app" data-state="loading">
+    <a class="skip-link btn btn--primary" href="#plant" data-region="skip">Skip to the plant layout</a>
+
+    <header class="topbar" data-region="topbar">
+      <a class="brand" href="./" aria-label="LogiPlan, start page">
+        <img class="brand__logo" src="assets/logo.svg" alt="" width="28" height="28">
+        <span class="brand__name">LogiPlan</span>
+      </a>
+    </header>
+
+    <nav class="palette" data-region="palette" aria-label="Tools"></nav>
+
+    <main class="stage" data-region="stage">
+      <canvas id="plant" class="stage__canvas" data-region="canvas" tabindex="0" role="application"
+        aria-label="Plant layout. Pick a tool on the left and draw on the plan. Press the question mark key for all keyboard shortcuts."></canvas>
+      <div class="stage__loading" data-region="loading" role="status">
+        <span>Loading LogiPlan…</span>
+        <span class="stage__slow">This is taking longer than expected. LogiPlan needs a current browser (Chrome, Edge, Firefox or Safari). Try reloading the page.</span>
+      </div>
+      <div class="stage__empty" data-region="empty" hidden></div>
+      <div class="stage__top" data-region="floating"></div>
+      <div class="stage__options" data-region="options" hidden></div>
+      <div class="stage__zoom" data-region="zoom"></div>
+    </main>
+
+    <aside class="side" id="side" data-region="side" aria-label="Plant details">
+      <div class="side__resize" data-region="resize"></div>
+      <div class="side__bar" data-region="tabbar"></div>
+      <div class="side__body" data-region="panels"></div>
+    </aside>
+
+    <footer class="statusbar" data-region="statusbar">
+      <span class="statusbar__text truncate" data-region="status-text"></span>
+      <span class="statusbar__meta truncate" data-region="status-meta"></span>
+    </footer>
+
+    <div class="scrim" data-region="scrim" hidden></div>
+    <div class="toast-region" data-region="toasts" role="region" aria-label="Notifications" aria-live="polite"></div>
+  </div>
+
+  <noscript>
+    <div class="noscript">
+      <h1>LogiPlan needs JavaScript</h1>
+      <p>LogiPlan is a planning tool that runs entirely in your browser: it draws your factory and runs the simulation on your computer.
+        Please turn JavaScript on for this page and reload it.</p>
+    </div>
+  </noscript>
+
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>

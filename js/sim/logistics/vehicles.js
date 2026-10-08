@@ -121,8 +121,8 @@ export class VehicleRT {
 
 /**
  * Create all vehicles. Fleets start parked in their home depot (then any depot with free slots); the rest
- * is spread deterministically over non-controlled, non-dock road cells. Vehicles that find no room are
- * left out and returned as `unplaced` ids.
+ * is spread deterministically over non-controlled, non-dock road cells of the part of the road network the fleet works in
+ * (see startRegion). Vehicles that find no room are left out and returned as `unplaced` ids.
  * @returns {{ vehicles: VehicleRT[], unplaced: string[] }}
  */
 export function createVehicles(lg) {
@@ -133,11 +133,13 @@ export function createVehicles(lg) {
   }
   const onRoad = [];
   for (const vr of all) if (!parkInitially(lg, vr)) onRoad.push(vr);
-  const spots = roadSpots(lg.graph);
+  const regions = new Map();
   onRoad.forEach((vr, k) => {
+    if (!regions.has(vr.fleetId)) regions.set(vr.fleetId, startRegion(lg, vr.fleetId));
+    const { cells, spots } = regions.get(vr.fleetId);
     const start = Math.floor(((k + 0.5) * spots.length) / onRoad.length);
     for (let i = 0; i < spots.length && !vr.tv; i++) addToTraffic(lg, vr, spots[(start + i) % spots.length]);
-    for (let i = 0; i < lg.graph.nodes.length && !vr.tv; i++) addToTraffic(lg, vr, lg.graph.nodes[i]); // crowded: any free cell
+    for (let i = 0; i < cells.length && !vr.tv; i++) addToTraffic(lg, vr, cells[i]); // crowded: any free cell
     if (vr.tv) vr.lastOdo = num(vr.tv.odometer, 0);
   });
   return { vehicles: all.filter((vr) => vr.tv), unplaced: all.filter((vr) => !vr.tv).map((vr) => vr.id) };
@@ -168,11 +170,22 @@ function parkInitially(lg, vr) {
   return false;
 }
 
-function roadSpots(graph) {
-  const free = graph.nodes.filter((n) => !graph.controlled[n] && !graph.stationsAt.has(n));
-  if (free.length > 0) return free;
-  const noDock = graph.nodes.filter((n) => !graph.stationsAt.has(n));
-  return noDock.length > 0 ? noDock : graph.nodes;
+/**
+ * The road cells a fleet may start on, and the preferred ones among them (no junction, no dock). Only parts of the network
+ * that contain a dock of a station the fleet works for qualify: a vehicle placed on a one-way branch that leads away from
+ * all of them can never do anything, and neither can one that has no way back. Without any such dock every cell qualifies.
+ */
+function startRegion(lg, fleetId) {
+  const { graph } = lg;
+  const parts = new Set();
+  for (const flow of lg.flows) {
+    if (flow.cfg.fleetId !== null && flow.cfg.fleetId !== fleetId) continue;
+    for (const station of [flow.from, flow.to]) for (const dock of graph.docks.get(station.id) || []) parts.add(graph.scc[dock]);
+  }
+  const cells = parts.size > 0 ? graph.nodes.filter((n) => parts.has(graph.scc[n])) : graph.nodes;
+  const free = cells.filter((n) => !graph.controlled[n] && !graph.stationsAt.has(n));
+  const noDock = cells.filter((n) => !graph.stationsAt.has(n));
+  return { cells, spots: free.length > 0 ? free : noDock.length > 0 ? noDock : cells };
 }
 
 // ---- availability for the dispatcher ---------------------------------------------------------------------------
@@ -183,13 +196,12 @@ export function needsCharge(vr) {
 }
 
 /** Can the vehicle get to any charger at all? (One that cannot keeps working: waiting would only waste it.) */
-export function canCharge(lg, vr) {
+function canCharge(lg, vr) {
   const depots = lg.chargerDepots;
   if (depots.length === 0) return false;
-  if (vr.state === 'parked') {
-    return depots.some((d) => (lg.graph.docks.get(vr.depot.id) || []).some((dock) => lg.routes.docksOf(lg.routes.settled(dock, -1), d.id).length > 0));
-  }
-  return lg.routes.reaches(lg.routes.settled(vr.tv.node, arrivalEdgeOf(lg, vr)), depots.map((d) => d.id));
+  const ids = depots.map((d) => d.id);
+  if (vr.state === 'parked') return (lg.graph.docks.get(vr.depot.id) || []).some((dock) => lg.routes.canReachAny(dock, -1, ids));
+  return lg.routes.canReachAny(vr.tv.node, arrivalEdgeOf(lg, vr), ids);
 }
 
 /** Can the dispatcher give this vehicle an order now? */
@@ -244,7 +256,7 @@ function driveRoute(lg, vr, route) {
 }
 
 /** The dock (or waiting cell) the current leg ends at, as seen from `entry`; null when there is none. */
-function legTarget(lg, vr, entry, t) {
+function legTarget(lg, vr, entry) {
   if (vr.spot >= 0) return entry.search.dist(vr.spot) < Infinity ? { node: vr.spot } : null;
   if (vr.state === 'toPickup') {
     const { from, to } = vr.order.flow;
@@ -258,8 +270,9 @@ function planLeg(lg, vr, t) {
   const tv = vr.tv;
   vr.replan = false;
   if (tv.node < 0) return retryLater(vr, t);
-  const entry = lg.routes.get(tv.node, arrivalEdgeOf(lg, vr), t);
-  const target = legTarget(lg, vr, entry, t);
+  const entry = lg.routes.get(tv.node, arrivalEdgeOf(lg, vr), t, true);
+  if (entry === null) { vr.retryAt = t; return false; } // this tick's search budget is spent: first thing in the next tick
+  const target = legTarget(lg, vr, entry);
   if (!target) {
     if (vr.spot < 0) return retryLater(vr, t);
     vr.spot = -1; // the waiting cell cannot be reached from here: stay where we are
@@ -501,6 +514,7 @@ export function vehiclePhaseB(lg, vr, dt, t) {
 function die(lg, vr, t) {
   cancelDepotTrip(lg, vr);
   if (vr.state !== 'broken') vr.resumeState = vr.state;
+  vr.spot = -1; // a dead vehicle no longer needs its waiting cell
   releaseOrder(lg, vr, t, 'vehicle-dead');
   setState(vr, 'dead', t);
   vr.tv.disabled = true;

@@ -29,6 +29,9 @@ export function statusColor(state) {
   return Object.hasOwn(STATUS_COLORS, state) ? STATUS_COLORS[state] : STATUS_COLORS.idle;
 }
 
+/** Ink of the mark drawn inside a state dot (the colour-independent cue): >= 4.5:1 on every status colour. */
+export const STATUS_INK = '#0b0f19';
+
 // ---- colour maths ----------------------------------------------------------------------------------
 
 /** '#rgb' / '#rrggbb' -> [r, g, b] (0..255). Anything else parses as black. */
@@ -73,9 +76,17 @@ export function contrast(a, b) {
   return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
 }
 
-/** Whichever of dark / light ink reads better on `bg`. */
+/** Contrast (WCAG AA for normal text) that `inkFor` aims for. */
+export const MIN_INK_CONTRAST = 4.5;
+
+/**
+ * Whichever of dark / light ink reads better on `bg`. When neither reaches 4.5:1 (some mid-tone bricks) it
+ * falls back to pure black or white, which always do (the best of the two is >= 4.58:1 on any colour).
+ */
 export function inkFor(bg, dark = '#1c2230', light = '#ffffff') {
-  return contrast(bg, dark) >= contrast(bg, light) ? dark : light;
+  const best = contrast(bg, dark) >= contrast(bg, light) ? dark : light;
+  if (contrast(bg, best) >= MIN_INK_CONTRAST) return best;
+  return contrast(bg, '#000000') >= contrast(bg, '#ffffff') ? '#000000' : '#ffffff';
 }
 
 // ---- heat ramp -------------------------------------------------------------------------------------
@@ -193,6 +204,8 @@ const LIGHT = {
   marquee: ACCENT,
   marqueeFill: 'rgba(47,125,246,0.10)',
   dock: '#ffffff',
+  dotRim: '#ffffff', // bezel of the state dot: light rim, dark ring, so the status colour reads on any brick colour
+  dotRing: 'rgba(11,15,25,0.82)',
   deadlock: '#e5484d',
   vehicle: {
     outline: 'rgba(14,20,32,0.7)',
@@ -216,16 +229,16 @@ const DARK = {
   mode: 'dark',
   bg: '#12161d',
   shadow: 'rgba(0,0,0,0.42)',
-  baseplate: '#252e3c',
+  baseplate: '#2c384b',
   baseplateSide: '#161c26',
-  baseplateEdge: '#35415a',
-  stud: '#2c3647',
-  studHi: '#364255',
-  studLo: '#1d2430',
+  baseplateEdge: '#3d4c66',
+  stud: '#344158',
+  studHi: '#40506b',
+  studLo: '#222c3b',
   gridLine: 'rgba(160,180,215,0.10)',
   gridMajor: 'rgba(160,180,215,0.22)',
-  road: '#10141b',
-  roadEdgeHi: 'rgba(160,180,215,0.20)',
+  road: '#0a0d13',
+  roadEdgeHi: 'rgba(160,180,215,0.24)',
   roadEdgeLo: 'rgba(0,0,0,0.6)',
   roadMark: 'rgba(168,181,205,0.62)',
   roadChevron: 'rgba(190,202,224,0.82)',

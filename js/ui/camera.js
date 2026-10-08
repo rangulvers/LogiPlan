@@ -4,28 +4,35 @@
 // top-left corner of the canvas. `x, y` is the world point shown at the centre of the viewport and `zoom`
 // is pixels per metre, always kept inside [MIN_ZOOM, MAX_ZOOM]. Every method tolerates non-finite input
 // (it is ignored) and a viewport of 0 x 0, so UI code never has to guard its calls.
+//
+// MIN_ZOOM is low enough that fit() shows the largest baseplate the model allows (160 cells of 10 m =
+// 1600 m, GRID_LIMITS) with the default 32 px padding on a 224 px wide viewport, so "fit view" never cuts
+// a plant off on a real screen.
 
 import { clamp } from '../util/format.js';
 
-export const MIN_ZOOM = 4;
+export const MIN_ZOOM = 0.1;
 export const MAX_ZOOM = 80;
 export const DEFAULT_ZOOM = 20;
 /** Fallback baseplate (cols x rows x metres per cell) used by fit() when no valid layout is given. */
 const FALLBACK_GRID = { cols: 48, rows: 32, cellSize: 2 };
+/** No baseplate side is taken to be longer than this (metres): keeps absurd grids from poisoning the camera. */
+const MAX_PLANT_M = 1e5;
 
 const finite = (v, fallback) => (Number.isFinite(v) ? v : fallback);
+const positive = (v, fallback) => (Number.isFinite(v) && v > 0 ? v : fallback);
 
 /**
  * World extent {x, y, w, h} in metres of a layout's baseplate. Falls back to the default grid for
- * anything that is not a usable layout, so callers always get a non-empty rectangle.
+ * anything that is not a usable layout, so callers always get a non-empty, finite rectangle.
  * @param {object|null|undefined} layout
  */
 export function plantBounds(layout) {
   const g = layout && layout.grid ? layout.grid : FALLBACK_GRID;
-  const cs = g.cellSize > 0 ? g.cellSize : FALLBACK_GRID.cellSize;
-  const cols = g.cols > 0 ? g.cols : FALLBACK_GRID.cols;
-  const rows = g.rows > 0 ? g.rows : FALLBACK_GRID.rows;
-  return { x: 0, y: 0, w: cols * cs, h: rows * cs };
+  const cs = positive(g.cellSize, FALLBACK_GRID.cellSize);
+  const cols = positive(g.cols, FALLBACK_GRID.cols);
+  const rows = positive(g.rows, FALLBACK_GRID.rows);
+  return { x: 0, y: 0, w: Math.min(MAX_PLANT_M, cols * cs), h: Math.min(MAX_PLANT_M, rows * cs) };
 }
 
 export class Camera {
@@ -62,10 +69,13 @@ export class Camera {
     return out;
   }
 
-  /** Screen px -> grid cell [cx, cy] (may be negative or beyond the grid: callers bounds-check). */
+  /**
+   * Screen px -> grid cell [cx, cy] (may be negative or beyond the grid: callers bounds-check). A non-finite
+   * coordinate counts as the viewport centre, like in zoomAt.
+   */
   screenToCell(px, py, cellSize, out = [0, 0]) {
     const cs = cellSize > 0 ? cellSize : 1;
-    this.screenToWorld(px, py, out);
+    this.screenToWorld(finite(px, this.width / 2), finite(py, this.height / 2), out);
     out[0] = Math.floor(out[0] / cs) + 0;
     out[1] = Math.floor(out[1] / cs) + 0;
     return out;
@@ -121,12 +131,13 @@ export class Camera {
    */
   fitRect(rect, widthPx, heightPx, padding = 32, maxZoom = MAX_ZOOM) {
     this.setViewport(widthPx, heightPx);
-    const w = rect && rect.w > 0 ? rect.w : 1;
-    const h = rect && rect.h > 0 ? rect.h : 1;
+    const w = positive(rect && rect.w, 1);
+    const h = positive(rect && rect.h, 1);
     const pad = Math.max(0, finite(padding, 0));
     const availW = Math.max(1, this.width - 2 * pad);
     const availH = Math.max(1, this.height - 2 * pad);
-    this.zoom = clamp(Math.min(availW / w, availH / h), MIN_ZOOM, Math.min(MAX_ZOOM, finite(maxZoom, MAX_ZOOM)));
+    const limit = clamp(finite(maxZoom, MAX_ZOOM), MIN_ZOOM, MAX_ZOOM);
+    this.zoom = clamp(Math.min(availW / w, availH / h), MIN_ZOOM, limit);
     this.x = finite(rect && rect.x, 0) + w / 2;
     this.y = finite(rect && rect.y, 0) + h / 2;
     return this;

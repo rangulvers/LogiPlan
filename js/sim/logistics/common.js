@@ -12,6 +12,11 @@ export const DISPATCH_INTERVAL = 0.5;
 export const CONGESTION_REFRESH = 5;
 /** Memory budget of the route cache (bytes): a cached search holds a few typed arrays of graph size. */
 export const ROUTE_CACHE_BYTES = 96e6;
+/**
+ * Work, in units of (edges + nodes) of the road graph, that deferrable route searches may use per tick (about 10 ms of search time
+ * on a big plant): a plant of 100 x 80 cells gets 8 new searches per tick, the examples more than they ever need (routing.js).
+ */
+export const SEARCH_WORK_PER_TICK = 100000;
 /** Congestion cost = length / limit * (1 + CONGESTION_WEIGHT * vehicles on the edge). */
 export const CONGESTION_WEIGHT = 0.6;
 /** Smallest gap between two source arrivals (s); guards against zero-length intervals. */
@@ -46,6 +51,11 @@ export const SPOT_PENALTY_DOCK = 300;
 export const YIELD_RETRY = 5;
 /** Upper bound of back-to-back cycles one machine may complete within a single tick. */
 export const MAX_CYCLES_PER_STEP = 1000;
+/**
+ * Most loads waiting in the yard of one source (memory guard: a source with a 1 s interval, a batch of 100 and ten times the demand
+ * would otherwise create a thousand loads per simulated second and fill the memory in an 8-hour run). Arrivals beyond it are dropped.
+ */
+export const YARD_LIMIT = 100000;
 /** Upper bound of parallel machines per workstation and of vehicles per fleet (memory guard). */
 export const MAX_MACHINES = 256;
 export const MAX_FLEET = 1000;

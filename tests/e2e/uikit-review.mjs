@@ -206,6 +206,8 @@ async function reviewKeyboard() {
       await page.emulateMedia({ colorScheme: scheme });
       await openDemo(page, url, scheme);
       await page.locator('#c-line .chart-legend__item').nth(1).click();
+      await page.mouse.move(0, 0); // the rebuilt entry sits under the pointer; measure it without the hover colour
+      await page.waitForTimeout(80);
       const ratio = await page.evaluate(() => {
         const el = document.querySelector('#c-line .chart-legend__item[aria-pressed="false"]');
         const parse = (c) => { const m = c.match(/rgba?\(([^)]+)\)/); const p = m[1].split(/[\s,/]+/).map(Number); return { r: p[0], g: p[1], b: p[2], a: p.length > 3 ? p[3] : 1 }; };
@@ -234,8 +236,10 @@ async function reviewIcons() {
     const result = await page.evaluate(async () => {
       const { iconSvg, ICON_NAMES } = await import('/js/ui/icons.js');
       const load = (svg) => new Promise((resolve, reject) => { const img = new Image(); img.onload = () => resolve(img); img.onerror = reject; img.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`; });
-      const ink = async (name, size) => {
-        const img = await load(iconSvg(name, { size }).replace('currentColor', '#000'));
+      // `small` draws the art that is used at 16 px (the simplified variants), magnified to `size`
+      const ink = async (name, size, small = false) => {
+        const markup = small ? iconSvg(name, { size: 16 }).replace('width="16" height="16"', `width="${size}" height="${size}"`) : iconSvg(name, { size });
+        const img = await load(markup.replace('currentColor', '#000'));
         const canvas = document.createElement('canvas');
         canvas.width = size; canvas.height = size;
         const ctx = canvas.getContext('2d');
@@ -285,7 +289,7 @@ async function reviewIcons() {
       };
       const fill = {};
       for (const name of ICON_NAMES) {
-        const { mask } = await ink(name, G);
+        const { mask } = await ink(name, G, true);
         const closed = morph(morph(mask, true), false);
         let added = 0; let had = 0;
         for (let i = 0; i < mask.length; i++) { if (mask[i]) had++; else if (closed[i]) added++; }
@@ -329,7 +333,7 @@ async function reviewIcons() {
     defect('medium', 'icons', outside.length === 0, `icons touch the edge of the 24 px grid (live area is 1..23): ${outside.map((m) => m.name).join(', ')}`);
     defect('medium', 'icons', result.pairs[0][2] < 0.97, `two icons are nearly identical: ${result.pairs[0].join(' / ')}`);
     const dense = Object.entries(result.fill).filter(([, v]) => v > 0.15).map(([name, v]) => `${name} ${(v * 100).toFixed(0)} %`);
-    defect('medium', 'icons', dense.length === 0, `strokes closer than ~1 px at 16 px merge into a blob (visual review of the 16 px sheet also finds depot (P plus bolt), speedzone, oneway (arrowhead), forklift and export/import (arrow direction) muddy; share of ink gained by closing 1.5-unit gaps; median ${(Object.values(result.fill).sort((a, b) => a - b)[34] * 100).toFixed(1)} %): ${dense.join(', ')}`);
+    defect('medium', 'icons', dense.length === 0, `strokes closer than ~1 px at 16 px merge into a blob in the art drawn below 18 px (share of ink gained by closing 1.5-unit gaps; median ${(Object.values(result.fill).sort((a, b) => a - b)[34] * 100).toFixed(1)} %): ${dense.join(', ')}`);
     notes.push(`icons: closest pair ${result.pairs[0].slice(0, 2).join('/')} IoU ${result.pairs[0][2].toFixed(2)}; contact sheet ${png('icons-16-and-24px')}`);
   });
 }
