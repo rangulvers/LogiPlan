@@ -54,6 +54,11 @@ test('canReach: the no-U-turn rule counts - arrived over the only road at a dock
   assert.equal(cache.canReach(at(3, 0), intoSpur, 'nowhere'), false);
   assert.equal(cache.canReachAny(at(3, 0), intoSpur, ['nowhere', 'B']), true);
   assert.equal(cache.canReachAny(at(3, 0), intoSpur, []), false);
+  for (const [node, edge] of [[-1, -1], [graph.nodeCount + 5, -1], [at(0, 0), -1], [at(3, 1), 99999]]) {
+    assert.doesNotThrow(() => cache.canReach(node, edge, 'A'), `node ${node}, edge ${edge}`);
+  }
+  assert.equal(cache.canReach(-1, -1, 'A'), false);
+  assert.equal(cache.canReach(at(0, 0), -1, 'A'), false, 'a cell that is not a road');
 });
 
 // ---------------------------------------------------------------------------------------------------------------------

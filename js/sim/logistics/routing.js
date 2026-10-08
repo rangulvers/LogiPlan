@@ -165,7 +165,9 @@ export class RouteCache {
     if (sweep === undefined) this.sweeps.set(stationId, (sweep = sweepToDocks(this.graph, docks)));
     if (sweep.isDock[node] === 1) return true;
     const exits = this.graph.out[node];
-    const reverse = arrivalEdge >= 0 ? this.graph.edges[arrivalEdge].rev : -1;
+    if (exits === undefined) return false; // not a node of this graph
+    const arrived = this.graph.edges[arrivalEdge];
+    const reverse = arrived === undefined ? -1 : arrived.rev;
     for (const id of exits) if (sweep.leads[id] === 1 && (id !== reverse || exits.length === 1)) return true;
     return false;
   }
