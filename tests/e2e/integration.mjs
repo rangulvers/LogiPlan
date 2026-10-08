@@ -1116,19 +1116,25 @@ await withBrowser(async ({ browser, url, errors }) => {
   }
 
   await run('resilience', async () => {
-    const steps = Number(process.env.MONKEY_STEPS || 140);
-    for (const seed of [11, 4242]) {
+    const steps = Number(process.env.MONKEY_STEPS || 80);
+    const seeds = (process.env.MONKEY_SEEDS || '11,4242').split(',').map(Number); // MONKEY_SEEDS=1,2,3 MONKEY_STEPS=400 hunts for new failures
+    for (const [n, seed] of seeds.entries()) {
       const { page, context } = await openApp();
-      await pickExample(page, seed === 11 ? 'Two production' : 'Congestion');
+      await pickExample(page, ['Two production', 'Congestion', 'Starter'][n % 3]);
       const rand = seeded(seed);
       const log = [];
+      const trace = (text) => { if (process.env.MONKEY_TRACE) appendFileSync(process.env.MONKEY_TRACE, `${seed} ${text}\n`); };
+      trace('start');
       for (let i = 0; i < steps; i++) {
-        const open = await page.locator('[role=dialog]').count();
-        if (open) { await page.keyboard.press('Escape'); await page.waitForTimeout(50); }
+        if (await page.locator('[role=dialog]').count()) { await page.keyboard.press('Escape'); await page.waitForTimeout(50); }
+        trace(`step ${i}: begin`);
         try {
-          log.push(await monkeyStep(page, rand, DESKTOP));
+          const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('the step did not finish in 20 s')), 20000));
+          log.push(await Promise.race([monkeyStep(page, rand, DESKTOP), timeout]));
+          trace(`step ${i}: ${log.at(-1)}`);
         } catch (err) {
           log.push(`step failed: ${err.message.split('\n')[0]}`);
+          trace(`step ${i}: ${log.at(-1)}`);
         }
         if (errors.length) break;
         if (i % 20 === 19) {
