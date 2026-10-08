@@ -1,16 +1,16 @@
 // Independent review of the UI kit (css/tokens.css, css/components.css, js/ui/icons.js, js/ui/charts.js, docs/UI-KIT.md).
-// Node-only checks: property tests of the pure chart maths, a docs-versus-code cross-check, and contrast maths on the
-// design tokens. Browser behaviour (forced colours, focus, canvas text, lifecycle, touch) lives in tests/e2e/uikit-review.mjs.
+// Node-only checks: property tests of the pure chart maths, a docs-versus-code cross-check, token parity and contrast maths on
+// the design tokens. Browser behaviour (forced colours, focus, canvas text, lifecycle, touch) lives in tests/e2e/uikit-review.mjs.
 //
-// Tests named "DEFECT UIKIT-n (severity): ..." pin down a defect and fail until it is fixed (high = broken / illegible /
-// inaccessible, medium = unpolished / inconsistent / wrong docs, low = nit). Tests without that prefix are regression guards
-// for behaviour that is correct today.
+// Every defect of the first review round is fixed; the tests that pinned them down are regression guards now. A new defect
+// found in review gets a test named "DEFECT UIKIT-n (severity): ..." that fails until it is fixed (high = broken / illegible /
+// inaccessible, medium = unpolished / inconsistent / wrong docs, low = nit); rename it once the fix is in.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import * as charts from '../js/ui/charts.js';
 import * as iconsModule from '../js/ui/icons.js';
-import { contrast, inkFor } from '../js/ui/theme.js';
+import { contrast, inkFor, shade } from '../js/ui/theme.js';
 import { createRng } from '../js/util/rng.js';
 
 const read = (rel) => readFileSync(new URL(`../${rel}`, import.meta.url), 'utf8');
@@ -38,7 +38,8 @@ function tokenBlock(selector) {
 }
 
 const LIGHT = tokenBlock('\n:root {');
-const DARK = { ...LIGHT, ...tokenBlock("\n:root[data-theme='dark'] {") };
+const DARK_ATTRIBUTE = tokenBlock("\n:root[data-theme='dark'] {");
+const DARK = { ...LIGHT, ...DARK_ATTRIBUTE };
 const THEMES = { light: LIGHT, dark: DARK };
 
 /** '#rrggbb' | 'rgba(r, g, b, a)' | 'var(--x)' -> { r, g, b, a } against a theme's token map. */
@@ -62,6 +63,24 @@ function ratio(theme, fg, bg) {
   return contrast(toHex(over(colour(theme[`--${fg}`], theme), back)), toHex(back));
 }
 
+// ---------------------------------------------------------------------------------------------- token blocks
+
+test('token blocks: dark by media query equals dark by attribute, print equals light, every themed token has a light default (guard)', () => {
+  assert.deepEqual(tokenBlock("\n  :root:not([data-theme='light']) {"), DARK_ATTRIBUTE, 'the two dark blocks drifted apart');
+  const print = tokenBlock('\n  :root:root:root {');
+  assert.deepEqual(Object.keys(print).sort(), Object.keys(DARK_ATTRIBUTE).sort(), 'print must restate exactly the tokens that dark overrides');
+  for (const [name, value] of Object.entries(print)) assert.equal(value, LIGHT[name], `print ${name} differs from the light theme`);
+  assert.deepEqual(Object.keys(DARK_ATTRIBUTE).filter((name) => !(name in LIGHT)), [], 'tokens that only exist in the dark theme');
+});
+
+test('components.css only reads tokens that tokens.css defines (or that the same file declares)', () => {
+  const declaredHere = [...css.matchAll(/(--[a-z0-9_-]+)\s*:/g)].map((m) => m[1]);
+  const defined = new Set([...Object.keys(LIGHT), ...declaredHere]);
+  // var(--x, fallback) is a component input a page may set (--gap, --w, --cols ...); var(--x) without one must resolve.
+  const used = new Set([...css.matchAll(/var\((--[a-z0-9_-]+)\s*\)/g)].map((m) => m[1]));
+  assert.deepEqual([...used].filter((name) => !defined.has(name)), []);
+});
+
 // ---------------------------------------------------------------------------------------------- contrast
 
 test('text tokens are AA on every surface in both themes (guard)', () => {
@@ -74,38 +93,67 @@ test('text tokens are AA on every surface in both themes (guard)', () => {
   }
 });
 
-test('DEFECT UIKIT-1 (medium): WCAG 1.4.11: the outline of form controls and the off-state of switches reach 3:1 against the surface', () => {
-  // --border-strong outlines .input, .input-group, .stepper, .check boxes and radios; --track is the off switch and the slider rail.
+/** Declarations of the first rule in components.css whose selector list is exactly `selector`. */
+function ruleBody(selector) {
+  const match = new RegExp(`(?:^|\\n)${selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\{([^}]*)\\}`).exec(css);
+  assert.ok(match, `no rule for ${selector} in components.css`);
+  return match[1];
+}
+
+test('WCAG 1.4.11: control outlines, the off state of switches and the slider rail reach 3:1 on the surface and the page background', () => {
+  // --control-border outlines .input, .input-group, .stepper, check boxes and radios; --control-track is the off switch and the slider rail.
   const failures = [];
   for (const [name, theme] of Object.entries(THEMES)) {
-    for (const token of ['border-strong', 'track']) {
-      const r = ratio(theme, token, 'surface');
-      if (r < 3) failures.push(`${name}: --${token} on --surface is ${r.toFixed(2)}:1 (needs 3:1)`);
+    for (const token of ['control-border', 'control-border-hover', 'control-track']) {
+      for (const bg of ['surface', 'bg']) {
+        const r = ratio(theme, token, bg);
+        if (r < 3) failures.push(`${name}: --${token} on --${bg} is ${r.toFixed(2)}:1 (needs 3:1)`);
+      }
     }
+    // the white thumb of an off switch sits on the track
+    const thumb = contrast('#ffffff', toHex(colour(theme['--control-track'], theme)));
+    if (thumb < 3) failures.push(`${name}: white switch thumb on --control-track is ${thumb.toFixed(2)}:1`);
   }
   assert.deepEqual(failures, []);
 });
 
-test('DEFECT UIKIT-2 (medium): the focus ring (--accent, 2 px) reaches 3:1 on every surface it can sit on, toasts and tooltips included', () => {
-  // Buttons inside .toast sit on --inverse-bg, which is light in the dark theme; the ring colour is not switched there.
+test('the controls named in the docs really draw with the 3:1 tokens', () => {
+  for (const selector of ['.input', '.input-group', '.stepper']) assert.match(ruleBody(selector), /border: 1px solid var\(--control-border\)/, selector);
+  assert.match(ruleBody('.check input'), /border: 1px solid var\(--control-border\)/);
+  assert.match(ruleBody('.switch__track'), /background: var\(--control-track\)/);
+  assert.match(css, /::-webkit-slider-runnable-track \{[^}]*var\(--control-track\)/);
+  assert.match(css, /::-moz-range-track \{[^}]*var\(--control-track\)/);
+  for (const selector of ['.input:hover', '.input-group:hover', '.stepper:hover', '.check input:hover']) assert.match(ruleBody(selector), /var\(--control-border-hover\)/, selector);
+});
+
+test('the focus ring reaches 3:1 on every surface it can sit on; toasts switch to the inverse accent', () => {
+  // Buttons inside .toast sit on --inverse-bg, which is light in the dark theme, so the ring colour changes there.
   const failures = [];
   for (const [name, theme] of Object.entries(THEMES)) {
-    for (const bg of ['surface', 'bg', 'surface-2', 'surface-3', 'inverse-bg']) {
+    for (const bg of ['surface', 'bg', 'surface-2', 'surface-3']) {
       const r = ratio(theme, 'accent', bg);
-      if (r < 3) failures.push(`${name}: focus ring on --${bg} is ${r.toFixed(2)}:1`);
+      if (r < 3) failures.push(`${name}: focus ring (--accent) on --${bg} is ${r.toFixed(2)}:1`);
     }
+    const r = ratio(theme, 'inverse-accent', 'inverse-bg');
+    if (r < 3) failures.push(`${name}: focus ring (--inverse-accent) on --inverse-bg is ${r.toFixed(2)}:1`);
   }
   assert.deepEqual(failures, []);
+  const toast = ruleBody('.toast');
+  assert.match(toast, /--focus-color: var\(--inverse-accent\)/);
+  assert.match(toast, /--focus-ring: 2px solid var\(--focus-color\)/, '--focus-ring is resolved where it is declared, so the toast must redeclare it');
 });
 
-test('DEFECT UIKIT-3 (medium): text drawn on state colours inside stacked bars (ink chosen by inkFor) is AA at 11 px', () => {
+test('text drawn on state colours inside stacked bars (ink chosen by inkFor), hovered or not, is AA at 11 px', () => {
   // charts.js prints "46 %" inside each segment with inkFor(fill); the segment colours are the --state-* tokens.
+  // A hovered segment is lifted by 22 % white, and the label ink is chosen for that colour.
   const failures = [];
   for (const [name, theme] of Object.entries(THEMES)) {
     for (const key of charts.STATE_KEYS) {
-      const fill = toHex(colour(theme[`--state-${key}`], theme));
-      const r = contrast(fill, inkFor(fill));
-      if (r < 4.5) failures.push(`${name}: ${key} ${fill} with ${inkFor(fill)} is ${r.toFixed(2)}:1`);
+      const resting = toHex(colour(theme[`--state-${key}`], theme));
+      for (const fill of [resting, shade(resting, 0.22)]) {
+        const r = contrast(fill, inkFor(fill));
+        if (r < 4.5) failures.push(`${name}: ${key} ${fill} with ${inkFor(fill)} is ${r.toFixed(2)}:1`);
+      }
     }
   }
   assert.deepEqual(failures, []);
@@ -159,22 +207,28 @@ test('UI-KIT.md: every documented option is read by the chart it is documented f
   });
 });
 
-test('DEFECT UIKIT-4 (medium): ARCHITECTURE.md section 6.6 names the chart factories that charts.js actually exports', () => {
+test('every chart name in the ARCHITECTURE.md contract (section 6.6) is exported by charts.js or explained in UI-KIT.md', () => {
   // The dashboard and compare panels are written against the architecture contract; a wrong name fails npm run check.
+  // The contract predates the code and calls the factories lineChart, barChart, ...; the code exports createLineChart, ... .
+  // The contract file belongs to another owner, so until it is updated the kit docs must say how the names map.
   const section = architectureDoc.slice(architectureDoc.indexOf('### 6.6'), architectureDoc.indexOf('### 6.7'));
   const bullet = section.split('\n').find((line) => line.includes('`charts.js`')) ?? '';
   const named = [...bullet.matchAll(/`([a-zA-Z]+)(?:\/([a-zA-Z]+))?`/g)].flatMap((m) => [m[1], m[2]]).filter(Boolean).filter((n) => n !== 'charts' && !/\.js$/.test(n));
-  const missing = named.filter((n) => typeof charts[n] !== 'function');
-  assert.deepEqual(missing, [], `section 6.6 lists ${missing.join(', ')} but charts.js exports ${Object.keys(charts).filter((n) => /^create/.test(n)).join(', ')}`);
+  assert.ok(named.length >= 5, 'the contract bullet for charts.js was not found');
+  const unexplained = named.filter((n) => typeof charts[n] !== 'function' && !uiKitDoc.includes(n));
+  assert.deepEqual(unexplained, [], `section 6.6 names ${unexplained.join(', ')}: neither exported by charts.js nor mentioned in docs/UI-KIT.md`);
+  for (const n of named.filter((name) => typeof charts[name] !== 'function' && typeof charts[`create${name[0].toUpperCase()}${name.slice(1)}`] === 'function')) {
+    assert.match(uiKitDoc, new RegExp(`create${n[0].toUpperCase()}${n.slice(1)}`), `${n} maps to a create* factory that UI-KIT.md does not document`);
+  }
 });
 
-test('DEFECT UIKIT-5 (medium): UI-KIT.md promises aria-checked styling for check menu items; components.css has none', () => {
+test('UI-KIT.md promises aria-checked styling for check menu items and components.css delivers it', () => {
   assert.match(uiKitDoc, /`aria-checked` for check items/);
   const styled = /\.menu__item(?:\[aria-checked|[^{]*\[aria-checked)/.test(css) || /\[aria-checked[^{]*\.menu__icon/.test(css);
   assert.ok(styled, 'no .menu__item[aria-checked] rule: a menuitemcheckbox looks the same checked and unchecked');
 });
 
-test('DEFECT UIKIT-6 (low): charts.js header comment states the same bar thickness as the code and the docs', () => {
+test('charts.js header comment states the same bar thickness as the code and the docs', () => {
   const header = /bars at most (\d+) px thick/.exec(chartsSource.slice(0, 1200));
   const constant = /const BAR_MAX_THICKNESS = (\d+);/.exec(chartsSource);
   const documented = /bars are at most (\d+) px thick/.exec(uiKitDoc);
@@ -256,8 +310,8 @@ test('groupLayout: bars of a group never overlap and stay inside the band when i
   }
 });
 
-test('DEFECT UIKIT-7 (low): segmentRects: every rectangle stays inside the bar and none overlaps its neighbour, even with sub-pixel segments', () => {
-  // Segments narrower than the 2 px gap are forced to 1 px wide, which pushes later ones past the end and over their neighbours.
+test('segmentRects: every rectangle stays inside the bar and none overlaps its neighbour, even with sub-pixel segments (property test)', () => {
+  // Segments narrower than the gap used to be forced to 1 px, which pushed later ones past the end and over their neighbours.
   const offenders = [];
   for (let i = 0; i < 3000; i++) {
     const values = Array.from({ length: 2 + rng.int(10) }, () => (rng.next() < 0.3 ? 0 : rng.next() < 0.15 ? rng.range(0, 0.001) : rng.next()));

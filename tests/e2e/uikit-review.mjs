@@ -236,8 +236,10 @@ async function reviewIcons() {
     const result = await page.evaluate(async () => {
       const { iconSvg, ICON_NAMES } = await import('/js/ui/icons.js');
       const load = (svg) => new Promise((resolve, reject) => { const img = new Image(); img.onload = () => resolve(img); img.onerror = reject; img.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`; });
-      const ink = async (name, size) => {
-        const img = await load(iconSvg(name, { size }).replace('currentColor', '#000'));
+      // `small` draws the art that is used at 16 px (the simplified variants), magnified to `size`
+      const ink = async (name, size, small = false) => {
+        const markup = small ? iconSvg(name, { size: 16 }).replace('width="16" height="16"', `width="${size}" height="${size}"`) : iconSvg(name, { size });
+        const img = await load(markup.replace('currentColor', '#000'));
         const canvas = document.createElement('canvas');
         canvas.width = size; canvas.height = size;
         const ctx = canvas.getContext('2d');
@@ -287,7 +289,7 @@ async function reviewIcons() {
       };
       const fill = {};
       for (const name of ICON_NAMES) {
-        const { mask } = await ink(name, G);
+        const { mask } = await ink(name, G, true);
         const closed = morph(morph(mask, true), false);
         let added = 0; let had = 0;
         for (let i = 0; i < mask.length; i++) { if (mask[i]) had++; else if (closed[i]) added++; }

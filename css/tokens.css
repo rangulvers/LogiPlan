@@ -18,6 +18,9 @@
   --border: #dfe4ec; /* hairline between regions */
   --border-strong: #c3ccda; /* control outline */
   --border-hover: #a9b4c6; /* control outline on hover */
+  --control-border: #76829a; /* outline of inputs, checkboxes and steppers: 3:1 against every surface (WCAG 1.4.11) */
+  --control-border-hover: #5d6a82; /* the same outline under the pointer */
+  --control-track: #76829a; /* off state of switches and the unfilled slider rail: 3:1 */
   --hover: rgba(28, 34, 48, 0.05); /* overlay for transparent controls */
   --pressed: rgba(28, 34, 48, 0.09); /* overlay while pressed */
   --track: #d5dbe6; /* switch / slider / progress track */
@@ -188,6 +191,9 @@
     --border: #2b3443;
     --border-strong: #3d495c;
     --border-hover: #53617a;
+    --control-border: #738098;
+    --control-border-hover: #9aa6bb;
+    --control-track: #738098;
     --hover: rgba(255, 255, 255, 0.06);
     --pressed: rgba(255, 255, 255, 0.10);
     --track: #3a4559;
@@ -287,6 +293,9 @@
   --border: #2b3443;
   --border-strong: #3d495c;
   --border-hover: #53617a;
+  --control-border: #738098;
+  --control-border-hover: #9aa6bb;
+  --control-track: #738098;
   --hover: rgba(255, 255, 255, 0.06);
   --pressed: rgba(255, 255, 255, 0.10);
   --track: #3a4559;
@@ -408,6 +417,9 @@
     --border: #dfe4ec; /* hairline between regions */
     --border-strong: #c3ccda; /* control outline */
     --border-hover: #a9b4c6; /* control outline on hover */
+    --control-border: #76829a; /* outline of inputs, checkboxes and steppers: 3:1 against every surface (WCAG 1.4.11) */
+    --control-border-hover: #5d6a82; /* the same outline under the pointer */
+    --control-track: #76829a; /* off state of switches and the unfilled slider rail: 3:1 */
     --hover: rgba(28, 34, 48, 0.05); /* overlay for transparent controls */
     --pressed: rgba(28, 34, 48, 0.09); /* overlay while pressed */
     --track: #d5dbe6; /* switch / slider / progress track */

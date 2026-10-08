@@ -7,7 +7,8 @@
 //  - every chart canvas has pixels (or shows its empty-state text), tooltips, clicks, keyboard access and legend toggles work
 //  - WCAG AA text contrast (4.5:1, 3:1 for large text) for every visible text in both themes, plus the token pairs
 //  - the dark theme is identical via data-theme and via prefers-color-scheme; light wins when forced; print is light
-//  - focus rings are visible, reduced motion zeroes the transitions, no horizontal overflow at 390 px
+//  - focus rings are visible (outlines on buttons, inputs, groups and steppers), reduced motion zeroes the transitions,
+//    no horizontal overflow at 390 px
 import { withBrowser, OUT } from './browser.mjs';
 import { ICON_NAMES } from '../../js/ui/icons.js';
 import { readFileSync } from 'node:fs';
@@ -126,7 +127,8 @@ const auditTokenPairs = () => {
   for (const fg of ['inverse-text', 'inverse-accent', 'inverse-good', 'inverse-warn', 'inverse-bad']) pairs.push([fg, 'inverse-bg', 4.5]);
   for (const k of ['source', 'process', 'storage', 'sink', 'depot']) pairs.push([`st-${k}-ink`, `st-${k}`, 4.5]);
   for (const k of ['accent', 'good', 'warn', 'bad', 'info']) pairs.push([k, 'surface', 3]);
-  pairs.push(['border-strong', 'surface', 1.4], ['focus-color', 'surface', 3]);
+  for (const k of ['control-border', 'control-border-hover', 'control-track']) pairs.push([k, 'surface', 3], [k, 'bg', 3]);
+  pairs.push(['focus-color', 'surface', 3], ['inverse-accent', 'inverse-bg', 3]);
   const fails = [];
   for (const [fg, bg, min] of pairs) {
     const bgc = over(tok(bg), surface);
@@ -246,6 +248,18 @@ await withBrowser(async ({ page, url, errors }) => {
     const ring = await page.evaluate(() => { const cs = getComputedStyle(document.activeElement); return { style: cs.outlineStyle, width: cs.outlineWidth }; });
     check(ring.style !== 'none' && parseFloat(ring.width) >= 2, `[${theme}] focus ring not visible on the focused button: ${JSON.stringify(ring)}`);
     await page.locator('section[data-shot="buttons"] .card').first().screenshot({ path: file(`${theme}-focus`) });
+    // inputs, input groups and steppers use a real outline too (a glow alone would vanish in forced-colours mode)
+    for (const selector of ['#f-name', '#f-cycle', '#f-count']) {
+      await page.locator(selector).focus();
+      const inputRing = await page.evaluate((sel) => {
+        const el = document.querySelector(sel);
+        const box = el.closest('.input-group, .stepper') || el;
+        const cs = getComputedStyle(box);
+        return { style: cs.outlineStyle, width: cs.outlineWidth };
+      }, selector);
+      check(inputRing.style !== 'none' && parseFloat(inputRing.width) >= 2, `[${theme}] focus outline missing on ${selector}: ${JSON.stringify(inputRing)}`);
+    }
+    await page.locator('#f-name').evaluate((el) => el.blur());
 
     await page.mouse.move(2, 2);
     const settingsBtn = page.locator('[data-tip="Settings"]');

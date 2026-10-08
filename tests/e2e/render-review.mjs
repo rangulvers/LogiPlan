@@ -6,12 +6,12 @@
 //   REVIEW_ONLY=<text>                                run only checks whose title or id contains <text>
 //
 // Screenshots go to e2e-output/review-*.png - LOOK at them. Unlike the builder's harness this page drives the
-// renderer with a REAL simulation: the road graph, TrafficSystem, Logistics and Stats of js/sim/, assembled the
-// way the future engine (js/sim/engine.js, not written yet) will, running the shipped example plants. Field names
-// and shapes that the renderer reads from docs/ARCHITECTURE.md §5 are therefore checked against real objects.
+// renderer with a REAL simulation: the Simulation of js/sim/engine.js (road graph, TrafficSystem, Logistics and
+// Stats) running the shipped example plants. Field names and shapes that the renderer reads from
+// docs/ARCHITECTURE.md §5 are therefore checked against real objects.
 //
-// A check titled "[ID severity] ..." pins a defect that is real today (it FAILS until the renderer is fixed);
-// checks without an ID guard behaviour that is correct and must stay so. Camera math lives in
+// A check titled "[ID severity] ..." is a regression test for a defect the review found (and the renderer fixed);
+// checks without an ID guard behaviour that was correct from the start. Camera math lives in
 // tests/ui.camera.review.test.js (Node). Frame times are measured in headless Chromium with CPU rasterisation on a
 // shared machine: use them as an upper bound, not as GPU numbers.
 
@@ -19,7 +19,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { withBrowser, OUT } from './browser.mjs';
-import { getTheme, statusColor, contrast, STATUS_COLORS } from '../../js/ui/theme.js';
+import { getTheme, statusColor, contrast, STATUS_COLORS, STATUS_INK } from '../../js/ui/theme.js';
 import { getScene } from '../../js/ui/render/scene.js';
 import { createLayout, addStation, addFlow } from '../../js/model/layout.js';
 
@@ -35,39 +35,15 @@ async function pageMain() {
   const { Renderer, createView } = await import('/js/ui/renderer.js');
   const { Camera, MIN_ZOOM, MAX_ZOOM } = await import('/js/ui/camera.js');
   const { buildGraph } = await import('/js/sim/graph.js');
-  const { TrafficSystem } = await import('/js/sim/traffic.js');
-  const { Logistics } = await import('/js/sim/logistics.js');
-  const { Stats } = await import('/js/sim/stats.js');
-  const { createRng } = await import('/js/util/rng.js');
+  const { Simulation } = await import('/js/sim/engine.js');
   const { EXAMPLES } = await import('/js/model/examples.js');
   const M = await import('/js/model/layout.js');
   const { layoutFromAscii } = await import('/tests/helpers/ascii.js');
   const { dist, defaultFleet } = await import('/js/model/defaults.js');
   const { drawBrick } = await import('/js/ui/render/bricks.js');
 
-  /** The engine of docs/ARCHITECTURE.md 5.5 reduced to what the renderer reads. */
-  function makeSim(layout) {
-    const dt = layout.settings.dt || 0.1;
-    const graph = buildGraph(layout);
-    const traffic = new TrafficSystem(graph, { handedness: layout.settings.handedness, resolveDeadlocks: layout.settings.deadlock !== 'ignore' });
-    const sim = { time: 0, layout, graph, traffic, settings: layout.settings, logistics: null, stats: null, dt, tick: 0 };
-    const emit = (name, payload) => { if (sim.stats) sim.stats.onEvent(name, payload); };
-    sim.logistics = new Logistics({ layout, graph, traffic, rng: createRng(layout.settings.seed), emit });
-    traffic.onDeadlock = (info) => { sim.logistics.handleDeadlock(info); emit('deadlock', { ...info, t: sim.time }); };
-    sim.stats = new Stats(sim);
-    sim.stations = sim.logistics.stations;
-    sim.vehicles = sim.logistics.vehicles;
-    sim.heat = () => sim.stats.heat();
-    sim.step = () => {
-      sim.logistics.step(dt, sim.tick * dt);
-      traffic.step(dt);
-      sim.tick++;
-      sim.time = sim.tick * dt;
-      sim.stats.sample(dt);
-    };
-    sim.advance = (seconds) => { for (let i = 0, n = Math.round(seconds / dt); i < n; i++) sim.step(); };
-    return sim;
-  }
+  /** The real engine (docs/ARCHITECTURE.md 5.5); it runs its own normalised copy of the layout. */
+  const makeSim = (layout) => new Simulation(layout);
 
   /** 160 x 160 cells, a road mesh, 40 stations in 8 production lines and 100 vehicles. */
   function bigPlant() {
@@ -385,14 +361,15 @@ async function snap(ctx, name, clip) {
 // DOM-free checks: palette and scene index
 // ---------------------------------------------------------------------------------------------------------
 
-check('THEME-1', 'medium', 'state dot: the white mark inside the dot (the colour-independent cue) needs >= 2.5:1 against every state colour', async () => {
-  // glyphs.drawStatusMark draws a white mark inside a dot filled with statusColor(state); WCAG asks 3:1 for graphical objects
+check('THEME-1', 'medium', 'state dot: the mark inside the dot (the colour-independent cue) reaches 4.5:1 against every state colour', async () => {
+  // glyphs.drawStatusMark draws a STATUS_INK mark inside a dot filled with statusColor(state); the dot itself sits in a
+  // light rim + dark ring bezel, so it reads on any brick colour (checked pixel-wise in the DOT-1 check below)
   const bad = [];
   for (const state of Object.keys(STATUS_COLORS)) {
-    const ratio = contrast('#ffffff', statusColor(state));
-    if (ratio < 2.5) bad.push(`${state} ${statusColor(state)} -> ${ratio.toFixed(2)}:1`);
+    const ratio = contrast(STATUS_INK, statusColor(state));
+    if (ratio < 4.5) bad.push(`${state} ${statusColor(state)} -> ${ratio.toFixed(2)}:1`);
   }
-  assert.deepEqual(bad, [], 'white status mark is hard to read on: ' + bad.join(', '));
+  assert.deepEqual(bad, [], 'the status mark is hard to read on: ' + bad.join(', '));
 }, { node: true });
 
 check('THEME-3', 'low', 'brick ink (fill labels, counts) reaches 4.5:1 on every brick colour in both themes', async () => {
@@ -953,6 +930,49 @@ check('VIS-3', 'low', 'bricks: a 2-cell-wide source with a backlog (yard badge) 
   assert.deepEqual(res, [], res.join('\n'));
 });
 
+check('DOT-1', 'medium', 'state dot: the status colour is visible on every brick colour, light and dark (fill inside a dark ring inside a light rim)', async (ctx) => {
+  const res = await P(ctx, () => {
+    const R = window.R;
+    const fails = [];
+    let dots = 0;
+    const lum = ([r, g, b]) => (r + g + b) / 3;
+    const hex = (c) => R.norm(c).match(/#(..)(..)(..)/).slice(1).map((h) => parseInt(h, 16));
+    for (const dark of [false, true]) {
+      for (const type of ['source', 'process', 'storage', 'sink', 'depot']) {
+        for (const state of ['normal', 'busy', 'starved', 'blocked', 'down', 'idle']) {
+          const l = R.M.createLayout({ cols: 12, rows: 8, cellSize: 2 });
+          l.stations.push({ id: 'A', type, name: 'Station', x: 2, y: 2, w: 4, h: 3, params: {} });
+          const rt = { id: 'A', type, state, fill: 0.3, fillLabel: '1/3', yard: 0, consumed: 0 };
+          R.use(l, { vehicles: [], logistics: { stationById: new Map([['A', rt]]) } });
+          R.theme(dark ? 'dark' : 'light');
+          R.focusWorld(8, 7, 30);
+          const fr = R.renderer._fr;
+          const entry = fr.scene.stations[0];
+          const rim = R.norm(R.renderer.theme.dotRim);
+          const shapes = R.shapes(() => { R.renderer.ctx.setTransform(fr.dpr, 0, 0, fr.dpr, 0, 0); R.drawBrick(R.renderer.ctx, fr, type, entry, entry.st, rt, 1); });
+          const outer = shapes.find((s) => s.op === 'fill' && R.norm(s.fill) === rim && s.kinds.includes('arc') && !s.kinds.includes('arcTo'));
+          const tag = `${dark ? 'dark' : 'light'} ${type} ${state}`;
+          if (!outer) { fails.push(`${tag}: no state dot drawn`); continue; }
+          dots++;
+          const cx = (outer.x0 + outer.x1) / 2;
+          const cy = (outer.y0 + outer.y1) / 2;
+          const r = (outer.x1 - outer.x0) / 2 - 2.7; // radius of the status-colour disc
+          const fill = R.pixel(Math.round(cx + 0.78 * r), Math.round(cy));
+          const want = hex(R.renderer.theme.statusColor(state));
+          if (Math.max(...fill.map((v, i) => Math.abs(v - want[i]))) > 16) fails.push(`${tag}: dot fill ${fill} is not the status colour ${want}`);
+          const ring = Math.min(...[0.7, 1.1, 1.4].map((d) => lum(R.pixel(Math.round(cx + r + d), Math.round(cy)))));
+          if (ring > 110) fails.push(`${tag}: no dark ring around the dot (darkest ${Math.round(ring)})`);
+          const bezel = Math.max(...[1.8, 2.2, 2.6].map((d) => lum(R.pixel(Math.round(cx + r + d), Math.round(cy)))));
+          if (bezel < 170) fails.push(`${tag}: no light rim around the dot (brightest ${Math.round(bezel)})`);
+        }
+      }
+    }
+    return { fails, dots };
+  });
+  assert.ok(res.dots >= 60, `only ${res.dots} dots found`);
+  assert.deepEqual(res.fails, [], res.fails.slice(0, 10).join('\n'));
+});
+
 check('LABEL-1', 'medium', 'free labels: `size` is "a text height in grid cells" (js/model/layout.js), so the font must scale with the cell size', async (ctx) => {
   const res = await P(ctx, () => {
     const R = window.R;
@@ -1297,7 +1317,7 @@ check('', '', 'static layer: idle frames, sim ticks, hover / selection / overlay
     expectDelta('12 px pan x 20 inside the cached window', () => { for (let i = 0; i < 20; i++) { R.camera.pan(12, 0); R.renderer.render(1); } }, 0, 0);
     expectDelta('studs toggle', () => R.view({ overlays: { studs: false } }), 1, 1);
     expectDelta('grid toggle', () => R.view({ overlays: { grid: false } }), 1, 1);
-    expectDelta('labels toggle', () => R.view({ overlays: { labels: false } }), 1, 1);
+    expectDelta('labels toggle (text is drawn per frame, not part of the cached layer)', () => R.view({ overlays: { labels: false } }), 0, 0);
     R.view({ overlays: { studs: true, grid: true, labels: true } });
     expectDelta('theme switch', () => R.theme('dark'), 1, 1);
     expectDelta('same layout reassigned', () => { R.renderer.layout = R.layout; R.renderer.render(1); }, 0, 0);

@@ -509,6 +509,7 @@
         <div class="card demo-chart-card"><div class="card__header"><h3 class="card__title">Throughput by variant</h3><span class="card__subtitle">best and worst highlighted</span></div><div class="card__body" id="c-bar-h"></div></div>
         <div class="card demo-chart-card"><div class="card__header"><h3 class="card__title">Lead time by variant</h3><span class="card__subtitle">grouped columns</span></div><div class="card__body" id="c-bar-v"></div></div>
         <div class="card demo-chart-card"><div class="card__header"><h3 class="card__title">Station utilization</h3><span class="card__subtitle">per-bar colours = station type</span></div><div class="card__body" id="c-bar-st"></div></div>
+        <div class="card demo-chart-card"><div class="card__header"><h3 class="card__title">Change vs baseline</h3><span class="card__subtitle">negative values, horizontal and vertical</span></div><div class="card__body stack" style="--gap: 12px" id="c-bar-delta"></div></div>
         <div class="card demo-chart-card"><div class="card__header"><h3 class="card__title">Vehicle time shares</h3></div><div class="card__body" id="c-stack-veh"></div></div>
         <div class="card demo-chart-card"><div class="card__header"><h3 class="card__title">Workstation states</h3></div><div class="card__body" id="c-stack-st"></div></div>
         <div class="card demo-chart-card"><div class="card__header"><h3 class="card__title">Gauges</h3></div><div class="card__body"><div class="demo-gauges" id="c-gauges"></div></div></div>
@@ -653,6 +654,17 @@
       categories: ['Inbound dock', 'Press 1', 'Press 2', 'Assembly', 'Warehouse', 'Shipping'],
       series: [{ name: 'Utilization', values: [48, 86, 91, 97, 42, 55], colors: ['--st-source', '--st-process', '--st-process', '--st-process', '--st-storage', '--st-sink'] }],
       unit: '%', max: 100,
+    }));
+
+    mount('#c-bar-delta', createBarChart({
+      categories: ['B · +1 AGV', 'C · One-way aisles', 'D · Faster AGVs', 'E · Two docks'],
+      series: [{ name: 'Lead time vs baseline', values: [-2.4, -5.5, -4.1, 1.2] }],
+      unit: 'min', highlight: 'both', better: 'lower',
+    }));
+    mount('#c-bar-delta', createBarChart({
+      orientation: 'vertical', height: 200, valueLabel: 'Deadlocks vs baseline',
+      categories: ['B', 'C', 'D', 'E'],
+      series: [{ name: 'Deadlocks', values: [-2, -3, -3, -1] }],
     }));
 
     mount('#c-stack-veh', createStackedBar({

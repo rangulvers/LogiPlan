@@ -9,6 +9,9 @@ import { TAU, fontOf, measure, fillPill } from './draw.js';
 
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
+/** Below this cell size (px) flow arrows are drawn smaller, so they do not swamp the bricks of a fitted big plant. */
+const SMALL_CELL_PX = 10;
+
 /** Radius in CSS px of a flow marker badge: grows a little with the cell size, stays tappable. */
 export const markerRadius = (fr) => clamp(fr.cs * fr.zoom * 0.42, 7, 11);
 
@@ -119,8 +122,9 @@ function drawArrow(ctx, fr, entry, width, highlighted) {
   const curve = entry.curve;
   const c = toPx(fr, curve, fr.curvePx);
   const theme = fr.theme;
-  const w = highlighted ? width + 1.5 : width;
-  const head = clamp(w * 3.4 + 4, 9, 20);
+  const k = clamp((fr.cs * fr.zoom) / SMALL_CELL_PX, 0.5, 1); // arrows shrink with the bricks when zoomed far out
+  const w = (highlighted ? width + 1.5 : width) * k;
+  const head = clamp(w * 3.4 + 4, 9 * k, 20 * k);
   const tEnd = curve.t1;
   const tBase = Math.max(curve.t0, tEnd - (head * 0.85) / Math.max(quadSpeed(c, tEnd), 1e-6));
   const x0 = quadAt(c.ax, c.qx, c.bx, curve.t0);

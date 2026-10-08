@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   wrapAngle, lerpAngle, fitText, quadPoint, quadAngle, quadSpeed, flowCurve, distToCurve, HANDLE_NAMES, handlePoint, hitHandle,
-  pointInRect, rectOverlapsBox, niceScale,
+  pointInRect, niceScale,
 } from '../js/ui/render/geometry.js';
 import { buildScene, getScene, OCC_ROAD, OCC_STATION, OCC_OBSTACLE } from '../js/ui/render/scene.js';
 import { layoutFromAscii } from './helpers/ascii.js';
@@ -76,14 +76,36 @@ test('geometry: A->B and B->A bow to opposite sides so the two arrows never over
   assert.ok(distToCurve(ba, m1[0], m1[1]) > 1);
 });
 
-test('geometry: flowCurve returns null when there is no visible arrow', () => {
+test('geometry: flowCurve gives a full arrow for a gap of 6 m and no curve only where the stations coincide', () => {
   const a = { x: 0, y: 0, w: 4, h: 4 };
   assert.equal(flowCurve(a, a), null, 'same rectangle');
-  assert.equal(flowCurve(a, { x: 4.1, y: 0, w: 4, h: 4 }), null, 'touching bricks leave no room');
-  assert.equal(flowCurve(a, { x: 1, y: 1, w: 2, h: 2 }), null, 'one inside the other');
-  assert.ok(flowCurve(a, { x: 10, y: 0, w: 4, h: 4 }), 'a gap of 6 m is enough');
+  assert.equal(flowCurve(a, { x: 1, y: 1, w: 2, h: 2 }), null, 'one inside the other with the same centre');
+  assert.equal(flowCurve(a, { x: 1, y: 1, w: 12, h: 12 }), null, 'a rectangle that swallows the other centre');
+  const arrow = flowCurve(a, { x: 10, y: 0, w: 4, h: 4 });
+  assert.ok(arrow && !arrow.marker && arrow.length > 5, 'a gap of 6 m is a proper arrow');
   const diagonal = flowCurve({ x: 0, y: 0, w: 4, h: 4 }, { x: 30, y: 30, w: 4, h: 4 });
-  assert.ok(diagonal && Number.isFinite(diagonal.length));
+  assert.ok(diagonal && !diagonal.marker && Number.isFinite(diagonal.length));
+});
+
+test('geometry: flows between touching or nearly touching stations become a marker centred on the gap, never null', () => {
+  const a = { x: 0, y: 0, w: 4, h: 4 };
+  for (const gap of [0, 0.05, 0.1, 0.2, 0.3]) {
+    const b = { x: 4 + gap, y: 0, w: 4, h: 4 };
+    const c = flowCurve(a, b);
+    assert.ok(c, `gap ${gap} m`);
+    assert.equal(c.marker, true, `gap ${gap} m: too short for an arrow`);
+    const p = quadPoint(c, (c.t0 + c.t1) / 2);
+    assert.ok(Math.abs(p[0] - (4 + gap / 2)) < 0.25, `gap ${gap} m: marker at x ${p[0].toFixed(2)} sits on the shared border`);
+    assert.ok(p[1] > 0 && p[1] < 4, 'between the top and bottom of the bricks');
+    assert.ok(c.t1 > c.t0 && c.length > 0 && c.length < 0.6, `a short piece of curve for picking: ${c.length}`);
+    near(quadAngle(c, (c.t0 + c.t1) / 2), 0, 0.5); // pointing from A towards B
+  }
+  const vertical = flowCurve({ x: 0, y: 0, w: 4, h: 4 }, { x: 0, y: 4, w: 4, h: 4 });
+  assert.ok(vertical.marker);
+  assert.ok(Math.abs(quadAngle(vertical, (vertical.t0 + vertical.t1) / 2) - Math.PI / 2) < 0.5, 'pointing down');
+  const reverse = flowCurve({ x: 4, y: 0, w: 4, h: 4 }, { x: 0, y: 0, w: 4, h: 4 });
+  assert.ok(Math.abs(Math.abs(quadAngle(reverse, (reverse.t0 + reverse.t1) / 2)) - Math.PI) < 0.5, 'B -> A points west');
+  assert.equal(flowCurve(a, { x: 4.6, y: 0, w: 4, h: 4 }).marker, false, 'a gap of 0.6 m still shows a (short) arrow');
 });
 
 test('geometry: quadSpeed and distToCurve measure along the curve', () => {
@@ -115,14 +137,12 @@ test('geometry: handles sit on the rectangle outline and the nearest one wins', 
   assert.equal(hitHandle(0, 0, 6, 6, 5, 5, 7), 'se');
 });
 
-test('geometry: point / box helpers', () => {
+test('geometry: pointInRect is half-open', () => {
   const r = { x: 2, y: 3, w: 4, h: 5 };
   assert.ok(pointInRect(2, 3, r));
   assert.ok(pointInRect(5.9, 7.9, r));
   assert.ok(!pointInRect(6, 3, r));
   assert.ok(!pointInRect(1.9, 4, r));
-  assert.ok(rectOverlapsBox({ x0: 0, y0: 0, x1: 2, y1: 3 }, r), 'touching counts');
-  assert.ok(!rectOverlapsBox({ x0: 0, y0: 0, x1: 1.9, y1: 10 }, r));
 });
 
 test('geometry: niceScale picks 1/2/5 x 10^n metres that fit the pixel budget', () => {
@@ -200,17 +220,36 @@ test('scene: speed zones are grouped into connected cells with equal limits, lab
   assert.equal(scene.limit[1], 0.5);
 });
 
-test('scene: flows get curves; flows with missing or touching stations are skipped; the scene is cached per layout', () => {
+test('scene: flows get curves; flows with missing endpoints are skipped, touching stations get a marker; the scene is cached per layout', () => {
   const layout = layoutFromAscii(['AA....BB', '++++++++'], { stations: { A: 'source', B: 'sink' }, flows: [['A', 'B']] });
   layout.flows.push({ id: 'bad', from: 'A', to: 'nope', weight: 1 });
   layout.flows.push({ id: 'self', from: 'A', to: 'A', weight: 1 });
+  layout.flows.push(null);
   const scene = getScene(layout);
   assert.equal(scene, getScene(layout), 'cached by object identity');
   assert.notEqual(scene, getScene({ ...layout }), 'a new layout object gets a new scene');
   assert.equal(scene.flows.length, 1);
   assert.equal(scene.flows[0].flow.id, 'f1');
+  assert.equal(scene.flows[0].marker, null, 'a normal arrow has no marker');
   assert.equal(getScene(null), null);
   assert.equal(getScene(undefined), null);
+  const touching = layoutFromAscii(['AABB', '++++'], { stations: { A: 'source', B: 'sink' }, flows: [['A', 'B']] });
+  const [entry] = getScene(touching).flows;
+  assert.ok(entry, 'a flow between touching stations is kept');
+  assert.ok(entry.marker && Number.isFinite(entry.marker.x) && Math.abs(entry.marker.x - 4) < 0.3, 'its badge sits on the shared edge (x = 4 m)');
+  assert.ok(Math.abs(entry.marker.angle) < 0.5, 'and points east');
+});
+
+test('scene: labels are sanitised (finite anchor, string text, positive size) and indexed with obstacles by id', () => {
+  const layout = layoutFromAscii(['..#.', '....']);
+  layout.labels.push({ id: 'a', x: 1, y: 2, text: 'Hall', size: 2 }, { id: 'b', x: 1, y: 1, text: 42 }, { id: 'c', x: 1, y: 1, text: { no: 1 }, size: -3 },
+    { id: 'd', x: NaN, y: 1, text: 'lost' }, null, { id: 'e', x: 0, y: 0, text: 'x', size: Infinity });
+  const scene = buildScene(layout);
+  assert.deepEqual(scene.labels.map((l) => [l.id, l.text, l.size]), [['a', 'Hall', 2], ['b', '42', 1], ['c', '', 1], ['e', 'x', 1]]);
+  assert.equal(scene.labelById.get('a'), scene.labels[0]);
+  assert.equal(scene.obstacleById.get('o1'), scene.obstacles[0]);
+  const none = buildScene({ grid: { cols: 8, rows: 8, cellSize: 2 }, labels: 'nope', obstacles: [null] });
+  assert.deepEqual([none.labels.length, none.obstacles.length], [0, 0]);
 });
 
 test('scene: tolerates layouts with missing collections and junk values', () => {

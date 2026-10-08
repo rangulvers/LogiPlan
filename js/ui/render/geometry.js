@@ -197,9 +197,6 @@ export function hitHandle(x, y, w, h, px, py, radius) {
 /** Is (x, y) inside the half-open rectangle {x, y, w, h}? */
 export const pointInRect = (x, y, r) => x >= r.x && y >= r.y && x < r.x + r.w && y < r.y + r.h;
 
-/** Do the closed rectangles {x0,y0,x1,y1} and {x, y, w, h} overlap? */
-export const rectOverlapsBox = (box, r) => r.x <= box.x1 && r.x + r.w >= box.x0 && r.y <= box.y1 && r.y + r.h >= box.y0;
-
 // ---- scale bar -----------------------------------------------------------------------------------------
 
 const NICE_STEPS = [1, 2, 5];

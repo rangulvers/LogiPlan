@@ -268,12 +268,13 @@ function layoutTile(ctx, theme, fpx, avail, g, name, showText, st) {
   let text = '';
   if (showText && name && maxH >= fpx + 2 * padY && avail > 0) {
     ctx.font = fontOf(theme, 600, fpx);
-    const room = [canIcon ? avail - 2 * padX - icon - gap : -1, avail - 2 * padX];
+    const roomWithIcon = canIcon ? avail - 2 * padX - icon - gap : -1;
+    const roomAlone = avail - 2 * padX;
     const full = measure(ctx, name);
-    if (room[0] >= full) { useIcon = true; text = name; } else if (room[1] >= full) text = name;
+    if (roomWithIcon >= full) { useIcon = true; text = name; } else if (roomAlone >= full) text = name;
     else {
-      const withIcon = room[0] >= fpx * 1.6 ? fitName(ctx, st, name, room[0], 0) : '';
-      const alone = room[1] >= fpx * 1.6 ? fitName(ctx, st, name, room[1], 1) : '';
+      const withIcon = roomWithIcon >= fpx * 1.6 ? fitName(ctx, st, name, roomWithIcon, 0) : '';
+      const alone = roomAlone >= fpx * 1.6 ? fitName(ctx, st, name, roomAlone, 1) : '';
       if (withIcon.length > MIN_STUB_WITH_ICON) { useIcon = true; text = withIcon; } else if (alone.length > MIN_STUB_ALONE) text = alone;
     }
   }

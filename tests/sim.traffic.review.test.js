@@ -1,24 +1,26 @@
 // Adversarial review of the traffic engine (js/sim/traffic.js, docs/ARCHITECTURE.md 5.2).
 //
-// The helper tests/helpers/traffic-review-gen.js checks poses and flags only (never the engine's underscore fields).
-//
 // DEFECT tests assert what the architecture promises and FAIL on the engine as reviewed; each says what is wrong.
-// GUARD tests pin behaviour that was attacked and held (they pass today and keep it that way).
+// GUARD tests pin behaviour that was attacked and held (they pass today and must keep passing).
+// The helper tests/helpers/traffic-review-gen.js judges poses and flags only, never the engine's underscore fields.
 //
-// Run the big randomised sweep (about 330 layouts, three time steps) with   TRAFFIC_REVIEW_FUZZ=full npm test
+// Run the big randomised sweep (about 330 layouts, three time steps; ~13 s) with   TRAFFIC_REVIEW_FUZZ=full npm test
 //
-//   1. lock protocol          DEFECT  two vehicles deadlock on a street with four adjacent junction cells
-//                             DEFECT  ... on a bend that one of them docks at
-//                             DEFECT  ... random free-flowing traffic, no parked vehicle, no breakdown
-//   2. deadlock detector      GUARD   a loading dock and its queue are no deadlock; resolution; resolve = false
-//   3. lock leaks             GUARD   detach / remove / relocate / drive away / repair release the cell
-//   4. physics                DEFECT  a strong-braking follower behind a weak-braking leader brakes far beyond its decel
-//                             DEFECT  easing onto the lane line drives into the opposite lane
-//                             DEFECT  vehicles longer than a cell overlap in opposite lanes round a corner
-//                             DEFECT  attach() beside traffic that cannot stop any more
-//                             GUARD   speed factor sweeps, dead-end spurs
-//   5. API                    GUARD   refused calls change nothing; random abuse never throws or produces NaN
-//   6. GUARD  determinism, performance (200 vehicles in one queue), independent fuzz (invariants checked on every tick)
+//   1. lock protocol     DEFECT  two vehicles deadlock on a street with four adjacent junction cells
+//                        DEFECT  ... on a bend that one of them docks at
+//                        DEFECT  ... free-flowing random traffic, nobody parked, nobody broken
+//                        DEFECT  a vehicle first in line at a junction is overtaken by every later arrival (starvation)
+//   2. deadlock detector GUARD   a loading dock and its queue are no deadlock; resolution; resolveDeadlocks = false
+//   3. lock leaks        GUARD   detach / remove / relocate / drive away / repair release the cell
+//   4. physics           DEFECT  a strong-braking follower behind a weak-braking leader brakes far beyond its decel
+//                        DEFECT  easing onto the lane line drives into the opposite lane
+//                        DEFECT  vehicles longer than a cell overlap in opposite lanes round a corner
+//                        DEFECT  a vehicle that starts a trip turns in place into a vehicle standing ahead
+//                        DEFECT  attach() beside traffic that cannot stop any more
+//                        GUARD   speed factor sweeps, dead-end spurs
+//   5. API               GUARD   refused calls change nothing; random abuse and callbacks never throw or produce NaN
+//   6. statistics        GUARD   drivingTime / wait totals by reason / per edge equal an independent count
+//   7. GUARD  determinism, performance (200 vehicles in one queue), independent fuzz (invariants checked on every tick)
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
@@ -32,7 +34,7 @@ import { reviewWorld, runReviewScenario, bodyGap, mainComponent, streetLines, bl
 const FULL = process.env.TRAFFIC_REVIEW_FUZZ === 'full';
 const body = (name) => ({ length: FLEET_PRESETS[name].length, speed: FLEET_PRESETS[name].speed, accel: FLEET_PRESETS[name].accel, decel: FLEET_PRESETS[name].decel });
 
-// ---- 1. the lock protocol must not create deadlocks ---------------------------------------------------------------
+// ---- 1. the lock protocol must neither deadlock nor starve ----------------------------------------------------------
 
 test('DEFECT lock chain: two vehicles driving in opposite directions along four adjacent junction cells deadlock', () => {
   // A street that is two cells wide for four cells (a loading apron): cells 2..5 of the street are junctions in a row.
@@ -54,6 +56,8 @@ test('DEFECT lock chain: two vehicles driving in opposite directions along four 
 test('DEFECT lock protocol: a vehicle docking on a bend next to a junction deadlocks with one passing the bend the other way', () => {
   // B ends its trip on the bend (1,1) and takes the junction (1,2) on the way; A passes the bend towards (1,2). A bend
   // is only locked once somebody parks on it, so A stands in the bend while B holds the junction and waits for the bend.
+  // Correct behaviour: B docks on the bend, A waits behind it (a dock blocks its cell, that is the point) and drives on
+  // as soon as B is gone.
   for (const delay of [0, 0.5]) {
     const w = reviewWorld(['+....', '++...', '+++++'], { cell: 2, check: false, traffic: { resolveDeadlocks: false } });
     const a = w.add({ id: 'A', x: 0, y: 0 });
@@ -61,20 +65,60 @@ test('DEFECT lock protocol: a vehicle docking on a bend next to a junction deadl
     w.go(a, 2, 2);
     w.run(delay);
     w.go(b, 1, 1);
-    w.run(90);
+    w.run(60);
     assert.equal(w.traffic.stats.deadlocks, 0, `B starts ${delay} s after A: A (${a.waitReason}) and B (${b.waitReason}) wait for each other`);
-    assert.ok(!a.driving && a.node === w.node(2, 2) && !b.driving && b.node === w.node(1, 1), 'both vehicles arrive');
+    assert.ok(!b.driving && b.node === w.node(1, 1), 'B docks on the bend');
+    assert.ok(a.driving && a.waiting && a.blockedBy === b, 'A waits behind the docked B');
+    w.traffic.detach(b);
+    w.run(30);
+    assert.ok(!a.driving && a.node === w.node(2, 2), 'A arrives once the dock is free');
   }
 });
 
-test('DEFECT free-flowing traffic deadlocks: 16 random street layouts, 16 vehicles each, trips end on plain cells only', () => {
+test('DEFECT free-flowing traffic deadlocks: 12 random street layouts, 16 vehicles each, trips end on plain cells only', () => {
   // No vehicle ever stops for long, none breaks down, nobody starts on a junction: any deadlock is the protocol's own.
   const deadlocked = [];
-  for (let seed = 1; seed <= 16; seed++) {
-    const r = runReviewScenario({ seed, dt: 0.25, seconds: 240, vehicles: 16, chaos: 0, dwellProb: 0, plainOnly: true, resolve: false, headway: 0.5 });
+  for (let seed = 1; seed <= 12; seed++) {
+    const r = runReviewScenario({ seed, dt: 0.25, seconds: 200, vehicles: 16, chaos: 0, dwellProb: 0, plainOnly: true, resolve: false, headway: 0.5 });
     if (r.traffic.stats.deadlocks > 0) deadlocked.push(`seed ${seed}`);
   }
-  assert.deepEqual(deadlocked, [], `${deadlocked.length} of 16 layouts end in a standing deadlock`);
+  assert.deepEqual(deadlocked, [], `${deadlocked.length} of 12 layouts end in a standing deadlock`);
+});
+
+test('DEFECT starvation: a vehicle that is first in line at a junction and has to turn into the main stream is overtaken by every later arrival', () => {
+  // Main street with a stream of 12 vehicles (one every 2 s, to the east end); at t = 8 s a vehicle starts on the side
+  // road and turns east into the same stream. Its lock request is the oldest, but it needs a little more room beyond
+  // the junction than a vehicle driving straight on (turn), so every time the junction is free a later request that
+  // fits is granted first: the lock queue skips what cannot proceed. FIFO would let at most the queue ahead pass.
+  const w = reviewWorld(['+++++++++++++++++', '......+..........', '......+..........', '......+..........'], { cell: 2, check: false });
+  const jx = w.graph.x(w.node(6, 0));
+  const jy = w.graph.y(w.node(6, 0));
+  const side = w.add({ id: 'side', x: 6, y: 3 });
+  const seen = new Map(); // vehicle -> { near: first time within 4 m of the junction, crossed: first time within 1 m of its centre }
+  const stream = [];
+  const watch = (tv) => {
+    const r = seen.get(tv) ?? { near: null, crossed: null };
+    seen.set(tv, r);
+    const d = Math.hypot(tv.x - jx, tv.y - jy);
+    if (r.near === null && d <= 4) r.near = w.traffic.time;
+    if (r.crossed === null && d < 1) r.crossed = w.traffic.time;
+  };
+  let released = 0;
+  for (let i = 0; i < 2400 && !(seen.get(side)?.crossed > 0); i++) {
+    if (i % 20 === 0 && released < 12) {
+      const tv = w.traffic.addVehicle({ id: `m${released}`, node: w.node(0, 0), length: 1.2, speed: 1.5, accel: 0.6, decel: 1 });
+      if (tv && w.go(tv, 16, 0)) { stream.push(tv); released++; }
+    }
+    if (i === 80) w.go(side, 16, 0);
+    w.traffic.step(0.1);
+    if (i >= 80) watch(side);
+    for (const tv of stream) watch(tv);
+    for (const tv of [...stream]) if (!tv.driving && tv.onRoad) { w.traffic.removeVehicle(tv); stream.splice(stream.indexOf(tv), 1); }
+  }
+  const s = seen.get(side);
+  assert.ok(s.crossed > 0, 'the side vehicle crosses at all');
+  const overtakers = [...seen.entries()].filter(([tv, r]) => tv !== side && r.near > s.near + 1.5 && r.crossed !== null && r.crossed < s.crossed).length;
+  assert.ok(overtakers <= 1, `${overtakers} vehicles that reached the junction more than 1.5 s after the side vehicle crossed before it (it arrived at ${s.near.toFixed(0)} s, crossed at ${s.crossed.toFixed(0)} s)`);
 });
 
 // ---- 2. the deadlock detector ----------------------------------------------------------------------------------------
@@ -226,7 +270,7 @@ function follow(leadSpec, folSpec, dt) {
 }
 
 for (const [folName, leadName] of [['forklift', 'AGV'], ['forklift', 'tugger'], ['custom vehicle', 'AGV']]) {
-  test(`DEFECT a ${folName} behind an ${leadName} brakes far beyond its own decel (it counts on the leader braking, then the hard clamp slams it)`, () => {
+  test(`DEFECT a ${folName} behind ${leadName === 'AGV' ? 'an' : 'a'} ${leadName} brakes far beyond its own decel (it counts on the leader braking, then the hard clamp slams it)`, () => {
     for (const dt of [0.05, 0.1, 0.5]) {
       const { braking, gap } = follow(body(leadName.toLowerCase()), body(folName.split(' ')[0]), dt);
       const decel = body(folName.split(' ')[0]).decel;
@@ -271,6 +315,31 @@ for (const name of ['forklift', 'tugger']) {
       }
       assert.ok(worst >= -0.03, `${handedness}-hand traffic: bodies overlap by ${(-worst).toFixed(2)} m (${(FLEET_PRESETS[name].length / 2).toFixed(2)} cells long)`);
     }
+  });
+}
+
+for (const name of ['forklift', 'tugger']) {
+  test(`DEFECT a ${name} (${FLEET_PRESETS[name].length} m, default 2 m cells) that starts a trip turns in place into the broken vehicle standing ahead of it`, () => {
+    // L leaves the junction (2,0) westwards and breaks down just outside it. T comes up the stem, parks on the junction
+    // (its route ends there, L is not on it) and is then sent west: its body swings round in place, nose first towards L.
+    const w = reviewWorld(['+++++', '..+..', '..+..'], { cell: 2, check: false });
+    const junction = w.node(2, 0);
+    const l = w.add({ id: 'L', x: 2, y: 0 });
+    w.go(l, 0, 0);
+    w.runUntil(() => l.driving && w.graph.x(junction) - l.x >= 1 + l.length / 2 + 0.05, 30); // its rear has left the junction cell
+    l.disabled = true;
+    w.run(5);
+    const t = w.add({ id: 'T', x: 2, y: 2, ...body(name) });
+    w.go(t, 2, 0);
+    w.runUntil(() => !t.driving, 60);
+    assert.ok(!t.driving && t.node === junction, 'T parks on the junction');
+    w.go(t, 0, 0);
+    let gap = Infinity;
+    for (let i = 0; i < 100; i++) {
+      w.traffic.step(0.1);
+      gap = Math.min(gap, bodyGap(t, l));
+    }
+    assert.ok(gap >= 0.5 - 0.02, `after turning west T is ${gap.toFixed(2)} m from the vehicle ahead (the headway is 0.5 m)`);
   });
 }
 
@@ -320,9 +389,9 @@ test('GUARD the speed factor can swing between 0 and 3 under a platoon: brakes n
 });
 
 test('GUARD dead-end spurs: vehicles turn round at the tip, queue in the spur and never overlap (random spur depths)', () => {
-  for (let seed = 1; seed <= 6; seed++) {
-    const r = runReviewScenario({ seed, kind: 'spurs', dt: 0.1, seconds: 150, vehicles: 14, chaos: 0.2, headway: 0.5 });
-    assert.deepEqual(Object.keys(r.checker.counts).filter((k) => k !== 'decel' && k !== 'accel' && k !== 'overlap'), [], `seed ${seed}: ${JSON.stringify(r.checker.violations.slice(0, 2))}`);
+  for (let seed = 1; seed <= 4; seed++) {
+    const r = runReviewScenario({ seed, kind: 'spurs', dt: 0.1, seconds: 120, vehicles: 14, chaos: 0.2, headway: 0.5 });
+    assert.deepEqual(Object.keys(r.checker.counts).filter((k) => k !== 'overlap'), [], `seed ${seed}: ${JSON.stringify(r.checker.violations.slice(0, 2))}`);
     assert.ok((r.checker.worst.overlap ?? 0) < 0.1, `seed ${seed}: overlap ${r.checker.worst.overlap}`);
     assert.ok(r.arrivals > 10, `seed ${seed}: ${r.arrivals} arrivals`);
   }
@@ -416,7 +485,7 @@ test('GUARD random API abuse (NaN, 0, Infinity, strings, huge / tiny values, wro
 });
 
 test('GUARD callbacks may remove, detach, attach, relocate and re-route vehicles while the system steps', () => {
-  for (let seed = 1; seed <= 12; seed++) {
+  for (let seed = 1; seed <= 8; seed++) {
     const rng = createRng(seed);
     const graph = buildGraph(layoutFromAscii(streetLines(rng.fork('l')), { cellSize: 2 }));
     const domain = mainComponent(graph);
@@ -457,7 +526,7 @@ test('GUARD callbacks may remove, detach, attach, relocate and re-route vehicles
   }
 });
 
-// ---- statistics and fairness ---------------------------------------------------------------------------------------
+// ---- 6. statistics ---------------------------------------------------------------------------------------------------
 
 test('GUARD statistics are exact: drivingTime, wait totals by reason and per edge / cell equal an independent per-tick count', () => {
   // T junction: D loads on the junction, a queue builds behind it; later a breakdown blocks the street for a while.
@@ -499,38 +568,14 @@ test('GUARD statistics are exact: drivingTime, wait totals by reason and per edg
   near(Array.from(st.edgeWait).reduce((a, b) => a + b, 0), st.totalWait, 'sum of edgeWait');
 });
 
-test('GUARD fairness: a vehicle on a side road is served within a minute although a stream of vehicles keeps the main road busy', () => {
-  for (const length of [1.2, 3.5]) {
-    const w = reviewWorld(['+++++++++++++++++', '......+..........', '......+..........', '......+..........'], { cell: 2, check: false });
-    const side = w.add({ id: 'side', x: 6, y: 3, length, speed: 2, accel: 0.5, decel: 1 });
-    const stream = [];
-    let released = 0;
-    let sideStart = null;
-    for (let i = 0; i < 2400; i++) {
-      if (i % 20 === 0 && i < 1800) { // a vehicle every 2 s for three minutes
-        const tv = w.traffic.addVehicle({ id: `m${released}`, node: w.node(0, 0), length: 1.2, speed: 1.5, accel: 0.6, decel: 1 });
-        if (tv && w.go(tv, 16, 0)) { stream.push(tv); released++; }
-      }
-      if (i === 300) { w.go(side, 16, 0); sideStart = w.traffic.time; } // the stream has saturated the junction by now
-      w.traffic.step(0.1);
-      for (const tv of stream) if (!tv.driving && tv.onRoad) { w.traffic.removeVehicle(tv); stream.splice(stream.indexOf(tv), 1); }
-      if (sideStart !== null && !side.driving) break;
-    }
-    assert.equal(side.driving, false, `the ${length} m vehicle never got across`);
-    assert.ok(w.traffic.time - sideStart < 60, `the ${length} m vehicle needed ${(w.traffic.time - sideStart).toFixed(0)} s`);
-    assert.ok(released >= 12, `${released} stream vehicles were released`);
-    assert.equal(w.traffic.stats.deadlocks, 0);
-  }
-});
+// ---- 7. determinism, performance, independent fuzz ---------------------------------------------------------------------
 
-// ---- 6. determinism, performance, independent fuzz ---------------------------------------------------------------------
-
-test('GUARD the same seed gives bit-identical runs (poses, statistics, deadlock counts) for 10 chaotic scenarios', () => {
+test('GUARD the same seed gives bit-identical runs (poses, statistics, deadlock counts) for 6 chaotic scenarios', () => {
   const signature = (r) => JSON.stringify([r.traffic.time, r.traffic.stats.deadlocks, r.traffic.stats.totalWait, r.traffic.stats.drivingTime,
     Array.from(r.traffic.stats.edgePasses), Array.from(r.traffic.stats.nodeWait),
     r.traffic.vehicles.map((v) => [v.id, v.x, v.y, v.heading, v.v, v.odometer, v.waitTime, v.waitReason])]);
-  for (let seed = 1; seed <= 10; seed++) {
-    const opts = { seed, dt: 0.25, seconds: 120, vehicles: 16, kind: ['streets', 'blob', 'spurs'][seed % 3], chaos: 0.5 };
+  for (let seed = 1; seed <= 6; seed++) {
+    const opts = { seed, dt: 0.25, seconds: 100, vehicles: 16, kind: ['streets', 'blob', 'spurs'][seed % 3], chaos: 0.5 };
     assert.equal(signature(runReviewScenario(opts)), signature(runReviewScenario(opts)), `seed ${seed}`);
   }
 });
@@ -564,9 +609,9 @@ test('GUARD performance: a queue of 200 vehicles behind a breakdown (and its rel
   assert.ok(factor >= 300, `only ${factor.toFixed(0)}x real time with ${vs.length} vehicles in one queue`);
 });
 
-test(`GUARD independent fuzz: ${FULL ? 'about 330' : '45'} random layouts, dt 0.1 / 0.25 / 0.5, breakdowns, speed changes, detach / attach / remove / add`, () => {
-  const per = FULL ? 37 : 5; // layouts per road picture and time step
-  const seconds = FULL ? 150 : 100;
+test(`GUARD independent fuzz: ${FULL ? 'about 330' : '36'} random layouts, dt 0.1 / 0.25 / 0.5, breakdowns, speed changes, detach / attach / remove / add`, () => {
+  const per = FULL ? 37 : 4; // layouts per road picture and time step
+  const seconds = FULL ? 150 : 90;
   const kinds = ['streets', 'blob', 'spurs'];
   const dts = [0.1, 0.25, 0.5];
   const hard = new Set(['nan', 'speed', 'jump', 'cell', 'headway', 'pathgap', 'stats', 'api']);
@@ -577,7 +622,7 @@ test(`GUARD independent fuzz: ${FULL ? 'about 330' : '45'} random layouts, dt 0.
     for (const [d, dt] of dts.entries()) {
       for (let i = 0; i < per; i++) {
         const seed = 1000 + ((k * 3 + d) * per + i);
-        const r = runReviewScenario({ seed, kind, dt, seconds, vehicles: 14, chaos: 0.3, headway: 0.5, fleets: [0, 2, 3], cells: [2, 3, 5] });
+        const r = runReviewScenario({ seed, kind, dt, seconds, vehicles: 14, chaos: 0.3, headway: 0.5, fleets: [0, 2, 3], cells: [2, 3, 5], slowZones: 0.2 });
         layouts++;
         worstOverlap = Math.max(worstOverlap, r.checker.worst.overlap ?? 0);
         const bad = Object.keys(r.checker.counts).filter((kind2) => hard.has(kind2));

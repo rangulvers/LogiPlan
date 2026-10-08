@@ -5,8 +5,8 @@
 //
 // Charts are theme-aware: colours are read from the CSS custom properties of css/tokens.css (getComputedStyle on
 // the chart element) every time a frame is drawn, and a frame is redrawn when the data-theme attribute or the OS colour scheme changes.
-// Marks follow the data-viz rules of the kit: 2 px lines, bars at most 24 px thick with a 4 px rounded data end,
-// 2 px surface gaps between touching fills, recessive 1 px gridlines, text always in text tokens.
+// Marks follow the data-viz rules of the kit: 2 px lines, bars at most 18 px thick with a 4 px rounded data end,
+// 2 px surface gaps between touching fills, recessive hairline gridlines (whole device pixels at any zoom), text always in text tokens.
 //
 // Everything that is pure maths (nice ticks, scales, stacking, hit testing, formatting) is exported at the top of
 // the file and unit-tested in tests/ui.charts.test.js; those functions never touch the DOM, so this module can be
@@ -15,7 +15,7 @@
 import { h } from '../util/dom.js';
 import { clamp, formatClock, formatNumber, formatPercent, round } from '../util/format.js';
 import { rectsOverlap } from '../util/grid.js';
-import { inkFor } from './theme.js';
+import { inkFor, rgba, shade } from './theme.js';
 
 // ==================================================================================================
 // Pure helpers
@@ -119,6 +119,31 @@ export function formatTick(value, step) {
   return formatNumber(clean(value), stepDecimals(step));
 }
 
+/**
+ * Axis ticks whose labels fit side by side: starts with `maxCount` ticks and asks for fewer until neighbouring labels
+ * (centred on their tick) keep `gap` px between them. Never fewer than two ticks, so it always returns something.
+ * @param {number} maxCount largest tick budget to try
+ * @param {object} spec
+ * @param {number} spec.span pixels that the axis domain covers
+ * @param {(count: number) => { min: number, max: number, ticks: number[] }} spec.build tick set for a budget (niceTicks / timeTicks)
+ * @param {(tick: number, set: object) => number} spec.labelWidth measured width of a tick's label
+ * @param {[number, number]} [spec.domain] axis domain when it is narrower than the tick range (default: the set's own range)
+ * @param {number} [spec.gap] minimum space between labels in px
+ * @returns {{ min: number, max: number, step: number, ticks: number[] }}
+ */
+export function fitTicks(maxCount, { span, build, labelWidth, domain, gap = 12 }) {
+  const fits = (set) => {
+    const [lo, hi] = domain ?? [set.min, set.max];
+    const perUnit = hi > lo ? span / (hi - lo) : 0;
+    const shown = set.ticks.filter((t) => t >= lo - EPS && t <= hi + EPS);
+    return shown.every((t, i) => i === 0 || (t - shown[i - 1]) * perUnit >= (labelWidth(t, set) + labelWidth(shown[i - 1], set)) / 2 + gap);
+  };
+  let count = Math.max(2, Math.floor(maxCount) || 2);
+  let set = build(count);
+  while (count > 2 && !fits(set)) set = build(--count);
+  return set;
+}
+
 /** Sensible number of decimals for a value shown without a step: 123, 12.3, 1.23, 0.123. */
 export function autoDigits(value) {
   const a = Math.abs(value);
@@ -217,20 +242,45 @@ export function stackSegments(values, { total } = {}) {
 }
 
 /**
- * Pixel rectangles {x, w} for stacked segments: empty segments get w = 0, touching segments are separated by a
- * `gap` of surface colour (split between both neighbours), tiny non-empty segments stay at least 1 px wide.
+ * Widths for weights sharing `total` pixels in proportion, none narrower than `minWidth`: a segment that would come
+ * out too thin keeps the minimum and the others give up the pixels, so the widths always add up to `total`.
+ */
+function shareWidths(weights, total, minWidth) {
+  const widths = weights.map(() => minWidth);
+  let open = weights.map((_, i) => i);
+  let room = total;
+  for (;;) {
+    const sum = open.reduce((acc, i) => acc + weights[i], 0);
+    const thin = open.filter((i) => (weights[i] / sum) * room < minWidth);
+    if (thin.length === 0 || thin.length === open.length) break;
+    room -= thin.length * minWidth;
+    open = open.filter((i) => !thin.includes(i));
+  }
+  const sum = open.reduce((acc, i) => acc + weights[i], 0);
+  for (const i of open) widths[i] = (weights[i] / sum) * room;
+  return widths;
+}
+
+/**
+ * Pixel rectangles {x, w} for stacked segments inside a bar `width` px wide. Empty segments get w = 0. Neighbouring
+ * segments are `gap` px apart (the gap is taken out of the segments, so the stack still ends where its total ends),
+ * a thin non-empty segment keeps at least 1 px, and the rectangles never overlap or leave the bar, however many
+ * thin segments there are (the gap narrows when there is no room for it).
  */
 export function segmentRects(segments, width, gap = 2) {
-  const live = segments.filter((s) => s.frac > 0);
-  const first = live[0];
-  const last = live[live.length - 1];
-  return segments.map((s) => {
-    if (!(s.frac > 0)) return { x: s.start * width, w: 0 };
-    const left = s === first ? 0 : gap / 2;
-    const right = s === last ? 0 : gap / 2;
-    const x = s.start * width + left;
-    return { x, w: Math.max(1, (s.end - s.start) * width - left - right) };
+  const rects = segments.map((s) => ({ x: s.start * width, w: 0 }));
+  const live = segments.map((s, i) => i).filter((i) => segments[i].frac > 0);
+  if (live.length === 0 || !(width > 0)) return rects;
+  const used = segments[live[live.length - 1]].end * width;
+  const minWidth = Math.min(1, used / live.length);
+  const gaps = live.length > 1 ? Math.min(gap, Math.max(0, (used - live.length * minWidth) / (live.length - 1))) : 0;
+  const widths = shareWidths(live.map((i) => segments[i].frac), used - gaps * (live.length - 1), minWidth);
+  let x = 0;
+  live.forEach((i, k) => {
+    rects[i] = { x, w: widths[k] };
+    x += widths[k] + gaps;
   });
+  return rects;
 }
 
 /** Index of the value closest to `x` in an ascending numeric array of finite numbers; ties pick the lower index; -1 if empty. */
@@ -310,6 +360,15 @@ export function crispLine(v, lineWidth = 1, dpr = 1) {
   const deviceWidth = Math.max(1, Math.round(lineWidth * dpr));
   const dv = v * dpr;
   return (deviceWidth % 2 === 1 ? Math.floor(dv) + 0.5 : Math.round(dv)) / dpr;
+}
+
+/**
+ * Line width in CSS px of a 1 px hairline that covers whole device pixels (1 css px, rounded to a whole number of
+ * device pixels, at least one). Use it together with crispLine(v, 1, dpr): the line then never straddles two pixel rows.
+ */
+export function hairlineWidth(dpr = 1) {
+  const ratio = Number.isFinite(dpr) && dpr > 0 ? dpr : 1;
+  return Math.max(1, Math.round(ratio)) / ratio;
 }
 
 /** Smallest and largest finite value across several arrays (null entries and non-numbers ignored); null when there is none. */
@@ -414,6 +473,10 @@ function colorRef(spec, index) {
   return index < 8 ? `--series-${index + 1}` : '--series-other';
 }
 
+const HEX = /^#[0-9a-f]{3}(?:[0-9a-f]{3})?$/i;
+/** Share of white mixed into a hovered bar or segment (the same lift for both chart types). */
+const HOVER_LIGHTEN = 0.22;
+
 /** CSS value for DOM styling (legend keys follow theme changes without a redraw). */
 const cssColor = (ref) => (ref.startsWith('--') ? `var(${ref})` : ref);
 
@@ -490,16 +553,26 @@ function watchTheme(fn) {
 
 const setFont = (ctx, theme, size, weight = 400) => { ctx.font = `${weight} ${size}px ${theme.font}`; };
 
+const KEYBOARD_HINT = 'Interactive chart. Use the arrow keys to move between values, Home and End to jump to the ends, Enter to select and Escape to close the tooltip.';
+let hintCount = 0;
+
 /**
  * The canvas and its chrome: wrapper, empty-state text, tooltip, live region, resize + theme handling and the
  * coalesced redraw. `render({ ctx, w, h, dpr, theme })` is called with a cleared, scaled context.
+ * An `interactive` chart is focusable and tells assistive technology that arrow keys explore it.
  */
-function createHost({ className, height, render, label }) {
+function createHost({ className, height, render, label, interactive = false }) {
   const canvas = h('canvas', { class: 'chart__canvas', role: 'img', 'aria-label': label || 'Chart' });
   const emptyEl = h('div', { class: 'chart__empty', hidden: true });
   const tipEl = h('div', { class: 'chart-tooltip', hidden: true });
   const liveEl = h('div', { class: 'sr-only', 'aria-live': 'polite' });
-  const el = h('div', { class: `chart ${className}` }, canvas, emptyEl, tipEl, liveEl);
+  const hintEl = interactive ? h('div', { class: 'sr-only', id: `chart-hint-${++hintCount}` }, KEYBOARD_HINT) : null;
+  if (interactive) {
+    canvas.tabIndex = 0;
+    canvas.setAttribute('aria-roledescription', 'interactive chart');
+    canvas.setAttribute('aria-describedby', hintEl.id);
+  }
+  const el = h('div', { class: `chart ${className}` }, canvas, emptyEl, tipEl, liveEl, hintEl);
   const cleanups = [];
   let frame = 0;
   let dead = false;
@@ -584,12 +657,20 @@ function buildLegend(items, { toggle = false, hidden = new Set(), onToggle, line
   if (toggle) {
     return h('div', { class: 'chart-legend', role: 'group', 'aria-label': 'Series (click to show or hide)' },
       items.map((it) => h('button', {
-        type: 'button', class: 'chart-legend__item', 'aria-pressed': String(!hidden.has(it.index)), onclick: () => onToggle(it.index),
+        type: 'button', class: 'chart-legend__item', dataset: { index: it.index }, 'aria-pressed': String(!hidden.has(it.index)), onclick: () => onToggle(it.index),
       }, key(it), h('span', null, it.name))));
   }
   return h('ul', { class: 'chart-legend' },
     items.map((it) => h('li', { class: 'chart-legend__item' }, key(it), h('span', null, it.name),
       it.note ? h('span', { class: 'chart-legend__note' }, it.note) : null)));
+}
+
+/**
+ * Shows or hides series in a toggle legend by flipping aria-pressed on the existing buttons. The legend is not rebuilt
+ * for this, so the button that was just operated keeps keyboard focus.
+ */
+function setLegendPressed(legend, hidden) {
+  for (const button of legend.querySelectorAll('button.chart-legend__item')) button.setAttribute('aria-pressed', String(!hidden.has(Number(button.dataset.index))));
 }
 
 /** Replaces the legend element in place when its description changed; returns the new signature. */
@@ -699,8 +780,7 @@ export function createLineChart(options = {}) {
   let announceNext = false;
   let legendSig = null;
   const slot = { current: h('div', { hidden: true }) };
-  const host = createHost({ className: 'chart--line', height: opts.height, render, label: opts.ariaLabel || 'Line chart' });
-  host.canvas.tabIndex = 0;
+  const host = createHost({ className: 'chart--line', height: opts.height, render, label: opts.ariaLabel || 'Line chart', interactive: true });
 
   const visible = () => model.series.filter((s) => !hidden.has(s.index));
   const xFmt = (v) => (opts.xFormat ? opts.xFormat(v) : opts.xAxis === 'time' ? formatClock(v) : formatValue(v, { unit: opts.xUnit }));
@@ -722,7 +802,8 @@ export function createLineChart(options = {}) {
     const { ctx, w, h: hgt, theme } = g;
     layout = null;
     const vis = visible();
-    const ext = seriesExtent(vis.flatMap((s) => [s.y, s.lo, s.hi]), { includeZero: opts.includeZero });
+    const refYs = (opts.refLines || []).filter((ref) => ref?.axis === 'y').map((ref) => ref.value);
+    const ext = seriesExtent([...vis.flatMap((s) => [s.y, s.lo, s.hi]), refYs], { includeZero: opts.includeZero });
     const xs = model.xs.filter(Number.isFinite);
     if (!ext || xs.length === 0) return;
 
@@ -761,7 +842,7 @@ export function createLineChart(options = {}) {
     const lineAt = (y, color) => {
       const yy = crispLine(y, 1, dpr);
       ctx.strokeStyle = color;
-      ctx.lineWidth = 1;
+      ctx.lineWidth = hairlineWidth(dpr);
       ctx.beginPath();
       ctx.moveTo(plot.x0, yy);
       ctx.lineTo(plot.x1, yy);
@@ -781,9 +862,15 @@ export function createLineChart(options = {}) {
     lineAt(plot.y1, theme.axis);
 
     const timed = opts.xAxis === 'time';
-    const count = clamp(Math.floor((plot.x1 - plot.x0) / 84), 2, 10);
-    const xTicks = timed ? timeTicks(xMin, xMax, count) : niceTicks(xMin, xMax, count, { integer: allIntegers([model.xs]) });
-    const xText = (v) => (opts.xFormat ? opts.xFormat(v) : timed ? formatTimeTick(v, xTicks.step) : formatTick(v, xTicks.step));
+    const integerX = allIntegers([model.xs]);
+    const labelOf = (v, set) => (opts.xFormat ? opts.xFormat(v) : timed ? formatTimeTick(v, set.step) : formatTick(v, set.step));
+    const xTicks = fitTicks(clamp(Math.floor((plot.x1 - plot.x0) / 84), 2, 10), {
+      span: xS(xMax) - xS(xMin),
+      domain: [xMin, xMax],
+      build: (count) => (timed ? timeTicks(xMin, xMax, count) : niceTicks(xMin, xMax, count, { integer: integerX })),
+      labelWidth: (v, set) => ctx.measureText(labelOf(v, set)).width,
+    });
+    const xText = (v) => labelOf(v, xTicks);
     ctx.textBaseline = 'top';
     ctx.textAlign = 'center';
     ctx.fillStyle = theme.dim;
@@ -808,10 +895,12 @@ export function createLineChart(options = {}) {
     for (const ref of opts.refLines || []) {
       if (!Number.isFinite(ref?.value)) continue;
       const vertical = ref.axis === 'x';
+      const [d0, d1] = (vertical ? xS : yS).domain;
+      if (ref.value < Math.min(d0, d1) - EPS || ref.value > Math.max(d0, d1) + EPS) continue; // outside the axis: nothing to point at
       const pos = crispLine(vertical ? xS(ref.value) : yS(ref.value), 1, dpr);
       ctx.strokeStyle = theme.faint;
       ctx.globalAlpha = 0.7;
-      ctx.lineWidth = 1;
+      ctx.lineWidth = hairlineWidth(dpr);
       ctx.setLineDash([4, 3]);
       ctx.beginPath();
       if (vertical) { ctx.moveTo(pos, plot.y0); ctx.lineTo(pos, plot.y1); } else { ctx.moveTo(plot.x0, pos); ctx.lineTo(plot.x1, pos); }
@@ -888,7 +977,7 @@ export function createLineChart(options = {}) {
     const x = crispLine(px[index], 1, dpr);
     ctx.strokeStyle = theme.faint;
     ctx.globalAlpha = 0.6;
-    ctx.lineWidth = 1;
+    ctx.lineWidth = hairlineWidth(dpr);
     ctx.beginPath();
     ctx.moveTo(x, plot.y0);
     ctx.lineTo(x, plot.y1);
@@ -971,7 +1060,7 @@ export function createLineChart(options = {}) {
     host.el.classList.toggle('chart--clickable', Boolean(opts.onPointClick));
     const show = model.hasData && (opts.legend === true || (opts.legend === 'auto' && model.series.length >= 2));
     const items = show ? model.series : [];
-    legendSig = swapLegend(slot, items, JSON.stringify([show, items.map((s) => [s.name, s.ref]), [...hidden]]), legendSig, () => buildLegend(items, {
+    legendSig = swapLegend(slot, items, JSON.stringify([show, items.map((s) => [s.name, s.ref])]), legendSig, () => buildLegend(items, {
       toggle: true, hidden, line: true,
       onToggle: (i) => {
         if (hidden.has(i)) hidden.delete(i);
@@ -979,6 +1068,7 @@ export function createLineChart(options = {}) {
         sync();
       },
     }));
+    setLegendPressed(slot.current, hidden);
     host.invalidate();
   }
 
@@ -1043,8 +1133,7 @@ export function createBarChart(options = {}) {
   let announceNext = false;
   let legendSig = null;
   const slot = { current: h('div', { hidden: true }) };
-  const host = createHost({ className: 'chart--bar', height: 0, render, label: opts.ariaLabel || 'Bar chart' });
-  host.canvas.tabIndex = 0;
+  const host = createHost({ className: 'chart--bar', height: 0, render, label: opts.ariaLabel || 'Bar chart', interactive: true });
 
   const horizontal = () => opts.orientation !== 'vertical';
   const fmt = (v) => (opts.valueFormat ? opts.valueFormat(v) : formatValue(v, { unit: opts.unit, digits: opts.digits }));
@@ -1066,16 +1155,25 @@ export function createBarChart(options = {}) {
     announceNext = false;
   }
 
+  const tickLabel = (v, set) => (opts.valueFormat ? opts.valueFormat(v) : formatTick(v, set.step));
+
   function draw(g) {
-    const { w, h: hgt } = g;
+    const { ctx, theme, w, h: hgt } = g;
     layout = null;
     const ext = seriesExtent(model.series.map((s) => s.values), { includeZero: true });
     if (!ext || model.categories.length === 0) return;
-    const ticks = niceTicks(opts.min ?? ext.min, opts.max ?? ext.max, horizontal() ? clamp(Math.floor(w / 64), 3, 6) : clamp(Math.floor(hgt / 44), 3, 6), { integer: allIntegers(model.series.map((s) => s.values)) });
-    const domain = [opts.min ?? ticks.min, opts.max ?? ticks.max];
-    const tickText = (v) => (opts.valueFormat ? opts.valueFormat(v) : formatTick(v, ticks.step));
-    const plot = barPlot(g, ticks, tickText);
+    const integer = allIntegers(model.series.map((s) => s.values));
+    const budget = horizontal() ? clamp(Math.floor(w / 64), 3, 6) : clamp(Math.floor(hgt / 44), 3, 6);
+    const build = (count) => niceTicks(opts.min ?? ext.min, opts.max ?? ext.max, count, { integer });
+    let ticks = build(budget);
+    const plot = barPlot(g, ticks);
     if (!plot) return;
+    if (horizontal()) { // tick labels run along the axis: use fewer ticks when long labels (valueFormat) would touch
+      setFont(ctx, theme, 11);
+      ticks = fitTicks(budget, { span: plot.x1 - plot.x0, build, labelWidth: (t, set) => ctx.measureText(tickLabel(t, set)).width });
+    }
+    const domain = [opts.min ?? ticks.min, opts.max ?? ticks.max];
+    const tickText = (v) => tickLabel(v, ticks);
     const vS = linearScale(domain, horizontal() ? [plot.x0, plot.x1] : [plot.y1, plot.y0]);
     const bands = bandScale(model.categories.length, horizontal() ? [plot.y0, plot.y1] : [plot.x0, plot.x1], 0.3);
     const group = groupLayout(bands.bandwidth, model.series.length, { maxThickness: BAR_MAX_THICKNESS });
@@ -1087,23 +1185,37 @@ export function createBarChart(options = {}) {
     drawBarCategoryLabels(g, plot, bands);
   }
 
-  /** Plot rectangle: margins depend on label widths, which are measured with the real font. */
-  function barPlot(g, ticks, tickText) {
+  /**
+   * Plot rectangle: margins depend on label widths, which are measured with the real font. Value labels sit just
+   * beyond the bar ends, so room is reserved on the side where bars point: after the bar ends for positive values,
+   * and (when there are negative values) before them on a horizontal chart / below them on a vertical one.
+   * Category labels stay in their own column (horizontal: `catX` is their right edge) or row (vertical: `catY`).
+   */
+  function barPlot(g, ticks) {
     const { ctx, w, h: hgt, theme } = g;
     setFont(ctx, theme, 11);
-    const tickW = Math.max(...ticks.ticks.map((t) => ctx.measureText(tickText(t)).width));
+    const tickW = Math.max(...ticks.ticks.map((t) => ctx.measureText(tickLabel(t, ticks)).width));
     setFont(ctx, theme, 12, 600);
-    const labelW = (v, tag) => ctx.measureText(fmt(v)).width + (tag ? 8 + ctx.measureText(tag).width : 0);
-    const valueW = showLabels() ? Math.max(0, ...model.series.flatMap((s, si) => s.values.map((v, ci) => (Number.isFinite(v) ? labelW(v, tagText(ci, si)) : 0)))) : 0;
-    const tagged = model.tags.some((row) => row.some(Boolean));
+    const room = { pos: 0, neg: 0 };
+    const tagged = { pos: false, neg: false };
+    if (showLabels()) {
+      model.series.forEach((s, si) => s.values.forEach((v, ci) => {
+        if (!Number.isFinite(v)) return;
+        const side = v < 0 ? 'neg' : 'pos';
+        const tag = tagText(ci, si);
+        room[side] = Math.max(room[side], ctx.measureText(fmt(v)).width + (tag ? 8 + ctx.measureText(tag).width : 0));
+        tagged[side] = tagged[side] || Boolean(tag);
+      }));
+    }
     const title = opts.valueLabel ? 16 : 0;
     let plot;
     if (horizontal()) {
       setFont(ctx, theme, 12);
-      const catW = Math.min(Math.max(...model.categories.map((c) => ctx.measureText(c).width)), w * 0.4);
-      plot = { x0: Math.ceil(catW) + 14, x1: w - Math.max(14, Math.ceil(valueW) + 12), y0: 4, y1: hgt - 22 - title };
+      const catX = Math.ceil(Math.min(Math.max(...model.categories.map((c) => ctx.measureText(c).width)), w * 0.4)) + 4;
+      plot = { x0: catX + 10 + (room.neg ? Math.ceil(room.neg) + 8 : 0), x1: w - Math.max(14, Math.ceil(room.pos) + 12), y0: 4, y1: hgt - 22 - title, catX };
     } else {
-      plot = { x0: Math.ceil(tickW) + 12, x1: w - 10, y0: (showLabels() ? (tagged ? 36 : 22) : 10) + title, y1: hgt - 26 };
+      const below = room.neg ? (tagged.neg ? 30 : 18) : 0;
+      plot = { x0: Math.ceil(tickW) + 12, x1: w - 10, y0: (room.pos ? (tagged.pos ? 36 : 22) : 10) + title, y1: hgt - 26 - below, catY: hgt - 18 };
     }
     return plot.x1 - plot.x0 < 40 || plot.y1 - plot.y0 < 30 ? null : plot;
   }
@@ -1112,7 +1224,7 @@ export function createBarChart(options = {}) {
     const { ctx, theme, dpr } = g;
     setFont(ctx, theme, 11);
     ctx.fillStyle = theme.dim;
-    ctx.lineWidth = 1;
+    ctx.lineWidth = hairlineWidth(dpr);
     for (const t of ticks.ticks) {
       if (t < domain[0] - EPS || t > domain[1] + EPS) continue;
       const p = crispLine(vS(t), 1, dpr);
@@ -1181,7 +1293,7 @@ export function createBarChart(options = {}) {
         ctx.fillStyle = barColor(s, ci, theme);
         ctx.fill();
         if (hover && hover.ci === ci && hover.si === s.index) {
-          ctx.fillStyle = 'rgba(255, 255, 255, 0.22)';
+          ctx.fillStyle = `rgba(255, 255, 255, ${HOVER_LIGHTEN})`;
           ctx.fill();
         }
       }
@@ -1189,11 +1301,12 @@ export function createBarChart(options = {}) {
   }
 
   /**
-   * Value labels at the bar ends (and the best / worst tag). A label that would run into another bar is left out:
-   * the tooltip carries the value, and nothing is ever clipped or overdrawn.
+   * Value labels at the bar ends (and the best / worst tag). A label that would run into another bar or label, or
+   * leave the canvas, is left out: the tooltip carries the value, and nothing is ever clipped or overdrawn.
    */
   function drawBarLabels(g) {
-    const { ctx, theme } = g;
+    const { ctx, theme, h: hgt } = g;
+    const placed = [];
     for (const b of layout.bars) {
       const v = model.series[b.si].values[b.ci];
       const text = fmt(v);
@@ -1215,8 +1328,12 @@ export function createBarChart(options = {}) {
         continue;
       }
       const lines = tag ? 28 : 14;
-      const box = { x: b.x + b.w / 2 - valueW / 2, y: positive ? b.y - 5 - lines : b.y + b.h + 5, w: valueW, h: lines };
-      if (box.y < 0 || layout.bars.some((o) => o !== b && rectsOverlap(box, o))) continue;
+      setFont(ctx, theme, 10, 500);
+      const wide = Math.max(valueW, tag ? ctx.measureText(tag).width : 0) + 4;
+      setFont(ctx, theme, 12, 600);
+      const box = { x: b.x + b.w / 2 - wide / 2, y: positive ? b.y - 5 - lines : b.y + b.h + 5, w: wide, h: lines };
+      if (box.y < 0 || box.y + box.h > hgt || layout.bars.some((o) => o !== b && rectsOverlap(box, o)) || placed.some((o) => rectsOverlap(box, o))) continue;
+      placed.push(box);
       ctx.textAlign = 'center';
       ctx.textBaseline = positive ? 'bottom' : 'top';
       const y = positive ? b.y - 5 : b.y + b.h + 5;
@@ -1238,11 +1355,11 @@ export function createBarChart(options = {}) {
       if (horizontal()) {
         ctx.textAlign = 'right';
         ctx.textBaseline = 'middle';
-        ctx.fillText(truncateText(c, plot.x0 - 10, measure), plot.x0 - 10, bands.center(ci));
+        ctx.fillText(truncateText(c, plot.catX, measure), plot.catX, bands.center(ci));
       } else {
         ctx.textAlign = 'center';
         ctx.textBaseline = 'top';
-        ctx.fillText(truncateText(c, bands.step - 6, measure), bands.center(ci), plot.y1 + 8);
+        ctx.fillText(truncateText(c, bands.step - 6, measure), bands.center(ci), plot.catY);
       }
     });
   }
@@ -1370,8 +1487,7 @@ export function createStackedBar(options = {}) {
   let announceNext = false;
   let legendSig = null;
   const slot = { current: h('div', { hidden: true }) };
-  const host = createHost({ className: 'chart--stacked', height: 0, render, label: opts.ariaLabel || 'Stacked bar chart' });
-  host.canvas.tabIndex = 0;
+  const host = createHost({ className: 'chart--stacked', height: 0, render, label: opts.ariaLabel || 'Stacked bar chart', interactive: true });
 
   const percent = (frac) => formatPercent(frac, frac > 0 && frac < 0.1 ? 1 : 0);
 
@@ -1427,14 +1543,23 @@ export function createStackedBar(options = {}) {
     ctx.fillStyle = theme.track;
     ctx.fillRect(x0, y, width, STACK_BAR_HEIGHT);
     const rects = segmentRects(row.stack, width, 2);
+    let edge = null; // right edge of the previous segment: the gap after it is painted in the surface colour
     row.segments.forEach((seg, si) => {
       const r = rects[si];
       if (!(r.w > 0)) return;
-      const color = canvasColor(seg.ref, theme);
+      if (edge !== null) {
+        ctx.fillStyle = theme.surface;
+        ctx.fillRect(x0 + edge, y, r.x - edge, STACK_BAR_HEIGHT);
+      }
+      edge = r.x + r.w;
+      const hovered = Boolean(hover) && hover.ri === row.index && hover.si === si;
+      const base = canvasColor(seg.ref, theme);
+      const lifted = hovered && HEX.test(base);
+      const color = lifted ? shade(base, HOVER_LIGHTEN) : base; // what is actually on screen, so labels get the right ink
       ctx.fillStyle = color;
       ctx.fillRect(x0 + r.x, y, r.w, STACK_BAR_HEIGHT);
-      if (hover && hover.ri === row.index && hover.si === si) {
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.22)';
+      if (hovered && !lifted) {
+        ctx.fillStyle = `rgba(255, 255, 255, ${HOVER_LIGHTEN})`;
         ctx.fillRect(x0 + r.x, y, r.w, STACK_BAR_HEIGHT);
       }
       layout.rows.push({ ri: row.index, si, x: x0 + r.x, y, w: r.w, h: STACK_BAR_HEIGHT });
@@ -1448,7 +1573,7 @@ export function createStackedBar(options = {}) {
     const { ctx, theme } = g;
     setFont(ctx, theme, 11, 600);
     if (ctx.measureText(text).width + 12 > w) return;
-    ctx.fillStyle = /^#[0-9a-f]{3,6}$/i.test(fill) ? inkFor(fill) : theme.text;
+    ctx.fillStyle = HEX.test(fill) ? inkFor(fill) : theme.text;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText(text, x + w / 2, y + STACK_BAR_HEIGHT / 2 + 0.5);
@@ -1527,6 +1652,20 @@ export function createStackedBar(options = {}) {
 // ==================================================================================================
 
 /**
+ * Fill for the area under a line: the line colour at 28 % strength fading to nothing at the baseline (a flat colour
+ * when the canvas does not normalise `color` to a plain hex value, e.g. a translucent one).
+ */
+function fadeFill(ctx, color, top, bottom) {
+  ctx.fillStyle = color;
+  const hex = ctx.fillStyle; // the canvas normalises any opaque CSS colour to '#rrggbb'
+  if (!HEX.test(hex)) return color;
+  const gradient = ctx.createLinearGradient(0, top, 0, bottom);
+  gradient.addColorStop(0, rgba(hex, 0.28));
+  gradient.addColorStop(1, rgba(hex, 0));
+  return gradient;
+}
+
+/**
  * Tiny trend line for KPI tiles: no axes, an end dot on the latest value, an optional soft area. Fills the width of
  * its container unless `width` is given.
  *
@@ -1565,8 +1704,9 @@ export function createSparkline(options = {}) {
         for (let i = a; i <= b; i++) ctx.lineTo(xS(i), yS(values[i]));
         ctx.lineTo(xS(b), hgt);
         ctx.closePath();
-        ctx.globalAlpha = 0.1;
-        ctx.fillStyle = color;
+        const fill = fadeFill(ctx, color, Math.min(...values.slice(a, b + 1).map((v) => yS(v))), hgt);
+        ctx.fillStyle = fill;
+        ctx.globalAlpha = typeof fill === 'string' ? 0.12 : 1;
         ctx.fill();
         ctx.globalAlpha = 1;
       }
@@ -1604,6 +1744,7 @@ export function createSparkline(options = {}) {
 // Gauge
 // ==================================================================================================
 
+const GAUGE_SIZE = 160;
 const GAUGE_START = Math.PI; // 9 o'clock
 const GAUGE_SWEEP = Math.PI; // over the top to 3 o'clock
 
@@ -1622,7 +1763,7 @@ const GAUGE_SWEEP = Math.PI; // over the top to 3 o'clock
  * @returns {{ el: HTMLElement, update(patch: object): void, destroy(): void }}
  */
 export function createGauge(options = {}) {
-  const opts = { min: 0, max: 1, size: 160, ...options };
+  const opts = { min: 0, max: 1, size: GAUGE_SIZE, ...options };
   let bands = gaugeBands(opts.min, opts.max, opts.thresholds);
   const valueEl = h('div', { class: 'gauge__value tnum' });
   const captionEl = h('div', { class: 'gauge__caption' });
@@ -1636,11 +1777,14 @@ export function createGauge(options = {}) {
 
   const defaultFormat = (v) => (opts.max <= 1 ? formatPercent(v, 0) : formatValue(v, { unit: opts.unit }));
   const format = (v) => (opts.format || defaultFormat)(v);
+  /** Scale ends: the caller's format, else a percent or a compact number without the unit (the readout above carries it). */
+  const scaleText = (v) => (opts.format ? opts.format(v) : opts.max <= 1 ? formatPercent(v, 0) : formatTick(v, (opts.max - opts.min) / 4));
 
+  /** Dial geometry for a canvas `w` px wide: always a positive arc radius, whatever the width. The dial is w / 2 high. */
   const geometry = (w) => {
-    const pad = 8;
-    const thickness = Math.max(8, Math.round(w * 0.07));
-    return { thickness, radius: (w - 2 * pad) / 2, cx: w / 2, cy: pad + (w - 2 * pad) / 2 };
+    const pad = Math.min(8, w / 8);
+    const radius = Math.max(1, (w - 2 * pad) / 2);
+    return { thickness: Math.min(Math.max(8, Math.round(w * 0.07)), radius / 2), radius, cx: w / 2, cy: pad + radius };
   };
 
   /** One arc of the dial between two fractions of the sweep. */
@@ -1667,19 +1811,21 @@ export function createGauge(options = {}) {
     setFont(ctx, theme, 11);
     ctx.fillStyle = theme.faint;
     ctx.textBaseline = 'top';
-    ctx.textAlign = 'center';
-    ctx.fillText(format(opts.min), g.cx - g.radius + g.thickness / 2, g.cy + 8);
-    ctx.fillText(format(opts.max), g.cx + g.radius - g.thickness / 2, g.cy + 8);
+    // scale ends hang under the dial edges, each limited to its own half so long labels never meet or leave the canvas
+    const measure = (s) => ctx.measureText(s).width;
+    ctx.textAlign = 'left';
+    ctx.fillText(truncateText(scaleText(opts.min), g.radius - 4, measure), g.cx - g.radius, g.cy + 8);
+    ctx.textAlign = 'right';
+    ctx.fillText(truncateText(scaleText(opts.max), g.radius - 4, measure), g.cx + g.radius, g.cy + 8);
   }
 
   function sync() {
     bands = gaugeBands(opts.min, opts.max, opts.thresholds);
-    const g = geometry(opts.size);
     const band = gaugeBandAt(opts.value, bands);
     const known = Number.isFinite(opts.value);
-    el.style.width = `${opts.size}px`;
-    host.el.style.width = `${opts.size}px`;
-    host.setHeight(Math.round(g.cy + 24));
+    const size = Number.isFinite(opts.size) && opts.size > 0 ? opts.size : GAUGE_SIZE;
+    el.style.width = `${size}px`; // the dial's height follows its width in CSS, so a narrower container shrinks it
+    el.style.setProperty('--gauge-size', `${size}px`);
     valueEl.textContent = known ? format(opts.value) : '–';
     captionEl.textContent = opts.label ?? '';
     captionEl.hidden = !opts.label;
