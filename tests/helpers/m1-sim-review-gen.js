@@ -4,13 +4,18 @@
 // Plants are built ONLY through the public model mutators (layout.js), run on the REAL engine (Simulation: real traffic, real Stats) and audited
 // with a checker that recomputes everything from the raw state instead of trusting the counters of the engine.
 //
-//   hostileTruckPlant(seed, opts)       a random plant full of corners (see below) plus a plan of what-if actions for the run
-//   audit(sim, ledger)                  every invariant of 6.3.5 and the conservation law, recomputed from scratch (throws a descriptive Error)
-//   makeLedger(sim)                     listens to the events of a run: an independent tally of the truck events and the loads
-//   runAudited(sim, seconds, opts)      step tick by tick, apply the planned actions, audit after every tick
-//   walk(value)                         every number inside a report, with its path (for the "no NaN anywhere" check)
+//   hostileTruckPlant(seed, opts)       a random plant full of corners (see below) plus the what-if actions to apply while it runs
+//   microLine(opts)                     a small ring-road plant (Goods in A, Storage S, Goods out C) for exact experiments
+//   withoutVehicles(layout)             the same plant with no fleet: trucks arrive and hold their doors (cheap, for arrival times)
 //   legacyPlant(seed)                   a random plant WITHOUT any trucks (the old-tree comparison)
-//   digest(sim)                         a short text of everything observable at the end of a run (kpis, ops, truck events)
+//   makeLedger(sim)                     listens to the events of a run: an independent tally of the loads and the truck events (their grammar,
+//                                       lead times, the measurement window as Stats sees it, per-tick integrals of the gate queue and the doors)
+//   audit(sim, ledger, label, tally)    conservation and every invariant of 6.3.5 plus more (work conservation, FIFO loading, the closing time, the
+//                                       reservation invariant, the formula of flowSpace), recomputed from the raw state; throws a descriptive Error
+//   runAudited(sim, seconds, opts)      step tick by tick, apply the planned actions, audit after every tick
+//   compareOps(sim, report, ledger)     report.ops.trucks against the ledger: the differences
+//   newTally()                          counts of the corner states an audited run passed through
+//   allLoads(lg), walk(value), nonFinite(value)   helpers
 //
 // Corners reached by hostileTruckPlant: one door and 32 doors, more doors than docks, staging 0 and 50, maxDwell 0 and 1 s, jitter up to 2 h,
 // no-shows up to 50 %, timetables of 0 to 500 rows (rows at the same second, at time 0, beyond the horizon, in the past of the clock), pallets
@@ -359,8 +364,10 @@ export function makeLedger(sim) {
  */
 function grammar(ledger, name, p) {
   const bad = (m) => ledger.problems.push(`${name} ${p.stationId} t=${p.t}: ${m}`);
+  if (!p.station || p.station.id !== p.stationId || !Number.isFinite(p.t)) bad('the payload lacks station, stationId or t');
   if (name === 'truckNoShow' || name === 'truckTurnedAway') {
-    if (!(p.at <= p.t + 1e-9)) bad(`nominal time ${p.at} after the tick ${p.t}`);
+    // an event is applied on the first tick at or after its nominal time: not before, and not a tick late
+    if (!(p.at <= p.t + 1e-9) || p.t - p.at > ledger.sim.dt + 1e-9) bad(`nominal time ${p.at}, applied at the tick ${p.t}`);
     return;
   }
   const k = p.truck;
@@ -370,7 +377,7 @@ function grammar(ledger, name, p) {
     const last = ledger.lastArrivalAt.get(p.stationId);
     if (last !== undefined && p.at < last - 1e-9) bad(`arrival at ${p.at} after one at ${last}`);
     ledger.lastArrivalAt.set(p.stationId, p.at);
-    if (!(p.at <= p.t + 1e-9)) bad(`nominal arrival ${p.at} after the tick ${p.t}`);
+    if (!(p.at <= p.t + 1e-9) || p.t - p.at > ledger.sim.dt + 1e-9) bad(`nominal arrival ${p.at}, applied at the tick ${p.t}`);
     ledger.trucks.set(k.id, { station: p.stationId, at: p.at, stage: 1, t: p.t, door: -1, dockedAt: -1 });
     return;
   }
@@ -488,6 +495,8 @@ export function audit(sim, ledger = null, label = '', tally = null) {
     const { gate, docked, staged } = desk;
     if (docked.length > desk.doorsOpen()) fail(`${tag}: ${docked.length} docked > ${desk.doorsOpen()} doors open`);
     if (docked.length > desk.doors) fail(`${tag}: ${docked.length} docked > ${desk.doors} doors`);
+    // work conservation: a door never stands free while a truck waits at the gate
+    if (gate.length > 0 && docked.length < desk.doorsOpen()) fail(`${tag}: ${gate.length} trucks wait at the gate while ${desk.doorsOpen() - docked.length} doors are free`);
     // FIFO: arrival order at the gate, and nobody docked while an earlier arrival waits
     for (let i = 1; i < gate.length; i++) if (gate[i - 1].id >= gate[i].id || gate[i - 1].at > gate[i].at + EPS) fail(`${tag}: gate not FIFO at ${i}`);
     if (gate.length > 0) for (const k of docked) if (k.id > gate[0].id) fail(`${tag}: truck ${k.id} docked while truck ${gate[0].id} waits`);
@@ -687,11 +696,4 @@ export function walk(value, path = '$', out = []) {
 /** Paths of the numbers that are not finite. */
 export function nonFinite(value) {
   return walk(value).filter(([, n]) => !Number.isFinite(n)).map(([p, n]) => `${p}=${n}`);
-}
-
-/** Everything observable at the end of a run as text: kpis, ops, the truck events (names, nominal times, ids). */
-export function digest(sim, ledger = null) {
-  const kpis = sim.kpis();
-  const events = ledger ? ledger.events.map((e) => `${e.name}:${e.stationId ?? ''}:${e.truckId ?? ''}:${(e.t ?? 0).toFixed(6)}`).join('|') : '';
-  return `${JSON.stringify(kpis)}#${events}`;
 }
