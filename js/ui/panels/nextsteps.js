@@ -18,6 +18,7 @@ import { h } from '../../util/dom.js';
 import { icon } from '../icons.js';
 import { getStation } from '../../model/layout.js';
 import { guidanceFor, applyFix, validDestinations, validOrigins, stationLabel } from '../guidance.js';
+import { ADD_DOORS_ID } from '../guidance-ops.js';
 import { uid } from './fields.js';
 
 const FIX_ICONS = { 'connect-flow': 'flow', 'add-fleet': 'plus', focus: 'target', run: 'play', 'set-tab': 'chevron-right' };
@@ -430,7 +431,8 @@ export function createGuideChip(ctx) {
   let last = null;
   let warnShown = null;
   const reported = new Set();
-  const card = createNextStepsCard(ctx, { compact: true, max: 3, follow: false, allSet: false });
+  // the note about dock doors is an offer, not a step: it stays in the cards of the Properties tab and does not grow the popover over the plan
+  const card = createNextStepsCard(ctx, { compact: true, max: 3, follow: false, allSet: false, hide: (step) => step.id === ADD_DOORS_ID });
   const closeButton = h('button', { class: 'btn btn--ghost btn--sm btn--icon', type: 'button', 'aria-label': 'Close the list of next steps', onclick: () => close(true) }, icon('close', { size: 16 }));
   const popup = h('div', { class: 'guide-pop card', id: popId, role: 'region', 'aria-label': 'Next steps', hidden: true },
     h('div', { class: 'guide__head' }, h('h3', { class: 'guide__title' }, 'Next steps'), h('span', { class: 'spacer' }), closeButton),

@@ -198,6 +198,7 @@ export class StationRT {
       case 'process': return ratio(this.inCount, this.inLinks.length * this.params.inCap);
       case 'storage': return ratio(this.outCount, this.capacity);
       case 'depot': return ratio(this.parked.length + this.charging.length, this.slots);
+      case 'sink': return this.trucks === null ? 0 : this.trucks.stagedFill; // a Goods out with trucks: how full its staging space is
       default: return 0;
     }
   }
@@ -208,6 +209,7 @@ export class StationRT {
       case 'process': return `${this.inCount}/${this.inLinks.length * this.params.inCap}`;
       case 'storage': return `${this.outCount}/${this.capacity}`;
       case 'depot': return `${this.parked.length + this.charging.length}/${this.slots}`;
+      case 'sink': return this.trucks === null ? '' : `${this.trucks.staged.length}/${this.trucks.stagingCap}`;
       default: return '';
     }
   }
@@ -260,6 +262,7 @@ export function flowSpace(flow) {
   switch (to.type) {
     case 'process': return to.params.inCap - flow.inLink.queue.length - to.inbound.get(flow.id);
     case 'storage': return to.capacity - to.outCount - to.inboundTotal;
+    case 'sink': return to.trucks === null ? Infinity : to.trucks.room(to); // a Goods out with trucks is a pull destination (trucks.js)
     default: return Infinity;
   }
 }
@@ -269,6 +272,7 @@ export function flowCapacity(flow) {
   switch (flow.to.type) {
     case 'process': return flow.to.params.inCap;
     case 'storage': return flow.to.capacity;
+    case 'sink': return flow.to.trucks === null ? Infinity : flow.to.trucks.capacity();
     default: return Infinity;
   }
 }
@@ -325,7 +329,8 @@ export function acceptLoads(flow, loads, t, lg) {
   for (const load of loads) load.claimed = false;
   if (st.type === 'sink') {
     st.consumed += loads.length;
-    for (const load of loads) lg.completeLoad(load, st, t);
+    if (st.trucks !== null) st.trucks.receive(st, loads, t, lg); // loaded onto a truck (that is when a pallet leaves the plant) or staged
+    else for (const load of loads) lg.completeLoad(load, st, t);
   } else if (st.type === 'storage') {
     st.consumed += loads.length;
     for (const load of loads) storeLoad(st, load, t);
@@ -346,7 +351,8 @@ function storeLoad(st, load, t) {
 
 /** Advance one station by `dt` (sources and workstations; storage, sinks and depots are passive). */
 export function stepStation(st, dt, t, lg) {
-  if (st.type === 'source') stepSource(st, t, lg);
+  if (st.trucks !== null) st.trucks.step(st, t, lg); // a Goods in / Goods out with trucks (trucks.js): no legacy arrivals
+  else if (st.type === 'source') stepSource(st, t, lg);
   else if (st.type === 'process') stepProcess(st, dt, t, lg);
 }
 
@@ -371,7 +377,7 @@ function stepSource(st, t, lg) {
 }
 
 /** Move yard loads into the output buffers of outgoing flows (weighted round-robin among flows with room). */
-function flushYard(st, t, lg) {
+export function flushYard(st, t, lg) {
   const yard = st.yardQ;
   while (yard.length > 0) {
     const i = st.swrr.pick(st.hasRoom);
@@ -507,6 +513,7 @@ function repairMachine(st, m, at, lg, t) {
  * is not part of that process: it comes at startDelay, a fixed offset, whatever the demand.
  */
 export function rescaleArrivals(st, oldFactor, newFactor, now, lg) {
+  if (st.trucks !== null) { st.trucks.rescale(st, oldFactor, newFactor, now, lg); return; }
   if (!st.enabled) return;
   if (!(newFactor > 0)) { st.nextArrival = Infinity; return; }
   if (!(oldFactor > 0)) {

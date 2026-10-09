@@ -15,14 +15,15 @@
 //                                 rename gets one numbered step here and one fixture.
 //
 // schemaNeeded looks at the documented KEYS of each row, not at whether a sanitizer accepts them, so it is meaningful for a raw layout
-// as well as for a normalized one; until a milestone implements a row, normalizeLayout drops those keys and so always stamps 1.
+// as well as for a normalized one. normalizeLayout drops the keys of a row that no sanitizer implements yet (M1 implements row 2), so it
+// stamps the highest implemented row the sanitized content needs.
 
 import { SCHEMA_VERSION } from './defaults.js';
 
 /** The base schema (alias of defaults.js SCHEMA_VERSION). */
 export const SCHEMA_BASE = SCHEMA_VERSION;
-/** The highest schema row implemented by this build (M0: only the base schema). */
-export const SCHEMA_MAX = 1;
+/** The highest schema row implemented by this build (M1: 2, trucks and the clock). */
+export const SCHEMA_MAX = 2;
 
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const arr = (v) => (Array.isArray(v) ? v : []);

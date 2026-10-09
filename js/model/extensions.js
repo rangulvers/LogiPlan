@@ -3,7 +3,8 @@
 // result to the layout it builds, AFTER `settings` (rule 3 of 5.1: new keys come last, so legacy files stay byte-identical).
 //
 // A block is returned only when the plant uses the feature; an absent block means "feature off", so a legacy layout gets {} back.
-// STATE (milestone M0): nothing is implemented, normalizeExtensions always returns {}.
+// STATE (milestone M1): `calendar` is real (calendar.js: it exists when the raw layout has one or when a station runs a truck timetable);
+// `loadTypes` follows in M5.
 //
 // `reconcileLayout(layout)` is the other half: what normalizeLayout derives from the content of a layout (the optional blocks that other
 // content implies, the schema stamp), re-derived in place for the mutators of layout.js. A derived value is maintained in ONE place, here,
@@ -16,7 +17,7 @@ import { schemaNeeded } from './schema.js';
 
 /**
  * The optional top-level blocks, in the order they are appended to the layout: { key, sanitize(raw[key], layout) => block | undefined }.
- * M1 makes `calendar` real, M5 adds `loadTypes`. (A list that milestones add to, so that a test can swap in a stand-in sanitizer.)
+ * `calendar` is real since M1, M5 adds `loadTypes`. (A list that milestones add to, so that a test can swap in a stand-in sanitizer.)
  */
 export const EXTENSION_BLOCKS = [{ key: 'calendar', sanitize: sanitizeCalendar }];
 

@@ -54,7 +54,7 @@ export const ENOUGH = 0.95;
 
 const DASH = '–';
 const MINUS = '−';
-const COUNT_UNITS = ['vehicles', 'machines', 'loads'];
+const COUNT_UNITS = ['vehicles', 'machines', 'loads', 'doors', 'pallets'];
 
 const finite = (v) => typeof v === 'number' && Number.isFinite(v);
 const orNull = (v) => (finite(v) ? v : null);

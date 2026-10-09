@@ -782,7 +782,7 @@ await withBrowser(async ({ page, context, url, errors }) => {
     const d = dialog();
     eq(await d.locator('.modal__title').innerText(), 'Help');
     const tabs = d.getByRole('tab');
-    eq(await tabs.allInnerTexts(), ['Quick start', 'Tools & shortcuts', 'How vehicles find work', 'How the simulation works', 'Tips']);
+    eq(await tabs.allInnerTexts(), ['Quick start', 'Tools & shortcuts', 'How vehicles find work', 'Trucks and dock doors', 'How the simulation works', 'Tips']);
     eq(await tabs.first().getAttribute('aria-selected'), 'true');
     ok((await d.getByRole('tabpanel').first().innerText()).includes('Every station needs a road cell that touches it'), 'quick start content');
     // arrow keys move between tabs (automatic activation), Home and End jump
@@ -797,15 +797,15 @@ await withBrowser(async ({ page, context, url, errors }) => {
     eq(keys, ['V', 'H', 'R', 'O', 'Z', 'E', '1', '2', '3', '4', '5', 'W', 'T', 'F'], 'keys come from the editor’s key table');
     ok((await d.innerText()).includes('Ctrl') && (await d.innerText()).includes('Undo'), 'other shortcuts');
     await page.keyboard.press('End');
-    eq(await tabs.nth(4).getAttribute('aria-selected'), 'true');
+    eq(await tabs.nth(5).getAttribute('aria-selected'), 'true'); // six pages since the trucks page was added after "How vehicles find work"
     await page.keyboard.press('ArrowRight');
     eq(await tabs.first().getAttribute('aria-selected'), 'true', 'arrow keys wrap around');
     await page.keyboard.press('ArrowLeft');
-    eq(await tabs.nth(4).getAttribute('aria-selected'), 'true');
+    eq(await tabs.nth(5).getAttribute('aria-selected'), 'true');
     ok((await d.getByRole('tabpanel').innerText()).includes('side road (a bay)'), 'tips');
     await tabs.nth(2).click();
     ok((await d.getByRole('tabpanel').innerText()).includes('Vehicles are not assigned to stations.'), 'how vehicles find work');
-    await tabs.nth(3).click();
+    await tabs.nth(4).click(); // "How the simulation works" (the trucks page is nth(3))
     const sim = await d.getByRole('tabpanel').innerText();
     for (const word of ['dock', 'one-way', 'Junctions', 'deadlock', 'Throughput', 'Lead time', 'bottleneck', 'seed', 'battery']) ok(sim.toLowerCase().includes(word.toLowerCase()), `simulation text mentions ${word}`);
     await closeAll();

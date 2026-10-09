@@ -37,8 +37,9 @@ import {
 import { nextId } from '../util/ids.js';
 import { clamp } from '../util/format.js';
 import { sanitizeOps, mergeOps } from './ops.js';
+import { mergeCalendar } from './calendar.js';
 import { schemaNeeded, migrate } from './schema.js';
-import { normalizeExtensions, reconcileLayout } from './extensions.js';
+import { EXTENSION_BLOCKS, normalizeExtensions, reconcileLayout } from './extensions.js';
 
 // ---------------------------------------------------------------------------------------------------------
 // Field specifications (shared by the sanitizers and by checkInvariants)
@@ -697,6 +698,16 @@ function checkLabels(layout, bad) {
   }
 }
 
+/** An optional top-level block (calendar, later loadTypes) is a fixed point of its sanitizer and exists where other content implies it (extensions.js). */
+function checkExtensionBlocks(layout, bad) {
+  for (const { key, sanitize } of EXTENSION_BLOCKS) {
+    const has = Object.hasOwn(layout, key);
+    const want = sanitize(has ? layout[key] : undefined, layout);
+    if (want === undefined && has) bad.push(`${key}: nothing needs this block, or it is not a sanitized block`);
+    else if (want !== undefined && !(has && deepEqual(want, layout[key]))) bad.push(`${key}: ${has ? 'not a sanitized block' : 'missing, although other content (a truck timetable) implies it'}`);
+  }
+}
+
 /**
  * Everything wrong with a layout, as human-readable strings ([] = all invariants of §4.1–4.3 hold).
  * Independent of normalizeLayout on purpose: tests assert `checkInvariants(normalizeLayout(junk))` is empty.
@@ -720,6 +731,7 @@ export function checkInvariants(layout) {
   checkLabels(layout, bad);
   const fleets = checkFleets(layout, stations, bad);
   checkFlows(layout, stations, fleets, bad);
+  checkExtensionBlocks(layout, bad);
   return bad;
 }
 
@@ -929,7 +941,8 @@ export function flipRoadDirection(layout, cx, cy, dir) {
 
 /**
  * Add a station. Null if the type is unknown or the rectangle is out of bounds / overlaps a station, obstacle or road.
- * @param {{type: string, x: number, y: number, w?: number, h?: number, name?: string, params?: object}} spec
+ * `ops` (warehouse options, ops.js) is sanitized like the `ops` of a loaded file: a type that has no options drops it.
+ * @param {{type: string, x: number, y: number, w?: number, h?: number, name?: string, params?: object, ops?: object}} spec
  */
 export function addStation(layout, spec) {
   if (!isObj(spec) || !hasKey(STATION_TYPES, spec.type)) return null;
@@ -943,7 +956,10 @@ export function addStation(layout, spec) {
     ...rect,
     params: mergeParams(spec.type, defaultStationParams(spec.type), spec.params),
   });
+  const ops = sanitizeOps(spec.type, spec.ops);
+  if (ops !== undefined) station.ops = ops; // after `params`, like normalizeLayout writes it
   layout.stations.push(station);
+  if (ops !== undefined) reconcileLayout(layout); // a station with options may need the clock and a newer schema (extensions.js)
   return station;
 }
 
@@ -1026,7 +1042,10 @@ export function duplicateStation(layout, id, offset) {
   const copy = addStation(layout, {
     type: s.type, ...spot, name: copyName(new Set(layout.stations.map((o) => o.name)), s.name), params: structuredClone(s.params),
   });
-  if (copy && s.ops !== undefined) copy.ops = structuredClone(s.ops); // warehouse options are copied with the station
+  if (copy && s.ops !== undefined) { // warehouse options are copied with the station
+    copy.ops = structuredClone(s.ops);
+    reconcileLayout(layout); // nothing changes for a consistent layout; a hand-built one is put right here, like after every edit of `ops`
+  }
   return copy;
 }
 
@@ -1255,6 +1274,20 @@ export function updateSettings(layout, patch) {
   for (const [key, values] of Object.entries(SETTINGS_ENUMS)) {
     if (values.includes(patch[key])) layout.settings[key] = patch[key];
   }
+  return true;
+}
+
+/**
+ * Patch `layout.calendar`, the clock of a day plant (calendar.js): `{ startTod, startDay }` merge key by key and create the clock when the
+ * plant has none; `null` removes it. A plant whose trucks run a timetable always has a clock, so `null` then resets it to 00:00 on Monday
+ * (reconcileLayout creates it again). The stamp is kept true. False only if `patch` is neither an object nor null.
+ */
+export function updateCalendar(layout, patch) {
+  if (patch !== null && !isObj(patch)) return false;
+  const calendar = mergeCalendar(layout.calendar, patch);
+  if (calendar === undefined) delete layout.calendar;
+  else layout.calendar = calendar;
+  reconcileLayout(layout);
   return true;
 }
 

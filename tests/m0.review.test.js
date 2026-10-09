@@ -11,6 +11,10 @@
 // tests, CPU and allocation comparisons); M0_OLD_TREE=<dir with js/> or M0_OLD_REV=<commit> chooses the pre-M0 tree; M0_REVIEW_STRICT=1
 // turns the known-defect tests (todo by default, so that the suite stays green) into ordinary failing tests.
 //
+// M1 UPDATE (the model builder of milestone M1 filled the seams for trucks and the clock): the checks that described the EMPTY seams were rewritten to
+// describe what is still true: 3.3, 3.4, 3.6, 3.7, 3.11, 6.1 (now measured between the pre-M0 tree and the END of M0, a2af6d8, so that the files M1 adds
+// or edits cannot fail an M0 test), 6.2 and 6.3. Every other check is unchanged.
+//
 // Tests named "DEFECT M0-REV-n" are real defects found by this review that are NOT fixed; they FAIL today (they are `todo`). The defects that
 // the fix pass repaired (1, 1b, 2, 3, 3b, 4) are ordinary tests now, named "M0-REV fixed n"; only M0-REV-5 (the numbers in a document) remains.
 import { test } from 'node:test';
@@ -37,6 +41,7 @@ import { bufferSize } from '../js/ui/render/jobs.js';
 import { dockLabLayout, dockKpisFile, readGolden, DOCK_SEED, DOCK_SECONDS } from './helpers/golden.js';
 
 const OLD_ROOT = H.oldTreeRoot();
+const M0_ROOT = H.m0TreeRoot();
 const OLD = OLD_ROOT ? await H.loadTree(OLD_ROOT) : null;
 const NEW = await H.loadTree();
 const REPO = H.ROOT;
@@ -311,34 +316,53 @@ test('M0-REV 3.2 schemaNeeded: the maximum wins (any subset of keys), and it nev
   for (const odd of [undefined, null, 0, 'x', [], [[]], () => 1, { stations: 5, fleets: 'x', flows: null }, { stations: [null, 3, 'x', { ops: 5 }, { ops: [] }] }]) assert.equal(SC.schemaNeeded(odd), 1);
 });
 
-test('M0-REV 3.3 hostile input: junk in every place of the warehouse module is dropped; the result is a legacy layout, total, idempotent, valid and byte-equal to the pre-M0 result', () => {
+test('M0-REV 3.3 hostile input: junk in every place of the warehouse module is dropped except the keys M1 implements (ops.trucks on Goods in and Goods out, calendar); the rest is byte-equal to the pre-M0 result; total, idempotent, valid', () => {
   const rng = createRng(31337);
   const bases = EXAMPLES.map((e) => e.build());
   const TOP = ['schema', 'name', 'notes', 'grid', 'roads', 'obstacles', 'labels', 'stations', 'flows', 'fleets', 'settings'];
   const STATION = ['id', 'type', 'name', 'x', 'y', 'w', 'h', 'params'];
   const count = H.HEAVY ? 3000 : 80;
+  /** What the pre-M0 tree would have made of the document: the M1 keys taken off, the stamp back at 1. */
+  const legacyView = (layout) => {
+    const view = clone(layout);
+    delete view.calendar;
+    for (const s of view.stations) delete s.ops;
+    view.schema = 1;
+    return view;
+  };
   let withJunkOps = 0;
+  let kept = 0;
   for (let i = 0; i < count; i++) {
     const raw = H.junkDocument(rng, bases[i % 3]);
     const text = bytes(raw);
     withJunkOps += raw.stations.some((s) => s && s.ops !== undefined) ? 1 : 0;
     const frozen = H.deepFreeze(JSON.parse(text)); // a write into the input throws
     const out = L.normalizeLayout(frozen);
-    assert.deepEqual(Object.keys(out), TOP, `document ${i}: a key of the warehouse module survived in the layout`);
-    for (const s of out.stations) assert.deepEqual(Object.keys(s), STATION, `document ${i}: station keys`);
+    assert.deepEqual(Object.keys(out), 'calendar' in out ? [...TOP, 'calendar'] : TOP, `document ${i}: a key of a later milestone survived in the layout`);
+    for (const s of out.stations) {
+      assert.deepEqual(Object.keys(s), s.ops ? [...STATION, 'ops'] : STATION, `document ${i}: station keys`);
+      if (s.ops) {
+        kept++;
+        assert.ok(s.type === 'source' || s.type === 'sink', `document ${i}: ops on a ${s.type}`);
+        assert.deepEqual(Object.keys(s.ops), ['trucks'], `document ${i}: only M1 keys`);
+      }
+    }
     for (const f of out.fleets) assert.ok(!('calendar' in f) && !('aisleMin' in f) && !('liftHeight' in f), `document ${i}: fleet keys`);
     for (const f of out.flows) assert.ok(!('types' in f), `document ${i}: flow keys`);
-    assert.equal(out.schema, 1, `document ${i}: schema`);
+    assert.ok(!('loadTypes' in out), `document ${i}: loadTypes`);
+    assert.equal(out.schema, 'calendar' in out || out.stations.some((s) => s.ops) ? 2 : 1, `document ${i}: schema`);
     assert.deepEqual(L.checkInvariants(out), [], `document ${i}: invariants`);
     assert.equal(bytes(L.normalizeLayout(out)), bytes(out), `document ${i}: idempotent`);
     assert.equal(bytes(frozen), text, `document ${i}: the input was modified`);
-    if (OLD) assert.equal(bytes(out), bytes(OLD.layout.normalizeLayout(JSON.parse(text))), `document ${i}: differs from the pre-M0 normalizeLayout`);
+    const legacy = legacyView(out);
+    if (OLD) assert.equal(bytes(legacy), bytes(OLD.layout.normalizeLayout(JSON.parse(text))), `document ${i}: differs from the pre-M0 normalizeLayout`);
     const exported = S.exportProject(project(out));
-    assert.equal(JSON.parse(exported).schema, 1, `document ${i}: project schema`);
+    assert.equal(JSON.parse(exported).schema, out.schema, `document ${i}: project schema`);
     assert.equal(bytes(S.importProject(exported).scenarios[0].layout), bytes(out), `document ${i}: export/import`);
-    if (OLD) assert.equal(exported, OLD.serialize.exportProject(project(OLD.layout.normalizeLayout(JSON.parse(text)))), `document ${i}: the project file differs from the pre-M0 file`);
+    if (OLD) assert.equal(S.exportProject(project(legacy)), OLD.serialize.exportProject(project(OLD.layout.normalizeLayout(JSON.parse(text)))), `document ${i}: the project file of the legacy part differs from the pre-M0 file`);
   }
   assert.ok(withJunkOps > count / 3, 'the fuzz really put ops junk on stations');
+  assert.ok(kept > count / 8, `the fuzz put real trucks blocks on stations (${kept})`);
   assert.deepEqual(Object.keys(Object.prototype), [], 'Object.prototype was polluted');
   for (const name of ['doors', 'trucks', 'calendar', 'ops', 'polluted', 'startTod']) assert.equal({}[name], undefined, `Object.prototype.${name}`);
 });
@@ -388,8 +412,10 @@ test('M0-REV 3.4 hostile input with a sanitizer registered (the way M1 plugs in)
     assert.ok(kept > 20 && shared >= 5, `the fuzz exercised the ops path (${kept} blocks kept, ${shared} share links)`);
     assert.deepEqual(Object.keys(Object.prototype), []);
   }, { calendar: true });
-  assert.deepEqual(Object.keys(OPS.OPS_SANITIZERS), [], 'the stand-in was removed again');
+  assert.deepEqual(Object.keys(OPS.OPS_SANITIZERS).sort(), ['sink', 'source'], 'the stand-in was removed again and the real sanitizers are back');
+  assert.equal(OPS.sanitizeOps('source', { trucks: { doors: 99 } }).trucks.doors, 32);
   assert.equal(EXT.EXTENSION_BLOCKS.length, 1);
+  assert.equal(EXT.EXTENSION_BLOCKS[0].sanitize, CAL.sanitizeCalendar);
 });
 
 test('M0-REV 3.5 a v1 file survives import and export byte for byte, with no warning, in the new code and in the old (examples and random plants)', async () => {
@@ -418,15 +444,17 @@ test('M0-REV 3.5 a v1 file survives import and export byte for byte, with no war
 test('M0-REV 3.6 a file from the future: a warning, never a crash, and the autosave of a newer tab is kept as a backup before anything overwrites it', () => {
   const layout = EXAMPLES[0].build();
   const file = JSON.parse(S.exportProject(project(layout)));
-  file.schema = 2;
-  file.scenarios[0].layout.schema = 2;
+  const future = SC.SCHEMA_MAX + 1; // M1 reads format 2; the shifts of M2 are format 3
+  file.schema = future;
+  file.scenarios[0].layout.schema = future;
   file.scenarios[0].layout.stations[0].ops = { trucks: { doors: 3 } };
-  file.scenarios[0].layout.calendar = { startTod: 21600, startDay: 0 };
+  file.scenarios[0].layout.calendar = { startTod: 21600, startDay: 0, shifts: [{ id: 'early' }] };
   const text = bytes(file);
   const opened = S.importProject(text);
   assert.equal(opened.warnings.length, 1);
-  assert.match(opened.warnings[0], /newer version of LogiPlan \(format 2; this version reads format 1\)/);
-  assert.equal(opened.scenarios[0].layout.schema, 1, 'what this build cannot express is dropped, and the layout says 1');
+  assert.match(opened.warnings[0], new RegExp(`newer version of LogiPlan \\(format ${future}; this version reads format ${SC.SCHEMA_MAX}\\)`));
+  assert.equal(opened.scenarios[0].layout.schema, SC.SCHEMA_MAX, 'what this build cannot express (the shifts) is dropped, the trucks and the clock stay, and the layout says what it needs');
+  assert.deepEqual(opened.scenarios[0].layout.calendar, { startTod: 21600, startDay: 0 });
   assert.deepEqual(L.checkInvariants(opened.scenarios[0].layout), []);
   for (const schema of [1e308, 2.5, 99, 8]) {
     const odd = { ...file, schema };
@@ -447,19 +475,23 @@ test('M0-REV 3.6 a file from the future: a warning, never a crash, and the autos
   assert.equal(mem.get('key:backup'), text, 'the file of the newer version was copied to the backup before it was overwritten');
 });
 
-test('M0-REV 3.7 ops of the wrong type, on the wrong stations, or with prototype keys, in a patch: nothing is stored, nothing is polluted, no throw', () => {
+test('M0-REV 3.7 ops of the wrong type, on the wrong stations, or with prototype keys, in a patch: nothing is stored on a type without options, a sanitized block or nothing on Goods in and Goods out, nothing is polluted, no throw', () => {
   const layout = withEverything();
   const before = bytes(layout);
   const junkPatches = [null, 0, 1, -1, 1e300, '', 'x', true, false, [], [1, 2], {}, { trucks: 5 }, { trucks: null }, { __proto__: { polluted: 1 } }, JSON.parse('{"__proto__":{"polluted":1}}'),
     JSON.parse('{"trucks":{"__proto__":{"polluted":1},"doors":3}}'), { constructor: { prototype: { polluted: 1 } } }, { toString: 1, hasOwnProperty: 2 }, { trucks: { doors: 1e300, schedule: 'x' } }];
   for (const station of layout.stations) {
+    const carries = station.type === 'source' || station.type === 'sink';
     for (const patch of junkPatches) {
       assert.equal(L.updateStation(layout, station.id, { ops: patch }), true);
-      assert.equal(station.ops, undefined, `${station.type}: nothing is stored without a sanitizer (${bytes(patch)})`);
+      if (!carries) assert.equal(station.ops, undefined, `${station.type}: nothing is stored without a sanitizer (${bytes(patch)})`);
+      else assert.equal(bytes(station.ops), bytes(OPS.sanitizeOps(station.type, station.ops)), `${station.type}: what is stored is a fixed point of its sanitizer (${bytes(patch)})`);
+      assert.deepEqual(L.checkInvariants(layout), [], `${station.type}: the layout stays valid after ${bytes(patch)}`);
     }
     assert.equal(L.updateStation(layout, station.id, { ops: undefined, name: station.name }), true, 'undefined means "no change"');
+    assert.equal(L.updateStation(layout, station.id, { ops: null }), true);
   }
-  assert.equal(bytes(layout), before, 'a legacy layout is untouched by any ops patch');
+  assert.equal(bytes(layout), before, 'removing the blocks again leaves the legacy layout, byte for byte');
   assert.equal(L.updateStation(layout, 'nope', { ops: {} }), false);
   assert.equal(L.updateStation(layout, layout.stations[0].id, null), false);
   assert.deepEqual(Object.keys(Object.prototype), []);
@@ -594,12 +626,12 @@ test('M0-REV 3.10 layoutChangeKind: any change in ops, the clock or the schema s
   });
 });
 
-test('M0-REV 3.11 the registries are empty and inert: a legacy plant gets no new issue, no new insight, no new key', () => {
-  assert.deepEqual(Object.keys(OPS.OPS_SANITIZERS), []);
-  assert.equal(OPS.OPS_KEYS.length, 0);
-  assert.equal(CAL.CALENDAR_KEYS.length, 0);
-  assert.deepEqual(VOPS.OPS_CHECKS, []);
-  assert.deepEqual(INS.EXTENSION_RULES, []);
+test('M0-REV 3.11 the registries hold what M1 registers and stay inert for a legacy plant: no new issue, no new insight, no new key', () => {
+  assert.deepEqual(Object.keys(OPS.OPS_SANITIZERS).sort(), ['sink', 'source']);
+  assert.ok(OPS.OPS_KEYS.length > 0 && OPS.OPS_KEYS.every((k) => k.schema === 2));
+  assert.ok(CAL.CALENDAR_KEYS.length > 0 && CAL.CALENDAR_KEYS.every((k) => k.schema === 2));
+  assert.deepEqual(VOPS.OPS_CHECKS.map((c) => c.name), ['checkDoorsTooFew', 'checkDoorsExceedDocks', 'checkDocksShareLane', 'checkTimetableEmpty']);
+  assert.deepEqual(INS.EXTENSION_RULES.map((r) => r.name), ['gateQueueLong', 'doorsBottleneck', 'unloadLimitedByVehicles', 'doorsIdle', 'outboundShort']);
   assert.equal(EXT.EXTENSION_BLOCKS.length, 1);
   for (const example of EXAMPLES) {
     const layout = example.build();
@@ -607,9 +639,10 @@ test('M0-REV 3.11 the registries are empty and inert: a legacy plant gets no new
     if (OLD) assert.equal(bytes(issues), bytes(OLD.validate.validateLayout(clone(layout))), `${example.id}: the issues are those of the pre-M0 tree`);
     assert.ok(issues.every((i) => !/^(doors|docks-share|timetable|shift|staffing|profile|calendar|aisle|rack|fleet-cannot|plan-after|type-)/.test(i.code)), `${example.id}: ${issues.map((i) => i.code)}`);
   }
-  assert.equal(CAL.mergeCalendar({ startTod: 1 }, { startTod: 5 }), undefined);
-  assert.equal(CAL.sanitizeCalendar({ startTod: 1 }, {}), undefined);
-  assert.deepEqual(EXT.normalizeExtensions({ calendar: { startTod: 1 }, loadTypes: [{}] }, {}), {});
+  assert.equal(CAL.mergeCalendar(undefined, { startTod: 5 }).startTod, 5, 'a patch creates the clock');
+  assert.equal(CAL.sanitizeCalendar({ startTod: 1 }, {}).startTod, 1, 'a file that has a clock keeps it');
+  assert.equal(CAL.sanitizeCalendar(undefined, { stations: [] }), undefined, 'and a plant without one gets none');
+  assert.deepEqual(EXT.normalizeExtensions({ calendar: { startTod: 1 }, loadTypes: [{}] }, { stations: [] }), { calendar: { startTod: 1, startDay: 0 } }, 'loadTypes belongs to M5');
 });
 
 // ---------------------------------------------------------------------------------------------------------
@@ -757,7 +790,10 @@ function changedLines(oldFile, newFile) {
   return (run.stdout || '').split('\n').filter((l) => /^[+-]/.test(l) && !/^(\+\+\+|---)/.test(l)).length;
 }
 
-live('M0-REV 6.1 hot files: M0 edited only the production files of the list (9.9), each by a few lines; the files of the roads-and-canvas wave and the vehicle code are byte-identical', () => {
+/** A check that needs the pre-M0 tree and the tree at the end of M0 (the M1 edits are not part of M0). */
+const liveM0 = (name, fn) => test(name, OLD && M0_ROOT ? {} : { skip: OLD ? `the tree at the end of M0 (commit ${H.M0_REV}) is not available here: git archive failed. Give a copy with M0_END_TREE=<dir with js/>` : SKIP_OLD }, fn);
+
+liveM0('M0-REV 6.1 hot files: M0 (the tree at its end, not the working tree) edited only the production files of the list (9.9), each by a few lines; the files of the roads-and-canvas wave and the vehicle code are byte-identical', () => {
   const list = (dir) => {
     const out = [];
     const walk = (d) => { for (const e of readdirSync(d, { withFileTypes: true })) { const p = path.join(d, e.name); if (e.isDirectory()) walk(p); else out.push(path.relative(dir, p)); } };
@@ -765,7 +801,7 @@ live('M0-REV 6.1 hot files: M0 edited only the production files of the list (9.9
     return out.sort();
   };
   const oldFiles = list(path.join(OLD_ROOT, 'js'));
-  const newFiles = list(path.join(REPO, 'js'));
+  const newFiles = list(path.join(M0_ROOT, 'js'));
   const added = newFiles.filter((f) => !oldFiles.includes(f));
   const removed = oldFiles.filter((f) => !newFiles.includes(f));
   assert.deepEqual(removed, []);
@@ -777,8 +813,8 @@ live('M0-REV 6.1 hot files: M0 edited only the production files of the list (9.9
   };
   const edited = [];
   for (const file of oldFiles) {
-    if (readFileSync(path.join(OLD_ROOT, 'js', file), 'utf8') === readFileSync(path.join(REPO, 'js', file), 'utf8')) continue;
-    const n = changedLines(path.join(OLD_ROOT, 'js', file), path.join(REPO, 'js', file));
+    if (readFileSync(path.join(OLD_ROOT, 'js', file), 'utf8') === readFileSync(path.join(M0_ROOT, 'js', file), 'utf8')) continue;
+    const n = changedLines(path.join(OLD_ROOT, 'js', file), path.join(M0_ROOT, 'js', file));
     if (n > 0) edited.push([file, n]);
   }
   assert.deepEqual(edited.map(([f]) => f).filter((f) => !(f in BUDGET)), [], 'a production file outside the list was edited');
@@ -788,16 +824,17 @@ live('M0-REV 6.1 hot files: M0 edited only the production files of the list (9.9
   }
 });
 
-test('M0-REV 6.2 layering (ARCHITECTURE 3): the pure model modules of the warehouse seams import only util, defaults.js and each other, never layout.js; sim code does not import them (yet)', () => {
-  const importsOf = (file) => [...read('js', 'model', file).matchAll(/^import .* from '([^']+)';/gm)].map((m) => m[1]);
+test('M0-REV 6.2 layering (ARCHITECTURE 3): the pure model modules of the warehouse module import only util, defaults.js and each other, never layout.js (validate-ops.js is the one that may); the store does not import them', () => {
+  const importsOf = (file) => [...read('js', 'model', file).matchAll(/^import [^;]*? from '([^']+)';/gm)].map((m) => m[1]); // also an import over several lines
   assert.deepEqual(importsOf('schema.js'), ['./defaults.js']);
-  assert.deepEqual(importsOf('ops.js'), ['../util/format.js']);
+  assert.deepEqual(importsOf('ops.js'), ['../util/format.js', './defaults.js']);
   assert.deepEqual(importsOf('calendar.js'), ['./ops.js']);
   assert.deepEqual(importsOf('extensions.js'), ['./calendar.js', './schema.js']);
-  assert.deepEqual(importsOf('validate-ops.js'), []);
+  assert.deepEqual(importsOf('doors.js'), ['../util/format.js', '../util/rng.js', './ops.js']);
+  assert.ok(importsOf('validate-ops.js').includes('./layout.js'), 'the one pure model module that may import layout.js');
   const arch = read('docs', 'ARCHITECTURE.md');
-  assert.match(arch, /`schema\.js` → `defaults\.js`; `ops\.js` → `util`; `calendar\.js` → `ops\.js`; `extensions\.js` → `calendar\.js`, `schema\.js`/);
-  for (const [name, patterns] of Object.entries({ sim: [/model\/(schema|ops|calendar|extensions)\.js/], store: [/model\/(schema|ops|calendar|extensions)\.js/] })) {
+  assert.match(arch, /`schema\.js` → `defaults\.js`; `ops\.js` → `util`, `defaults\.js`; `calendar\.js` → `ops\.js`; `extensions\.js` → `calendar\.js`, `schema\.js`; `doors\.js` → `util`, `ops\.js`/);
+  for (const [name, patterns] of Object.entries({ store: [/model\/(schema|ops|calendar|extensions|doors)\.js/] })) {
     const dir = path.join(REPO, 'js', name);
     const walk = (d) => readdirSync(d, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(path.join(d, e.name)) : [path.join(d, e.name)]));
     for (const file of walk(dir)) for (const p of patterns) assert.ok(!p.test(readFileSync(file, 'utf8')), `${path.relative(REPO, file)} imports a seam module`);
@@ -816,7 +853,7 @@ test('M0-REV 6.3 documents: ARCHITECTURE 3.1 names exactly the exports, files an
   for (const file of ['scripts/rebaseline-golden.mjs', 'scripts/perf-baseline.mjs', 'tests/helpers/golden.js', 'tests/fixtures/golden/perf-baseline.json', 'tests/sim.golden.starter.test.js']) assert.ok(existsSync(path.join(REPO, file)), `${file} exists`);
   const readme = read('README.md');
   for (const script of ['scripts/perf-baseline.mjs', 'scripts/rebaseline-golden.mjs']) assert.ok(readme.includes(script) && existsSync(path.join(REPO, script)), script);
-  assert.equal(SC.SCHEMA_MAX, 1);
+  assert.equal(SC.SCHEMA_MAX, 2);
 });
 
 heavy('M0-REV 6.3b documents (heavy): rebaseline-golden.mjs --check runs and finds every fixture up to date', () => {

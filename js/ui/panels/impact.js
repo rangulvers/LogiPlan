@@ -29,6 +29,7 @@ import { formatDuration, formatNumber } from '../../util/format.js';
 import { METRICS, summarizeReport } from '../../sim/experiments.js';
 import { icon } from '../icons.js';
 import { isMeasured } from '../runner.js';
+import { isDayPlant } from '../day-plant.js';
 import { uid } from './fields.js';
 
 /** A comparison counts as solid once the compared window is this long (s). */
@@ -412,7 +413,7 @@ export function createImpactCard(ctx) {
     if (destroyed) return;
     const runner = ctx.runner;
     const current = report === undefined ? (runner?.kpis?.() ?? null) : report;
-    const baseline = runner?.baseline ?? null;
+    const baseline = isDayPlant(ctx.store?.getState?.().layout) ? null : (runner?.baseline ?? null); // a day plant restarts cold: no old-versus-new window to show
     const priming = Boolean(runner?.priming);
     if (shown.baseline === baseline && shown.report === current && shown.priming === priming) return;
     shown = { baseline, report: current, priming };
@@ -444,7 +445,7 @@ export function createImpactHint(ctx) {
 
   function update() {
     if (destroyed) return;
-    const baseline = ctx.runner?.baseline ?? null;
+    const baseline = isDayPlant(ctx.store?.getState?.().layout) ? null : (ctx.runner?.baseline ?? null);
     const report = baseline ? (ctx.runner?.kpis?.() ?? null) : null;
     const line = baseline && hiddenFor !== baseline ? impactHintText(impactModel(baseline, report, { priming: ctx.runner?.priming })) : '';
     setHidden(el, !line);

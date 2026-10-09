@@ -12,6 +12,7 @@
 //            | { type: 'add-fleet', preset, count, fleetId?, label }              add a fleet, or raise the count of fleetId
 //            | { type: 'set-tool', tool, label } | { type: 'focus', refs, hint?, label }
 //            | { type: 'run', label } | { type: 'set-tab', tab, label } | { type: 'release-flow', flowId, label }   (any fleet may carry it)
+//            | { type: 'add-doors', stationId, label } | { type: 'update-station' | 'extend-docks', ... }   trucks and dock doors (js/ui/guidance-ops.js, model/validate-ops.js)
 //   computeChecklist(layout, { ran, resultsSeen }) -> { items, done, total, complete }
 //   validDestinations / validOrigins (station objects, closest first), suggestDestination / suggestOrigin (a station or null),
 //   connectFixFor(layout, stationId) (the ready-made "connect to the suggestion" fix), fixForIssue(layout, issue), applyFix(ctx, fix)
@@ -24,6 +25,7 @@ import { FLEET_PRESETS, DISPATCH_STRATEGIES } from '../model/defaults.js';
 import { flowCreatedText } from './editor/connect.js';
 import { validateLayout } from '../model/validate.js';
 import { getStation, getFleet, docksOf, flowsFrom, flowsTo, addFlow, addFleet, updateFleet, updateFlow } from '../model/layout.js';
+import { addDockDoors, addDoorsSteps, applyOpsStoreFix, opsFixForIssue } from './guidance-ops.js';
 
 /** Station types that may send loads / receive loads (docs/ARCHITECTURE.md 4.3). */
 export const SENDER_TYPES = Object.freeze(['source', 'process', 'storage']);
@@ -374,6 +376,7 @@ export function computeNextSteps(layout, opts = {}) {
       `Every free ${agvs ? 'AGV' : 'vehicle'} takes ${phrase}, whichever Goods in it comes from. Change this in Simulate › Dispatch strategy.`,
       { type: 'set-tab', tab: 'simulate', label: 'Open Simulate' }, { dismissible: true }));
   }
+  push(...addDoorsSteps(layout)); // trucks and dock doors: a note once the plant has flows (guidance-ops.js)
   return steps;
 }
 
@@ -413,7 +416,7 @@ export function fixForIssue(layout, issue) {
       return fleet ? { type: 'add-fleet', preset: fleet.preset, fleetId: fleet.id, count: DEFAULT_FLEET.count, label: `Add ${DEFAULT_FLEET.count} vehicles` } : null;
     }
     case 'no-roads': return { type: 'set-tool', tool: 'road', label: 'Road tool' };
-    default: return null;
+    default: return opsFixForIssue(layout, issue); // doors-too-few, doors-exceed-docks, docks-share-lane, timetable-empty (model/validate-ops.js)
   }
 }
 
@@ -641,6 +644,9 @@ export function applyFix(ctx, fix) {
       if (!ctx.runner.playing) void ctx.runner.play();
       return true;
     case 'set-tab': ctx.actions.setRightTab(fix.tab); return true;
+    case 'add-doors': return addDockDoors(ctx, fix.stationId);
+    case 'update-station':
+    case 'extend-docks': return applyOpsStoreFix(ctx, fix);
     default: return false;
   }
 }

@@ -22,6 +22,7 @@
 //    but clamped by the model to what it allows (e.g. at most 500 vehicles per fleet).
 
 import { cloneLayout, getFleet, getStation, normalizeLayout, updateFleet, updateSettings, updateStation } from '../model/layout.js';
+import { trucksOf } from '../model/ops.js';
 import { Simulation } from './engine.js';
 
 // ---- metrics ----------------------------------------------------------------------------------------------------
@@ -44,6 +45,8 @@ function weightedMean(pairs) {
 }
 
 const fleetsOf = (report) => Object.values((report && report.fleets) || {});
+/** The truck stations of a report (`report.ops.trucks`, docs/WAREHOUSE-DESIGN.md 6.8); none for a plant without trucks. */
+const truckStationsOf = (report) => Object.values((report && report.ops && report.ops.trucks) || {});
 const stationsOf = (report, type) => Object.values((report && report.stations) || {}).filter((s) => s.type === type);
 
 /**
@@ -107,6 +110,30 @@ export const METRICS = [
     get: (r) => {
       const levels = fleetsOf(r).map((f) => finite(f.minBattery)).filter((v) => v !== null);
       return levels.length > 0 ? 100 * Math.min(...levels) : null;
+    },
+  },
+  // Trucks and dock doors (milestone M1). All four are null for a plant without trucks (compare.js leaves such a row out), and
+  // gateWaitMean / gateWaitP90 are null while no truck has taken a door in the window.
+  {
+    id: 'gateWaitMean', label: 'Truck wait at the gate (mean)', unit: 's', better: 'lower', digits: 0,
+    get: (r) => weightedMean(truckStationsOf(r).map((t) => [t.gateWait && t.gateWait.mean, t.trucks && t.trucks.docked])),
+  },
+  {
+    id: 'gateWaitP90', label: 'Truck wait at the gate, 90th percentile', unit: 's', better: 'lower', digits: 0,
+    get: (r) => {
+      const waits = truckStationsOf(r).map((t) => finite(t.gateWait && t.gateWait.p90)).filter((v) => v !== null);
+      return waits.length > 0 ? Math.max(...waits) : null; // the worst station
+    },
+  },
+  {
+    id: 'doorUtilization', label: 'Door utilization (mean)', unit: '%', better: null, digits: 0,
+    get: (r) => percent(weightedMean(truckStationsOf(r).map((t) => [t.doorUtilization, t.doors]))),
+  },
+  {
+    id: 'trucksShort', label: 'Trucks that left without a full load', unit: 'trucks', better: 'lower', digits: 0,
+    get: (r) => {
+      const out = truckStationsOf(r).filter((t) => t.role === 'out');
+      return out.length > 0 ? out.reduce((n, t) => n + (finite(t.trucks && t.trucks.short) ?? 0), 0) : null;
     },
   },
 ];
@@ -327,6 +354,7 @@ function stationParameters(station) {
     return [parameter(`station.${station.id}.capacity`, `${name}: capacity`, 'loads',
       scaledRange(station.params.capacity, STORAGE_FACTORS, { lo: 1, hi: 100000, whole: true }), param('capacity'), setParam('capacity'))];
   }
+  if (trucksOf(station)) return truckParameters(station); // trucks replace the arrival interval of a Goods in; a Goods out has no parameter without them
   if (station.type === 'source') {
     const mean = station.params.interArrival.mean;
     return [parameter(`station.${station.id}.interArrival`, `${name}: time between arrivals`, 's',
@@ -335,6 +363,34 @@ function stationParameters(station) {
       (layout, value) => updateStation(layout, station.id, { params: { interArrival: { mean: value } } }))];
   }
   return [];
+}
+
+/**
+ * Sweep parameters of a Goods in / Goods out with trucks (docs/WAREHOUSE-DESIGN.md 6.8): `doors:<station>`, `truckGap:<station>` (the mean time between
+ * trucks, rate mode) and `palletsPerTruck:<station>` (the mean of the pallets distribution, rate mode or a timetable with rows that leave the pallets
+ * open). They write through updateStation, so the layout stays valid; a change of any of them is `structural` for layoutChangeKind (the simulation
+ * is rebuilt: ops.trucks is station data, not one of the RUNTIME_KEYS), which is also what a sweep does for every value anyway.
+ */
+function truckParameters(station) {
+  const trucks = trucksOf(station);
+  const name = station.name || station.id;
+  const read = (pick) => (layout) => {
+    const t = trucksOf(getStation(layout, station.id));
+    return t ? pick(t) : undefined;
+  };
+  const write = (patch) => (layout, value) => updateStation(layout, station.id, { ops: { trucks: patch(value) } });
+  const list = [parameter(`doors:${station.id}`, `${name}: number of doors`, 'doors',
+    countRange(trucks.doors, { below: 1, above: 3, highest: 32 }), read((t) => t.doors), write((v) => ({ doors: v })))];
+  const open = trucks.mode === 'rate' || trucks.schedule.some((row) => row.pallets === null);
+  if (trucks.mode === 'rate') {
+    list.push(parameter(`truckGap:${station.id}`, `${name}: time between trucks`, 's',
+      scaledRange(trucks.interArrival.mean, SPEED_FACTORS, { lo: 60, hi: 1e6, whole: true }), read((t) => t.interArrival.mean), write((v) => ({ interArrival: { mean: v } }))));
+  }
+  if (open) {
+    list.push(parameter(`palletsPerTruck:${station.id}`, `${name}: pallets per truck`, 'pallets',
+      scaledRange(trucks.pallets.mean, SPEED_FACTORS, { lo: 1, hi: 200, whole: true }), read((t) => t.pallets.mean), write((v) => ({ pallets: { mean: v } }))));
+  }
+  return list;
 }
 
 /** Road cells that carry a slow-zone limit. */
@@ -359,7 +415,7 @@ export function listSweepParameters(layout) {
     params.push(parameter('speedFactor', 'All vehicles: speed factor', '×', factorRange(plant.settings.speedFactor),
       (l) => l.settings?.speedFactor, (l, v) => updateSettings(l, { speedFactor: v })));
   }
-  if (plant.stations.some((s) => s.type === 'source')) {
+  if (plant.stations.some((s) => s.type === 'source' || trucksOf(s))) {
     params.push(parameter('demandFactor', 'Demand factor', '×', factorRange(plant.settings.demandFactor),
       (l) => l.settings?.demandFactor, (l, v) => updateSettings(l, { demandFactor: v })));
   }

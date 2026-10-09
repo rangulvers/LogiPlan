@@ -41,12 +41,13 @@ js/
   main.js                   bootstrap: build store, sim runner, UI; handle #share links
   util/    grid.js rng.js ids.js format.js dom.js                      (done)
   model/   defaults.js (done) layout.js validate.js serialize.js examples.js
-           schema.js ops.js calendar.js extensions.js validate-ops.js        (the seams of optional features, see 3.1)
+           schema.js ops.js calendar.js extensions.js doors.js validate-ops.js        (the seams of optional features, see 3.1; trucks and dock doors, see 4.10)
   sim/     graph.js traffic.js logistics.js stats.js insights.js engine.js experiments.js
   store/   store.js
   ui/      theme.js icons.js camera.js renderer.js editor.js runner.js app.js
            dialogs.js dashboard.js charts.js compare.js report.js
            panels/ inspector.js fleet.js flows.js simulate.js checks.js
+           day-plant.js guidance-ops.js report-ops.js ops-styles.js render/ops.js panels/ops-trucks.js timetable-dialog.js plant-clock.js doors-card.js trucks-help.js   (trucks and dock doors, see 6.10)
 tests/     *.test.js, helpers/ (ascii.js, golden.js …), fixtures/golden/ (the safety net: recorded KPI reports, legacy layouts, share links), e2e/ (Playwright, run by hand: npm run test:e2e)
 scripts/   serve.mjs (dev server), check-imports.mjs, test-tiers.mjs (fast / heavy test tiers for CI), rebaseline-golden.mjs (re-records tests/fixtures/golden), perf-baseline.mjs (CPU seconds per simulated hour)
 docs/      ARCHITECTURE.md (this file)
@@ -60,10 +61,10 @@ docs/      ARCHITECTURE.md (this file)
 util  ←  model  ←  sim  ←  store?  ←  ui  ←  main
 ```
 * `model` imports only `util`. `sim` imports `util` + `model/defaults.js` (+ `model/layout.js` for `normalizeLayout`).
-* **The pure model modules of optional features** (the warehouse module, docs/WAREHOUSE-DESIGN.md): `model/schema.js`, `ops.js`, `calendar.js`, `extensions.js` and, in later
-  milestones, `rack.js`, `loadtypes.js`. They are pure functions of plain JSON (sanitizers, `schemaNeeded`, timeline and rack mathematics), import only `util`, `defaults.js` and each other
-  (`schema.js` → `defaults.js`; `ops.js` → `util`; `calendar.js` → `ops.js`; `extensions.js` → `calendar.js`, `schema.js`) and **never `layout.js`**, which imports them. `sim` may therefore import them too (the simulation
-  and the UI derive capacity, clocks and geometry from the same code) without pulling in the mutators. The one model module that may import `layout.js` is `model/validate-ops.js` (the plan checks of the warehouse module), which `validate.js` calls.
+* **The pure model modules of optional features** (the warehouse module, docs/WAREHOUSE-DESIGN.md): `model/schema.js`, `ops.js`, `calendar.js`, `extensions.js`, `doors.js` and, in later
+  milestones, `rack.js`, `loadtypes.js`. They are pure functions of plain JSON (sanitizers, `schemaNeeded`, the clock, the door check, timeline and rack mathematics), import only `util`, `defaults.js` and each other
+  (`schema.js` → `defaults.js`; `ops.js` → `util`, `defaults.js`; `calendar.js` → `ops.js`; `extensions.js` → `calendar.js`, `schema.js`; `doors.js` → `util`, `ops.js`) and **never `layout.js`**, which imports them. `sim` may therefore import them too (the simulation
+  and the UI derive capacity, clocks and geometry from the same code) without pulling in the mutators. The one model module that may import `layout.js` is `model/validate-ops.js` (the plan checks of the warehouse module and the data of their Fix buttons), which `validate.js` calls.
   The sim-side runtime of a feature lives in its own file (`sim/logistics/trucks.js`, `staffing.js`, `racks.js`, … and `sim/stats-ops.js`, `insights-ops.js`), created only for stations that use it.
 * `store` imports `model` (+ `util`). It never imports `sim` or `ui`.
 * `ui` may import everything below it; `ui` modules never import `main.js`. `sim` never imports `ui` or `store`.
@@ -77,17 +78,17 @@ An optional feature (trucks and dock doors, shifts, racks, load types …) is ad
   (so legacy files and share links stay byte-identical) and **owned** by one pure module with `sanitize*` / `merge*` functions that drop unknown keys, clamp numbers and never throw. Registries a milestone adds to:
   `OPS_SANITIZERS` in `ops.js` (per station type: raw → block or `undefined`), `EXTENSION_BLOCKS` in `extensions.js` (top-level blocks, called by `normalizeLayout` through `normalizeExtensions`), `OPS_KEYS` / `CALENDAR_KEYS` (the documented keys, which drive the
   round-trip tests). `updateStation(layout, id, { ops })` merges through `mergeOps` (plain objects merge key by key at every depth, so a patch of only `interArrival.mean` keeps the kind and the spread; arrays and scalars replace; `null` removes), `duplicateStation` copies `ops`, `checkInvariants` demands that an `ops` block is a fixed point of its sanitizer.
-* **Schema.** `layout.schema` is the **lowest version that can express the layout** (`schemaNeeded` in `schema.js`; legacy = 1 and stays 1). `normalizeLayout` stamps it, `checkInvariants` demands exactly it, and the store rolls back an edit that breaks it, so **a mutator that adds or removes persisted extension content must end with
-  `reconcileLayout(layout)`** (`extensions.js`: it re-derives, in place and only where something changed, the optional blocks that other content implies, as `normalizeLayout` does, and the stamp; later `pruneRefs`). `updateStation` (for `ops`), `removeStation` (so also `resizeGrid`), `removeFleet` and `removeFlow` do;
-  the calendar mutators of M2, `applyFleetPatch`/`applyFlowPatch` for the fleet and flow keys of M2, M3 and M5, and `addStation` once it accepts `ops` have to. This is enforced, not remembered: `tests/model.reconcile.test.js` fails on any exported function of `layout.js` that is not classified (reader or mutator),
-  and drives every mutator at random through the real store with stand-in sanitizers, checking after each edit that the layout is valid and agrees with `normalizeLayout` on stamp, calendar and `ops`. `exportProject` stamps the project with the highest schema of its layouts, `importProject` warns when a file is above
+* **Schema.** `layout.schema` is the **lowest version that can express the layout** (`schemaNeeded` in `schema.js`; legacy = 1 and stays 1). `normalizeLayout` stamps it, `checkInvariants` demands exactly it (and that every optional block, today `calendar`, is a fixed point of its sanitizer and exists where a timetable implies it), and the store rolls back an edit that breaks it, so **a mutator that adds or removes persisted extension content must end with
+  `reconcileLayout(layout)`** (`extensions.js`: it re-derives, in place and only where something changed, the optional blocks that other content implies, as `normalizeLayout` does, and the stamp; later `pruneRefs`). `updateStation` (for `ops`), `addStation` (it accepts `ops`), `duplicateStation` (a copy of a station with `ops`), `updateCalendar`, `removeStation` (so also `resizeGrid`), `removeFleet` and `removeFlow` do;
+  the shift mutators of M2 and `applyFleetPatch`/`applyFlowPatch` for the fleet and flow keys of M2, M3 and M5 have to. This is enforced, not remembered: `tests/model.reconcile.test.js` fails on any exported function of `layout.js` that is not classified (reader or mutator; the table is `tests/helpers/layout-mutators.js`),
+  and drives every mutator at random through the real store with stand-in sanitizers, checking after each edit that the layout is valid and agrees with `normalizeLayout` on stamp, calendar and `ops`; `tests/model.ops-trucks.test.js` does the same with the real sanitizers and demands that `normalizeLayout(layout)` is the layout, byte for byte. `exportProject` stamps the project with the highest schema of its layouts, `importProject` warns when a file is above
   `SCHEMA_MAX` (the highest row this build implements: raise it in the milestone that adds the row). `migrate(raw)` is the reserved identity hook that runs before sanitizing. `SCHEMA_VERSION` (defaults.js) stays the base schema.
 * **Simulation.** Fixed shapes, present but unread: loads carry `ty, tk, at, slot` (-1 / 0 = none), orders `pickAt, dropAt, pickExtra, dropExtra`, every `StationRT` has `trucks, rack, cal` (null) and **one** accessor `st.capacity` (= `params.capacity` for a storage, `undefined` otherwise;
   M3 derives it for racks) that `state`, `fill`, `fillLabel`, `flowSpace`, `flowCapacity`, the dispatcher's batch limit and the jobs overlay (`render/jobs.js bufferSize`, which falls back to `params.capacity` for a plain stand-in) read. The readers at LAYOUT level (they see a layout station, not a `StationRT`) are
   `model/validate.js` (the buffer between two stations, the smallest limit on a flow, `storage-small`), `ui/report.js` (`stationParams`), `sim/insights.js` and `sim/experiments.js` (the capacity sweep); M3 routes them through one pure helper next to the rack mathematics. A ledger test (`tests/sim.seams.test.js`) fails when a new `params.capacity` read appears. `Logistics.ext` is `null` unless a layout uses a feature, and `Logistics.clock` is `null` without `layout.calendar`.
 * **KPIs.** `Stats` has five call sites for an extension: `_build` creates `stats.ext = logistics.ext.stats(stats)` (once, with typed arrays) when `logistics.ext` exists, and `reset`, `sample`, `onEvent` and `report` call `ext.reset()`, `ext.sample(dt)`, `ext.onEvent(name, payload)` and
   `ext.report(report)`, which adds `report.ops`. Without an extension that is one pointer test per call and the report has no `ops` key.
-* **Checks and findings.** `validateLayout` calls `validateOps(ctx, add)` (`model/validate-ops.js`, list `OPS_CHECKS`) after its own checks; `generateInsights` runs `EXTENSION_RULES` (insights.js) after its own rules. Both lists are empty until M1.
+* **Checks and findings.** `validateLayout` calls `validateOps(ctx, add)` (`model/validate-ops.js`, list `OPS_CHECKS`) after its own checks; `generateInsights` runs `EXTENSION_RULES` (insights.js) after its own rules. `OPS_CHECKS` holds the four checks of trucks and doors since M1 (4.10); `EXTENSION_RULES` is still empty (the sim side of M1 fills it).
 * **Test helpers.** `tests/helpers/logistics-invariants.js` and the auditor of `tests/helpers/engine-review-gen.js` count the loads that trucks hold (`st.trucks.gate[].pending`, `docked[].pending`, `staged`) as live and present, and both ask `st.capacity` for the capacity of a storage; `tests/helpers/golden.js` and `tests/fixtures/golden/` hold the safety net
   (`node scripts/rebaseline-golden.mjs` re-records it, and a pull request that does so must say why).
 
@@ -107,7 +108,7 @@ An optional feature (trucks and dock doors, shifts, racks, load types …) is ad
   labels:    [{ id, x, y, text, size? }],            // x,y in cells (may be fractional)
   stations:  [Station], flows: [Flow], fleets: [Fleet],
   settings:  Settings,
-  // optional, sparse, appended after `settings` and absent on a legacy plant (3.1): calendar, loadTypes
+  // optional, sparse, appended after `settings` and absent on a legacy plant (3.1): calendar { startTod, startDay } (M1, 4.10), loadTypes (M5)
 }
 ```
 
@@ -123,7 +124,7 @@ cell Q adds link P→Q (and Q→P for two-way). A lone cell with no links is leg
 
 ### 4.2 Stations (bricks)
 ```js
-{ id: 's1', type: 'source'|'process'|'storage'|'sink'|'depot', name, x, y, w, h /*cells*/, params: {…}, ops?: {…} /* warehouse options, sparse, after params (3.1) */ }
+{ id: 's1', type: 'source'|'process'|'storage'|'sink'|'depot', name, x, y, w, h /*cells*/, params: {…}, ops?: {…} /* warehouse options, sparse, after params (3.1); M1: ops.trucks on source and sink only (4.10) */ }
 ```
 Params per type (defaults in `defaultStationParams`):
 | type | params |
@@ -194,7 +195,7 @@ setRoadLimit(layout, cx, cy, limit /*1 removes*/) → boolean
 flipRoadDirection(layout, cx, cy, dir) → boolean     // toggle one-way/two-way on a link: A→B only ↔ B→A only ↔ both (cycles)
 
 // entity mutators (return the created/updated object, or null if rejected)
-addStation(layout, { type, x, y, w?, h?, name?, params? }) → Station|null     // rejects overlaps/out-of-bounds; unique id ("s1"…); name "Source 2" style unique
+addStation(layout, { type, x, y, w?, h?, name?, params?, ops? }) → Station|null     // rejects overlaps/out-of-bounds; unique id ("s1"…); name "Source 2" style unique; `ops` is sanitized as in a loaded file (a type without options drops it) and reconciled
 moveStation(layout, id, x, y) → boolean       resizeStation(layout, id, rect) → boolean       // reject if blocked; roads under the new rect are NOT silently deleted: reject
 updateStation(layout, id, patch) → boolean    // shallow merge; `params` merged one level deep; clamps/validates; `ops` merged key by key at every depth by ops.js (`null` removes; reconcileLayout re-derives layout.schema and the implied blocks)
 removeStation(layout, id) → boolean           // cascades: removes its flows, clears fleet.home refs; reconcileLayout (stamp, implied blocks)
@@ -203,6 +204,7 @@ addFlow(layout, from, to, patch?) → Flow|null // validates §4.3 rules; null o
 updateFlow(layout, id, patch) → boolean       removeFlow(layout, id) → boolean  // reconcileLayout
 addFleet(layout, preset = 'agv', patch?) → Fleet                 updateFleet(layout, id, patch) → boolean (battery merged)
 removeFleet(layout, id) → boolean              // clears flow.fleetId refs; reconcileLayout     duplicateFleet(layout, id) → Fleet|null
+updateCalendar(layout, patch) → boolean        // the clock of a day plant (4.10): { startTod, startDay } merge key by key and create the clock; `null` removes it unless a timetable needs it (then it is reset to 00:00 Monday); false for a patch that is neither an object nor null; reconcileLayout
 addObstacle(layout, { x, y, w, h, kind }) → Obstacle|null   updateObstacle / removeObstacle(layout, id)   // obstacles may not cover roads/stations
 addLabel(layout, { x, y, text, size? }) → Label     updateLabel / removeLabel(layout, id)
 resizeGrid(layout, cols, rows) → { removed: number } // drops/clips anything outside; clamps to GRID_LIMITS (320 x 320 cells since the plan grows, defaults.js)
@@ -231,7 +233,7 @@ reachability; otherwise do an internal BFS over `roads`. Codes to implement (at 
 `flow-bad-endpoints`, `flow-fleet-missing`, `source-no-outflow`, `process-no-inflow`, `process-no-outflow`, `sink-no-inflow`,
 `perCycle-exceeds-inCap` (process can never start), `batch-exceeds-capacity`, `storage-small`, `depot-missing` (battery enabled but no depot
 with chargers), `home-depot-missing`, `vehicle-longer-than-cell` (warning), `road-fragment` (road cells not connected to any dock),
-`one-way-dead-end`, `fleet-count-zero`, `duplicate-names` (info). Each issue has a stable `id` (code + ref) so the UI can keep dismissed state. The checks of optional features are in `model/validate-ops.js`, called once at the end (3.1).
+`one-way-dead-end`, `fleet-count-zero`, `duplicate-names` (info). Each issue has a stable `id` (code + ref) so the UI can keep dismissed state. The checks of optional features are in `model/validate-ops.js`, called once at the end (3.1; trucks and doors: `doors-too-few`, `doors-exceed-docks`, `docks-share-lane`, `timetable-empty`, 4.10).
 
 ### 4.8 `js/model/serialize.js` (owner: model agent)
 ```js
@@ -248,6 +250,49 @@ shareUrl(base, project) → Promise<string>   // `${base}#p=${encodeShare}`
 (2) **"Two production lines + warehouse"** (forklifts and AGVs, a storage buffer, a depot with chargers, a BOM-style assembly),
 (3) **"Congestion lab"** (one-way narrow aisles, a junction and too many vehicles → the planner sees queues and can fix them).
 Each example must pass `validateLayout` with zero errors and produce useful KPIs when simulated (an integration test will check that).
+
+### 4.10 Trucks and dock doors (milestone M1): data, helpers, checks (owner: model agent)
+Design: docs/WAREHOUSE-DESIGN.md 5.3, 6.2, 6.3, 7.2, Appendices A and B. Trucks are **events**, never vehicles on the road grid; a door is a **count**, not a road cell.
+
+**Data.** `station.ops.trucks` on a Goods in (`source`) and a Goods out (`sink`); any other station type drops `ops`. A block that exists stores every field (this table is `OPS_KEYS` in `ops.js`, which also holds a valid sample and clamping cases per key and drives the round-trip tests):
+
+| key | range, default | meaning |
+|---|---|---|
+| `doors` | int 1..32, 2 | truck positions |
+| `checkIn`, `checkOut` | whole s 0..7200, 300 | time at the door before the pallets are released / after the last pickup |
+| `mode` | `'rate'` \| `'schedule'`, `'rate'` | generate trucks from a rate, or follow a timetable |
+| `interArrival` | Dist, mean 60..1,000,000 s, `{ normal, 2700, 0.3 }` | rate mode: time between trucks |
+| `pallets` | Dist, mean 1..200, `{ uniform, 24, 0.25 }` | pallets per truck (a draw is rounded and kept in 1..200) |
+| `schedule` | at most 500 rows `{ at, pallets }`, `[]` | `at` is a time of day (whole seconds 0..86399; `"HH:MM"` text is read), sorted by `at` (stable); `pallets` a whole number 1..200 or `null` = draw from `pallets`; an unreadable `at` drops the row, an unreadable `pallets` becomes `null`; the first 500 valid rows are kept |
+| `jitter` | whole s 0..7200, 0 | a scheduled truck arrives at `at` +- uniform(jitter) |
+| `noShow` | 0..0.5 (4 decimals), 0 | chance that a scheduled truck does not come |
+| `maxDwell`, `staging` | whole s 0..86400, 3600; int 0..50, 4 | Goods out only (kept but ignored on a Goods in) |
+
+`layout.calendar = { startTod, startDay }` (`startTod` whole s 0..86399 or `"HH:MM"`, `startDay` int 0..6, 0 = Monday) is appended after `settings`. A clock **exists** when the raw layout has one or when a station runs `mode: 'schedule'` (the sanitizer creates `{ startTod: 0, startDay: 0 }`); nothing removes it by itself (the planner's start time survives a switch back to rate mode), `updateCalendar(layout, null)` does when no timetable needs it. A plant with a clock is a day plant (cold restart in the runner), so a panel that switches the last timetable back to rate mode and wants a stationary plant again removes a clock that still has its default start in the same commit. Schema: a layout with `ops.trucks` or a `calendar` is **2** (`SCHEMA_MAX` = 2), a legacy layout stays 1. `demandFactor` scales the truck frequency in rate mode and the pallets per truck in schedule mode (appointments do not move).
+`mergeOps` merges plain objects at every depth: `{ trucks: { interArrival: { mean: 2400 } } }` keeps the kind and spread, a list (`schedule`) replaces, `null` removes a key (the sanitizer then fills the default), `{ trucks: null }` removes the block.
+
+**Where the code is.** `ops.js` (sanitizer, `OPS_KEYS`, `TRUCK_DEFAULTS`/`defaultTrucks`, `trucksOf`, `timeOfDay`), `calendar.js` (`sanitizeCalendar`, `mergeCalendar`, `CALENDAR_KEYS`, `makeClock`, `formatTimeOfDay`, `usesTimetable`), `doors.js` (below), `validate-ops.js` (checks and Fix data), `ui/panels/timetable-paste.js` (the pure paste parser). Mutators that can change derived state end with `reconcileLayout`: `updateStation` (ops), `addStation` (ops), `duplicateStation`, `removeStation`, `updateCalendar`; `tests/model.ops-trucks.test.js` proves `normalizeLayout(layout)` is the layout after every mutator, through the real store with undo and redo.
+
+**`doors.js`** (pure; imports `util` and `ops.js`):
+```js
+convertToDoors(station | type, params? | params, type?) → trucks block | null   // (a station; a type name and its params; or the params of a Goods in alone) "Add dock doors" (6.3.1); Goods in: P = 24 pallets, gap = P x g / b (kind and spread of the old Dist kept), never below 600 s (then P = ceil(600 x b / g)), 2 doors, 300/300 s; Goods out: 24 pallets / 30 min
+describeTrucks(trucks, { demandFactor? }) → { mode, doors, palletsPerTruck, gapSeconds|null, trucksPerHour, palletsPerHour, rows }
+dockDoorsToast({ name, type?, trucks, before? }) → string       // copy 1 of 7.6
+doorCheck(trucks, { demandFactor?, tPallet?, measuredDoorSeconds? }) → { mode, empty, doors, trucksPerHour, pallets, tPallet, basis: 'assumed'|'measured', checkIn, checkOut,
+  doorSeconds, doorHours, needed, utilisation, tooFew, suggestedDoors, suggestedUtilisation, parts, sentences, text, action: null | { label: 'Use 6 doors', doors: 6 } }
+doorCheckText(check) → { parts, sentences, text }               // copy 2 of 7.6
+peakRowsPerHour(rows) → number                                  // most rows in any sliding hour (cyclic, half open [a, a + 3600))
+truckGap(rng, trucks, demandFactor) → s | Infinity              // rate mode: sampleDist(interArrival, 1 / demandFactor)
+drawPallets(rng, dist) → whole 1..200      scalePallets(pallets, demandFactor) → whole >= 1, or 0 when the factor is 0
+expandScheduleDay(trucks, clock, dayIndex, rng) → [{ at, pallets, noShow, row }]   // 6.2.6: one clock day of a timetable as simulation times, sorted; draws noShow, then jitter, then pallets per row, only as far as needed
+expansionTime(trucks, clock, dayIndex) → s                      // when the run has to expand that day (its midnight less the jitter)
+```
+`needed = peakTrucksPerHour x doorHours` (Little's law, A.1); `ASSUMED_UNLOAD_PER_PALLET` = 90 s; a measured mean door time (docking to the door being free again, check-in and check-out included) replaces `checkIn + pallets x tPallet + checkOut`. `tooFew` from 95 % utilisation (`DOORS_TOO_FEW_UTILISATION`: the queue grows without bound before 100 %, A.1: 5 doors at 98 %); `suggestedDoors` is the fewest doors at most 85 % busy (`DOOR_TARGET_UTILISATION`; 4.9 needed gives 6, 82 %). The clock (`calendar.js`): `makeClock(layout.calendar)` → frozen `{ startTod, startDay, tod(t), day(t), dayIndex(t), dayStart(k), label(t) }` with `c(t) = startTod + t`; `label` is `"Mon 06:42"`.
+
+**Checks** (`validate-ops.js`, only for stations that have `ops.trucks`, ref = station id, all warnings): `doors-too-few` (the door check says tooFew, with the plan's `settings.demandFactor`), `doors-exceed-docks` (more doors than road cells touch the station; a station with no dock has `station-no-dock` instead), `docks-share-lane`, `timetable-empty`. Their Fix is data: `opsFixFor(layout, issue)` → `{ type: 'update-station', stationId, patch, label, undoLabel }` (Use N doors, Add a row at 06:00 with 24 pallets) | `{ type: 'extend-docks', stationId, count, label, undoLabel }` | `{ type: 'focus', refs: { stationIds, cells }, label: 'Show docks' }` (the existing fix type), and `applyOpsFix(draft, fix)` performs the first two inside one `store.commit` (`extendDockRoad(layout, stationId, wanted)` paints the free cells of the station edge next to existing docks, two-way).
+**Docks share a lane** (`dockLanes(layout, station)`): take one side of the station, the strip of cells that touch it. Two neighbouring cells of the strip belong to a lane when both are road cells, the road is connected between them (a link either way), and the cells one step away from the station behind both are not road cells (no parallel road to pass a docked vehicle on; outside the plan counts as no road). A dock lane is a maximal run of such pairs (two or more cells). Docks that are not neighbours (side roads, the "bays" of the Dock lab) never share a lane; the corner cells are not docks; each side is separate. This is the dock book's blocking rule (`docks.js`: a stopped vehicle holds up the vehicles behind it in a single lane) seen from the plan.
+
+**Paste** (`ui/panels/timetable-paste.js`, no DOM): `parseTimetable(text)` → `{ rows: [{ at, pallets|null, line }], skipped: [{ line, text, reason, message, code }], header, separator, omitted }`, `rowsOf(result)`, `summarizeTimetable(result)` (copy 5 of 7.6), `parseTimeField`, `parsePalletsField`. Rules: separator tab, else semicolon, else comma only when every data line has exactly one comma outside quotes and is not itself a decimal number; times `H:MM`, `HH:MM`, `HH.MM`, `HHMM` (four digits), a trailing `h` or `Uhr` ignored; pallets whole 1..200, `24,0` and `24.0` accepted, `24,5` and `1.000` refused, an empty cell means `null`; the first non-empty line without a digit is a header; empty lines are skipped (line numbers still count them); more than two columns is refused; the first 500 good rows are kept and ONE skipped entry (`code: 'too-many'`) reports the rest. The parser applies nothing: the dialog applies `rowsOf(result)` on "Use N rows".
 
 ---
 
@@ -374,7 +419,7 @@ trucks, rack, cal /* null: seams of the warehouse module */`. `Logistics` also h
   (holding the loads) until it has. No outgoing flow ⇒ outputs complete immediately. Breakdowns: time to next failure ~ Exp(`mtbf`) of calendar time,
   repair ~ Exp(`mttr`); the running cycle is frozen while down.
 * **storage:** `outQ` per outgoing flow; loads are routed to a flow (SWRR) on arrival and become available `dwell` s later; capacity counts all held loads.
-* **sink:** consumes arriving loads instantly; emits `'loadCompleted'`.
+* **sink:** consumes arriving loads instantly; emits `'loadCompleted'`. A Goods in / Goods out with `ops.trucks` has `st.trucks` (a `TruckDesk`, 5.7) and follows the rules there instead: the legacy arrival loop does not run, and a Goods out loads trucks.
 * **depot:** `parked: VehicleRT[]`, `charging: VehicleRT[]`; `slots`, `chargers`.
 
 **Orders & dispatch (demand-driven, global greedy matching).** A flow has *demand* when `available(flow)` (unclaimed loads in `from.outQ[flow]` that are ready)
@@ -413,7 +458,7 @@ charges `1/(chargeTimeMin·60)` per s at a depot charger. A vehicle with `batter
 charges to ≥ `resumePct`, then rejoins. At 0 it becomes `'dead'` (stops where it is, blocks its lane). Vehicle breakdowns (`mtbf/mttr`): `state = 'broken'`, `tv.disabled = true`.
 After a deadlock relocation the vehicle re-plans its current leg from its new node.
 **Emitted events** (`emit(name, payload)`): `loadCreated`, `loadCompleted {load, station, leadTime, t}`, `orderAssigned`, `orderPickedUp`,
-`orderDelivered {order, waitForPickup, transit}`, `machineDown`, `machineUp`, `vehicleDown`, `vehicleUp`, `vehicleDead`.
+`orderDelivered {order, waitForPickup, transit}`, `machineDown`, `machineUp`, `vehicleDown`, `vehicleUp`, `vehicleDead`, and, for a Goods in / Goods out with trucks (5.7), `truckArrived`, `truckTurnedAway`, `truckNoShow`, `truckDocked`, `truckReady`, `truckDeparted`.
 
 ### 5.4 `js/sim/stats.js` and `js/sim/insights.js` (owner: stats agent)
 `Stats` *samples* simulation state each tick (reading the public fields documented above) and listens to events; it never mutates the sim.
@@ -448,6 +493,7 @@ KpiReport = {
              hotspots: [{ node, cx, cy, wait /* veh·s */ }] /* top 10 */, deadlockEvents: [{ t, nodes, vehicles, resolved }] },
   orders: { completed, avgPickupWait, avgTransit },
   series: { interval, t: [], throughput: [] /* trailing-window units/h */, wip: [], vehiclesWorking: [], vehiclesWaiting: [] },
+  ops?: { trucks: { [stationId]: TruckKpis } },   // only for a layout with trucks (5.7); a legacy report has no `ops` key at all
 }
 ```
 `generateInsights(report, layout) → Insight[]` with `Insight = { id, severity: 'critical'|'warning'|'info'|'good', title, detail, suggestion?, refs: { stationIds?, fleetIds?, flowIds?, cells? } }`,
@@ -485,12 +531,59 @@ sim.kpis() → KpiReport    sim.insights() → Insight[]    sim.heat()
 runSimulation(layout, { duration?, warmup?, seed?, onProgress?, signal?, yieldEveryMs = 30 }) → Promise<KpiReport>   // never blocks the UI > ~30 ms; honours AbortSignal
 runReplications(layout, { replications = 3, seed0?, ...opts }) → Promise<{ runs: KpiReport[], summary: { [metricId]: { mean, sd, min, max } } }>
 METRICS = [{ id, label, unit, better: 'higher'|'lower'|null, digits, get(report) → number|null }]   // flat comparable numbers: throughput/h, mean & p95 lead time, WIP, fleet utilization (mean), vehicle wait share, empty share, deadlocks, max source backlog, bottleneck utilization …
+// M1 adds `gateWaitMean`, `gateWaitP90`, `doorUtilization` (a percentage, weighted by doors) and `trucksShort`: all null for a report without `ops.trucks`
 summarizeReport(report) → { [metricId]: number|null }
 listSweepParameters(layout) → [{ key, label, unit, min, max, step, values /* suggested */, get(layout) → number, apply(layout, value) → Layout /* cloned */ }]
    // fleet count, fleet speed (per fleet and "all"), vehicle capacity, demand factor, process factor, machines per workstation, buffer capacities, roads' speed limit factor …
+   // trucks (5.7): `doors:<station>`, `truckGap:<station>` (rate mode) and `palletsPerTruck:<station>` for a Goods in / Goods out with `ops.trucks`; they replace `station.<id>.interArrival` of a Goods in with trucks
 sweep(layout, param, values, { replications, ...opts }) → Promise<Array<{ value, summary, runs }>>
 compareScenarios(scenarios /* [{ id, name, layout }] */, { replications, ...opts }) → Promise<Array<{ id, name, summary, runs }>>
 ```
+
+### 5.7 Trucks and dock doors (milestone M1): the simulation (owner: sim agent)
+Design: docs/WAREHOUSE-DESIGN.md 6.2.6, 6.3, 6.8, 6.9; data and helpers: 4.10. Trucks are **events, never vehicles on the road grid**; a door is a **count** (`ops.trucks.doors`), not a road cell, and the dock cells and the dock book are untouched. The code is
+`js/sim/logistics/trucks.js` (the runtime), `js/sim/stats-ops.js` (`report.ops.trucks`), `js/sim/insights-ops.js` (five rules) and three hooks. A station without `ops.trucks` has `st.trucks === null` and pays one pointer test per tick; a legacy plant runs bit for bit as before (golden fixtures, A1.1).
+
+**Where it hooks in** (everything else is the unchanged legacy code): `Logistics` builds a `TruckDesk` per Goods in / Goods out with `ops.trucks` (`setupTrucks`, after the runtime settings and the clock exist; the block is sanitized again there, so a hand-made layout cannot put junk into a run), gives the plant `truckSeq` (ids of trucks) and `ext = { stats }`;
+`stepStation` calls `st.trucks.step(st, t, lg)` instead of `stepSource` (so `nextArrival` stays infinite and `flushYard` is called by the desk); `flowSpace` / `flowCapacity` ask `st.trucks.room(st)` / `capacity()` for a Goods out with trucks (a **pull** destination); `acceptLoads` hands the delivered pallets to `st.trucks.receive`;
+`finishLoading` tells `st.trucks.pickedUp(loads, t)` when a vehicle took pallets from a Goods in; `rescaleArrivals` (the demand slider) calls `st.trucks.rescale`; `StationRT.fill` / `fillLabel` of a Goods out show the staging space (`3/8`).
+
+**A truck** (`Truck`, all fields present from the start): `{ id, at /* nominal arrival time */, plan, state: 'gate'|'checkin'|'work'|'checkout', door /* 0-based, the lowest free one, -1 at the gate */, dockedAt, releaseAt, freeAt, freedAt, left /* Goods in: pallets not picked up yet */, loaded /* Goods out */, closeAt, closing, pending[] }`.
+**The desk** (`TruckDesk`, `st.trucks`): `role` ('in' | 'out'), `mode`, `doors`, `checkIn`, `checkOut`, `maxDwell`, `stagingCap` (= `staging x doors`, Goods out only), `gate[]` (FIFO), `docked[]` (in the order they docked), `staged[]` (Goods out: delivered pallets waiting for a truck), `due[]` (timetable), counters `arrived, nDocked, departed, short, noShow, turnedAway, planned, loadedTotal`, `doorsOpen()` (the count today; M2 makes it follow the clock).
+
+**Goods in.** Arrive at the nominal time (applied on the first tick at or after it, like `stepSource`): the pallets are created now (`createdAt = at`, so the lead time includes the wait at the gate; each carries `tk`), the truck joins the gate. Dock while `docked.length < doorsOpen()`, FIFO. At the end of check-in the pallets go to `yardQ` and `flushYard` moves them into the output buffers (`params.outCap` per outgoing flow
+is the staging space) as vehicles make room. **Unloading is emergent**: each pickup decrements `left`; at 0 the check-out starts, then the door is free. The Goods in is `blocked` while a docked truck's pallets wait in the yard. Guards: at most `GATE_LIMIT` (200) trucks at the gate, and the pallets not picked up yet stay below `YARD_LIMIT`; a further arrival is `truckTurnedAway` and creates no pallets.
+**Goods out.** `room()` = free staging space + (`plan - loaded` of each truck at work that is not closing) - `inboundTotal` (pallets already on their way), never below 0; a truck in check-in does not count (the dispatcher is woken when it is ready), so with `staging 0` pallets are only fetched while a truck is ready. A delivered pallet is loaded onto the earliest-docked truck at work with room (that is the moment `completeLoad` runs: throughput, lead time and the conservation law keep their meaning), else it waits in `staged`
+(`staged <= stagingCap`); a truck that finishes check-in takes up to `plan` staged pallets at once. A truck leaves when full, or `maxDwell` after check-in with what it has - but never while pallets are on their way (`inboundTotal > 0`): at `maxDwell` it is marked `closing`, stops counting in `room()`, and leaves when `inboundTotal == 0`. `maxDwell` 0 means until full. `flowCapacity` = `stagingCap + doors x` the largest plan, so a minimum batch bigger than any truck could take cannot starve the flow.
+**How the trucks come.** *Rate mode:* the first truck at `params.startDelay` (Goods in) or after one gap (Goods out), then `truckGap` (a draw of `interArrival` divided by `demandFactor`) after each nominal arrival; pallets per truck are a draw of `pallets` (rounded, 1..200), so the slider scales the frequency, not the load. *Timetable:* each clock day (and at the start of the run) the rows of the timetable are expanded into a sorted due list (`expandScheduleDay`: a no-show draw, a jitter draw, a pallets draw for a `null` row; rows that lie before the start of the run are skipped, a jittered row is never earlier than time 0), merged with what is still due; the pallets of a truck are multiplied by `demandFactor` when it arrives (`scalePallets`, at least 1, 0 = no truck): appointments do not move.
+All draws come from forks of the station's stream (`st.rng.fork('trucks')`, `'trucks:pallets'`), so adding a truck station elsewhere never changes the arrival times of another one (A1.9), and the nominal times do not depend on `dt` (A1.8; the *application* of an event waits for the next tick, so a coarser `dt` waits up to one tick longer at every step: the mean gate wait of a loaded door differs by 0.5 % between `dt` 0.1 and 0.25, recorded in `tests/sim.trucks.test.js`).
+`setRuntime({ demandFactor })`: rate mode keeps the pending arrival's place in the rescaled process (`remaining x old / new`, as `rescaleArrivals` does for a legacy source; the first truck of a Goods in is a fixed offset and does not move), from 0 it starts a fresh gap, to 0 nothing comes; a timetable needs no rescaling. Changing doors, check-in or the timetable rebuilds the simulation: `layoutChangeKind` calls any edit of `stations` or `calendar` **structural**; only the five `RUNTIME_KEYS` settings are runtime.
+
+**Events** (payload always has `station`, `stationId`, `t` = the tick time that handled it): `truckArrived { truck, at }`, `truckTurnedAway { plan, at }`, `truckNoShow { row, at }`, `truckDocked { truck, door, wait }`, `truckReady { truck }` (check-in over: Goods in - the pallets went to the yard; Goods out - the truck is ready to be loaded),
+`truckDeparted { truck, short, doorTime /* docked -> door free */, turnaround /* arrival -> door free */, gateWait }`.
+
+**Invariants** (6.3.5, asserted on every tick of the fuzz plants by `checkTrucks` in `tests/helpers/logistics-invariants.js`; the helpers count pallets on trucks at the gate and at the doors (`pending`) and `staged` pallets as live and present): docked <= doors open; the gate is FIFO and in arrival order; a pallet is on at most one truck; `loaded <= plan`; `left` equals the number of the truck's pallets still in the station; `room()` >= 0 and `staged <= stagingCap`; the counters add up (`arrived = gate + nDocked`, `docked = nDocked - departed`); door numbers are unique and below `doors`.
+
+**`report.ops.trucks[stationId]`** (`stats-ops.js`, created through `Logistics.ext.stats(stats)` only for a layout with trucks; every number finite or null, never NaN):
+```js
+TruckKpis = { name, role: 'in'|'out', doors,
+  trucks: { arrived, docked, departed, short, noShow, turnedAway },   // events in the window; `short`: Goods out trucks that left without a full load
+  gateWait:   { mean, p90, max },            // s from the arrival to taking a door, per truck that docked in the window; null fields when none did
+  doorTime:   { mean, p90 },                 // s from taking a door to the door being free again (check-in and check-out included), per truck that departed
+  turnaround: { mean, p90 },                 // s from the arrival to the door being free again
+  doorUtilization,                           // 0..1: door-seconds held / (doors x window)
+  gateQueue:  { mean, max, now },            // trucks waiting at the gate: time-weighted mean, largest, right now
+  doorsBusyNow,                              // trucks at a door right now
+  fillRate,                                  // Goods out: pallets loaded / planned over the trucks that departed in the window; null on a Goods in, or before any truck left
+  gateQueueSeries: [] }                      // mean gate queue per point of report.series (same length, also after the series is decimated)
+```
+Little's law holds in the numbers (A1.5): `doorUtilization x doors` = mean trucks at the doors = (`trucks.docked` / window) x `doorTime.mean` within 5 % over 8 h (`tests/sim.trucks.stats.test.js`). The window follows `settings.warmup`: `reset()` clears the counters and samples, never the trucks at the doors.
+
+**Insights** (`insights-ops.js`, registered in `EXTENSION_RULES`, thresholds named at the top, each rule silent without `report.ops.trucks` and below three trucks): `gate-queue-long` (mean wait 15 min warning, 45 min critical; the wait is the larger of the mean of the trucks that docked and the Little estimate from the queue, so a queue that only grows is not hidden),
+`doors-bottleneck` (doors busy >= 85 % and waiting >= 5 min, and the vehicles are not the limit), `unload-limited-by-vehicles` (the same symptom with evidence that pallets are taken away too slowly: the Goods in blocked >= 25 % of the time or pallets wait >= 2 min for a vehicle, and the verdict of the built-in transport rules is docks, traffic or vehicles: "the doors are not the problem, the vehicles are"; it replaces `doors-bottleneck`),
+`doors-idle` (>= 2 doors, < 30 % busy, waiting < 1 min; info) and `outbound-short` (>= 10 % of the trucks left a Goods out short; the advice follows the transport verdict). They never speak twice about one station in contradicting ways and never produce a `good` insight. The thresholds that repeat those of `insights.js` are asserted equal by `tests/sim.trucks.insights.test.js`.
+
+**Tests.** `tests/sim.trucks.test.js` (lifecycle on micro plants, A1.7, A1.8, A1.9, differential against the legacy source, runtime what-ifs, 24 h), `sim.trucks.stats.test.js` (report.ops, A1.5, metrics, sweeps), `sim.trucks.insights.test.js` (A1.12 sim part), `sim.trucks.perf.test.js` (A1.16), `sim.trucks.fuzz.test.js` (heavy: A1.3, A1.4, A1.8 and A1.9 on 200 random plants). Generators and helpers: `tests/helpers/trucks-gen.js`.
 
 ---
 
@@ -684,6 +777,17 @@ Goal: someone who has never seen the tool can build a working plant without read
   on a touch screen or a window under 640 px connect mode shows a persistent prompt toast with a Cancel button (no Esc key, the status line is cut off);
   the Help page and the workstation's inputs say that two Goods in feeding one workstation are both needed per cycle and that a Storage in between lets either one supply it.
   Measured on the Two-lines example (8 stations, 6 flows, 10 vehicles): `guidanceFor(ctx).read()` 0.2 ms median per store change (p95 0.3 ms), chip + card + list DOM update 0.1 ms, the shell's own `validateLayout` 2.4 ms; at 600x with 10 vehicles 60 fps with the Jobs overlay on and off, +0.0 to +0.1 ms per frame (median) for the overlay.
+
+### 6.10 Trucks and dock doors in the UI (milestone M1; docs/WAREHOUSE-DESIGN.md 7.2, 7.6, 7.7)
+All new code is in new files; the existing files only call it (hot-file calls of a few lines each). A plant without trucks looks and behaves exactly as before: every part below is hidden or silent without `ops.trucks` / `layout.calendar`.
+* **Inspector, "Trucks and doors"** (`panels/ops-trucks.js`, called by `inspector.js` `stationView` for a Goods in and a Goods out). Without trucks a quiet block with the one button **Add dock doors** (`guidance-ops.js addDockDoors`: `convertToDoors` in ONE undo step "Add dock doors", the station selected, the toast of copy 1 with the action "Show doors", 8 s). With trucks: doors stepper, check-in and check-out in minutes (stored as seconds), the switch **Generate from rate / Use a timetable** (a timetable creates the clock and says the cold-restart toast once per session; switching the last timetable back to rate removes a clock that still has its default start in the same commit), "Time between trucks" and "Pallets per truck" (the distribution control of `fields.js`, here in minutes and pallets), the timetable table (a time and a number of pallets per row, an empty number means "drawn", add / delete rows, keyboard operable, the model sorts), "Trucks arrive up to ... early or late" and "No-shows", on a Goods out "Staging per door" and "A truck waits at most", the live **door check** (`doorCheck` with the plan's demand slider and, after a run, `report.ops.trucks[id].doorTime.mean`; its paragraph, the arithmetic in one line, the button "Use N doors") and the links "Remove trucks" and "How trucks and dock doors work" (Help). Every edit is `store.commit` with a label (`Change doors of "Goods in"`, coalesced per key); `update()` never touches a field that has focus. While trucks are on, `inspector.js` marks the legacy Deliveries fields with `data-role` (`legacy-arrivals`, `out-buffer`, `trucks-note`): the arrival fields are hidden, a note says so, "Output buffer slots per destination" is relabelled "Staging space (pallets) per destination".
+* **Paste from spreadsheet** (`panels/timetable-dialog.js` around the pure `timetable-paste.js`): a dialog with a text area, "Paste from clipboard", the summary of copy 5 and a preview table of every pasted line in order (read rows, skipped rows marked in place with line and reason, the header). Nothing is applied until the primary button **Use N rows**; Cancel, Escape and the backdrop change nothing; the rows replace the timetable in one undo step "Paste timetable into ...".
+* **Plant settings** (`panels/plant-clock.js`, a section of `plantView` shown only while `layout.calendar` exists): "Clock starts at [time] on [weekday]" (`updateCalendar`), **Run one day** / **Run one week** (one undo step that sets `duration` and `warmup 0`, resets the simulation to the start of the clock and plays at the highest speed; the week asks first), "Remove the clock" while no timetable uses it. The simulation bar shows the time of day (`Mon 06:42`, `app.js createSimBar`, data from `day-plant.js clockChip`).
+* **Day plants** (`day-plant.js`, the one definition `isDayPlant(layout)`: the plant has a clock AND a truck timetable; M2 widens it). `runner.js warmWanted()` is false when the displayed plant or the new plant is a day plant, so an edit restarts the simulation cold (`sim.time` 0, no pre-roll, no baseline) and `panels/impact.js` shows neither the card nor the hint; the toast after such a restart says why (copy 7 the first time per session, "The simulation starts again at 06:00." afterwards). A plant with trucks in rate mode is stationary: warm restart and the impact card as before (a leftover clock does not make it a day plant).
+* **Canvas** (`render/ops.js`; exactly one call each from `bricks.js planContent` and `paintContent`). `planOps` reserves a band along the lower edge of the face (never on road cells: the band is inside the brick) and hands the rest of the face to the existing layout; `paintOps` draws N door slots (free = dashed outline, a truck in the colour of its state with a clock while checking in or out, an arrow while pallets are unloaded (up, into the brick) or loaded (down, out of it), a pause mark while the door is held and nothing moves; colour never carries the state alone), the **gate chip** ("Gate 5 trucks, 38 min", shortened to "Gate 5, 38 min", "5, 38 min", "5" to leave the slots their room; neutral, amber from 15 min and red from 45 min with a "!" mark, constants `GATE_AMBER_SECONDS` / `GATE_RED_SECONDS`), from 24 px per cell the staged pallets of a Goods out as small squares (doors x staging, at most 24) and, with the Docks overlay on or the brick picked, the **dock share bars** (one thin bar beside the notch of every dock cell, as long as the visits of that dock compared with the busiest, read from the EXISTING `report.stations[id].docks`; one long bar and empty ones is the symptom, even bars the proof that the dock choice works). Below 14 px per cell only the count of doors is drawn; a brick below 5 px is the flat swatch as before. It reads `rt.trucks.gate[]` (`at`), `rt.trucks.docked[]` (`state` 'checkin' | 'work' | 'checkout', `door`), `rt.trucks.staged` and `rt.state`; without them every door is free. Hit testing is unchanged (the band belongs to the brick). Per frame and brick it allocates nothing once warm (plans cached per station, strings per value; the report for the share bars is cached for 250 ms).
+* **Results, the Doors card** (`panels/doors-card.js`, mounted by `dashboard.js`, hidden without trucks): per station with trucks the doors, trucks served, gate wait (mean, 90th percentile), door time, doors busy (a bar, orange from 85 %), gate queue now and at its worst, a sparkline of the gate queue (only when it was ever above 0), for a Goods out the trucks that left short and the share of pallets loaded, and the arithmetic of the door check. Source: `report.ops.trucks[stationId]` (WAREHOUSE-DESIGN 6.8); every field may be absent (a report without `ops` shows the configuration and a note, never NaN). The insights of the sim side arrive through the existing Insights list.
+* **Checks and guidance.** `guidance.js fixForIssue` defaults to `opsFixFor` (model/validate-ops.js) and `applyFix` performs the data fixes `update-station` ("Use N doors", "Add a row") and `extend-docks` ("Extend the road") inside ONE `store.commit` (`guidance-ops.js applyOpsStoreFix`, with an Undo toast), the fix `focus` ("Show docks") is the only button of that issue (the generic Show button is left out). `computeNextSteps` ends with `addDoorsSteps`: the note `info:add-doors` (severity info, dismissible, never a step to finish) once the plant has flows and a Goods in or Goods out without trucks. Help has the page "Trucks and dock doors" (`panels/trucks-help.js`, with a diagram of docks in a row against docks on side roads). The HTML report gets the truck rows of a station (`report-ops.js`: doors, check-in / check-out, truck rate or timetable, staging; the door check line), the clock in "the plant at a glance" and a "Dock doors" table in the results. Experiments list the metrics and sweeps of `experiments.js` without a change (`compare.js` only knows the units "doors" and "pallets" as counts).
+* Tests: `tests/ui.ops-render.test.js`, `ui.ops-panels.test.js`, `ui.ops-guidance.test.js`, `ui.ops-runner.test.js` (pure parts, a fake canvas context, a real store, the runner on fake frames and on the real engine) and `tests/e2e/doors.mjs` (the real app, light and dark, 1440 and 390 px).
 
 ## 7. Visual design ("Lego baseplate for engineers")
 Calm, precise, slightly playful. **Canvas:** light grey-blue baseplate with subtle studs in each cell; roads are dark plates with lane markings and chevrons for one-way; stations are

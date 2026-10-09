@@ -31,6 +31,7 @@
 // explained by source-unconnected-activity, not by "delivers more than the plant takes".
 
 import { formatDistance, formatDuration, formatNumber, formatPercent, round } from '../util/format.js';
+import { OPS_INSIGHT_RULES } from './insights-ops.js';
 
 /** Measured sim seconds needed before any rule is evaluated. */
 export const MIN_DATA_SECONDS = 5 * 60;
@@ -159,6 +160,8 @@ function buildContext(report, layout) {
     name: (id) => (byId.get(id) ? byId.get(id).name : id),
     /** Workstations reached from `id` along flows, passing through storages only. */
     workstationsBeyond: (id, direction) => walkFlows(ctx, id, direction),
+    /** The transport verdict of a flow (transportState): the rules of the extensions (insights-ops.js) give advice on vehicles from the same verdict as the built-in ones. */
+    transport: (flow) => transportState(ctx, flow),
   };
   return ctx;
 }
@@ -917,9 +920,10 @@ const RULES = [
 
 /**
  * Rules of optional extensions (the warehouse module, docs/WAREHOUSE-DESIGN.md 6.9), run after RULES, each (ctx) => candidate[] like the
- * rules above. Empty until M1: a rule has to look for its own section of the report (`ctx.report.ops`) and return [] when it is absent.
+ * rules above. A rule has to look for its own section of the report (`ctx.report.ops`) and return [] when it is absent. Since M1 the list holds
+ * the truck and door rules of insights-ops.js (gate-queue-long, doors-bottleneck, unload-limited-by-vehicles, doors-idle, outbound-short).
  */
-export const EXTENSION_RULES = [];
+export const EXTENSION_RULES = [...OPS_INSIGHT_RULES];
 
 function notEnoughData(report) {
   const seconds = report && report.window && Number.isFinite(report.window.duration) ? report.window.duration : 0;

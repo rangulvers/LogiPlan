@@ -37,19 +37,21 @@ export const STRICT = process.env.M0_REVIEW_STRICT === '1';
 // ---------------------------------------------------------------------------------------------------------
 
 /**
- * Directory of the pre-M0 tree (it holds js/ and package.json), or null when it cannot be had. Cached in the temp directory.
+ * Directory of the tree of a commit (it holds js/ and package.json), or null when it cannot be had. Cached in the temp directory.
  * `git archive` only reads the repository; nothing in the working tree is touched.
+ * @param {string} rev a commit
+ * @param {string} [envDir] name of the environment variable that gives a ready copy
  * @returns {string|null}
  */
-export function oldTreeRoot() {
-  if (process.env.M0_OLD_TREE) {
-    const given = path.resolve(process.env.M0_OLD_TREE);
+export function treeRoot(rev, envDir) {
+  if (envDir && process.env[envDir]) {
+    const given = path.resolve(process.env[envDir]);
     return existsSync(path.join(given, 'js', 'sim', 'engine.js')) ? given : null;
   }
-  const dir = path.join(os.tmpdir(), `logiplan-m0-old-${OLD_REV}`);
+  const dir = path.join(os.tmpdir(), `logiplan-m0-old-${rev}`);
   if (existsSync(path.join(dir, 'js', 'sim', 'engine.js'))) return dir;
   try {
-    const archive = spawnSync('git', ['archive', OLD_REV, 'js', 'package.json'], { cwd: ROOT, maxBuffer: 1 << 28 });
+    const archive = spawnSync('git', ['archive', rev, 'js', 'package.json'], { cwd: ROOT, maxBuffer: 1 << 28 });
     if (archive.status !== 0 || !archive.stdout || archive.stdout.length === 0) return null;
     const scratch = mkdtempSync(path.join(os.tmpdir(), 'logiplan-m0-old-part-'));
     const untar = spawnSync('tar', ['-x', '-C', scratch], { input: archive.stdout, maxBuffer: 1 << 28 });
@@ -60,6 +62,14 @@ export function oldTreeRoot() {
     return null;
   }
 }
+
+/** Directory of the PRE-M0 tree (OLD_REV), or null when it cannot be had. */
+export const oldTreeRoot = () => treeRoot(OLD_REV, 'M0_OLD_TREE');
+
+/** The commit that is the END of milestone M0 (main before M1): the base of the M1 edits. */
+export const M0_REV = process.env.M0_END_REV || 'a2af6d8';
+/** Directory of the tree at the end of M0 (M0_REV, or M0_END_TREE=<dir with js/>), or null when it cannot be had. */
+export const m0TreeRoot = () => treeRoot(M0_REV, 'M0_END_TREE');
 
 /** The modules of a tree (this one by default) that a comparison needs. */
 export async function loadTree(root = ROOT) {

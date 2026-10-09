@@ -200,8 +200,8 @@ test('Stats calls the extension hooks of Logistics.ext at its five call sites, a
   assert.equal(Object.keys(plain.report()).join(), REPORT_KEYS);
 });
 
-test('insights: rules of an extension run after the built-in rules; the list is empty', () => {
-  assert.deepEqual(EXTENSION_RULES, []);
+test('insights: rules of an extension run after the built-in rules; the list holds the five rules of M1 (trucks and doors), which are silent for a legacy plant', () => {
+  assert.deepEqual(EXTENSION_RULES.map((r) => r.name), ['gateQueueLong', 'doorsBottleneck', 'unloadLimitedByVehicles', 'doorsIdle', 'outboundShort']);
   const sim = new Simulation(starter(), { seed: 1 });
   sim.advance(1800);
   const before = sim.insights();
@@ -219,8 +219,8 @@ test('insights: rules of an extension run after the built-in rules; the list is 
   assert.deepEqual(sim.insights().map((i) => i.id), before.map((i) => i.id), 'removed again: the insights are the old ones');
 });
 
-test('validation: validateLayout calls validateOps once; checks of an extension add their issues; the list is empty', () => {
-  assert.deepEqual(OPS_CHECKS, []);
+test('validation: validateLayout calls validateOps once; checks of an extension add their issues; the list holds the four checks of M1 (trucks and doors), which are silent for a legacy plant', () => {
+  assert.deepEqual(OPS_CHECKS.map((c) => c.name), ['checkDoorsTooFew', 'checkDoorsExceedDocks', 'checkDocksShareLane', 'checkTimetableEmpty']);
   assert.equal(typeof validateOps, 'function');
   const layout = starter();
   const before = validateLayout(layout).map((i) => i.id);

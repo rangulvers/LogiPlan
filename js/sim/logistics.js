@@ -42,12 +42,15 @@
 
 import { createRng } from '../util/rng.js';
 import { DISPATCH_STRATEGIES, ROUTING_MODES, defaultSettings } from '../model/defaults.js';
+import { makeClock } from '../model/calendar.js';
 import { BLOCKED_RETRY, DISPATCH_INTERVAL, EPS, atLeast, num, whole } from './logistics/common.js';
 import { dispatch } from './logistics/dispatcher.js';
 import { DockBook } from './logistics/docks.js';
 import { applyIdlePolicy } from './logistics/idle.js';
 import { RouteCache, searchBudget } from './logistics/routing.js';
 import { StationRT, finalizeStation, rescaleArrivals, rescaleCycles, stepStation } from './logistics/stations.js';
+import { setupTrucks } from './logistics/trucks.js';
+import { createOpsStats } from './stats-ops.js';
 import { createVehicles, removeVehicle, vehiclePhaseA, vehiclePhaseB } from './logistics/vehicles.js';
 
 const FLOW_FROM = new Set(['source', 'process', 'storage']);
@@ -121,7 +124,9 @@ export class Logistics {
     this.deadlocks = 0;
     /** Seams of the warehouse module (docs/WAREHOUSE-DESIGN.md 5.4), present but inert: the optional extension object, null unless a layout uses an extension, and the clock of a plant with `layout.calendar`. */
     this.ext = null;
-    this.clock = null;
+    this.clock = layout.calendar ? makeClock(layout.calendar) : null;
+    /** Ids of the trucks of the plant (the `tk` of their pallets), see logistics/trucks.js. */
+    this.truckSeq = 0;
 
     this.buildStations(layout);
     this.buildFlows(layout);
@@ -131,6 +136,8 @@ export class Logistics {
     /** Who stands on and who is on the way to each dock; which dock a vehicle drives to (logistics/docks.js). */
     this.docks = new DockBook(this);
     for (const st of this.stations) if (st.type === 'source' && !(this.runtime.demandFactor > 0)) st.nextArrival = Infinity;
+    // Goods in / Goods out with `ops.trucks` (milestone M1): their trucks, and the extension object that adds `report.ops.trucks` to the statistics
+    if (setupTrucks(this)) this.ext = { stats: (stats) => createOpsStats(stats, this) };
 
     traffic.onArrive = (tv) => this.handleArrive(tv);
     traffic.speedFactor = this.runtime.speedFactor;
@@ -207,7 +214,7 @@ export class Logistics {
     if (next.routing !== old.routing) this.routes.setMode(next.routing);
     if (next.dispatch !== old.dispatch) this.markDirty();
     for (const st of this.stations) {
-      if (st.type === 'source' && next.demandFactor !== old.demandFactor) rescaleArrivals(st, old.demandFactor, next.demandFactor, this.now, this);
+      if ((st.type === 'source' || st.trucks !== null) && next.demandFactor !== old.demandFactor) rescaleArrivals(st, old.demandFactor, next.demandFactor, this.now, this);
       else if (st.type === 'process' && next.processFactor !== old.processFactor) rescaleCycles(st, old.processFactor, next.processFactor, this.now - this.time);
     }
   }

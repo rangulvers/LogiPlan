@@ -462,7 +462,7 @@ test('steps come in the order of work, notes last', () => {
   const list = steps(layout, { hasRun: true });
   const order = ids(list);
   assert.ok(order.indexOf('no-dock:Z') < order.indexOf('connect-out:D'), 'docks before connections');
-  assert.equal(order.at(-1), 'info:no-depot', 'notes at the end');
+  assert.deepEqual(order.slice(-2), ['info:no-depot', 'info:add-doors'], 'notes at the end (the note about dock doors, js/ui/guidance-ops.js, is the last of them)');
   assert.ok(list.filter((s) => s.severity === 'info').every((s) => list.indexOf(s) > list.findIndex((o) => o.severity === 'warn')));
 });
 

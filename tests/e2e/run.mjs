@@ -43,6 +43,7 @@ const SCRIPTS = Object.freeze([
   { name: 'guidance-canvas', what: 'canvas guidance: flow handle, connect mode, hint after placing, vehicle jobs and waiting loads' },
   { name: 'guidance-panels', what: 'who serves which flow: station Where do loads go?, Jobs this fleet serves, Served by, Help page and welcome tips' },
   { name: 'docks', what: 'dock choice: the Jobs overlay marks free / reserved / occupied docks, the Results tab lists the docks of a station, the dock insight, the Help page' },
+  { name: 'doors', what: 'trucks and dock doors: the Trucks and doors section, the timetable and the paste dialog, the plant clock, cold restart of a day plant, door slots and the gate chip on the plan, the Doors card, the Fix buttons of the four checks, Help, share link, light/dark, 390 px' },
   { name: 'walkthrough', what: 'first-time planner: the second Goods in end to end, every way to connect, from scratch, breaking it, touch, dark, keyboard, performance', exclusive: true },
   { name: 'edit-feedback', what: 'edit feedback: warm restart after edits, "Effect of your change" card, baseline, fleet status, frame times', exclusive: true },
   { name: 'canvas-grow', what: 'expandable canvas: roads, bricks and drags beyond the edges grow the plan (one undo step, the view stays), + chips, Plant settings buttons, auto-pan, the 320 x 320 limit, a large plant at speed', exclusive: true },

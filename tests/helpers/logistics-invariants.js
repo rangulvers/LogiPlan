@@ -24,11 +24,14 @@
 //                  that already exist but are not in a queue yet: `pending` of each truck in `st.trucks.gate` and `st.trucks.docked` (created
 //                  at the arrival, released to the yard after check-in) and `st.trucks.staged` (pallets waiting at a Goods out). They count as
 //                  live loads and as physically present, so the conservation law created = live + retired keeps its meaning.
-//                  The invariants of 6.3.5 (docked <= doors open, FIFO gate, loaded <= plan ...) are added with the trucks themselves.
+//                  The invariants of 6.3.5 (checkTrucks below): docked <= doors open, the gate is FIFO, a pallet is on at most one truck, loaded <= plan,
+//                  `left` is the number of the truck's pallets not yet picked up, the room of a Goods out is never negative and its staged pallets fit the
+//                  staging space, the counters add up.
 
 import { buildGraph } from '../../js/sim/graph.js';
 import { createRng } from '../../js/util/rng.js';
 import { Logistics } from '../../js/sim/logistics.js';
+import { GATE_LIMIT, TruckDesk } from '../../js/sim/logistics/trucks.js';
 import { StubTraffic } from './stub-traffic.js';
 
 /**
@@ -136,7 +139,20 @@ export function checkInvariants(lg) {
   checkOrders(lg, fail);
   checkVehicles(lg, fail);
   checkDepots(lg, fail);
+  checkTrucks(lg, fail);
   return bad;
+}
+
+/** Paths of every number in `value` that is NaN or infinite (empty = clean): the "no NaN anywhere in report.ops" check. */
+export function nonFinitePaths(value, path = '$', found = []) {
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) found.push(`${path} = ${value}`);
+  } else if (Array.isArray(value)) {
+    value.forEach((v, i) => nonFinitePaths(v, `${path}[${i}]`, found));
+  } else if (value && typeof value === 'object') {
+    for (const [k, v] of Object.entries(value)) nonFinitePaths(v, `${path}.${k}`, found);
+  }
+  return found;
 }
 
 export function assertInvariants(lg, label = '') {
@@ -277,5 +293,73 @@ function checkDepots(lg, fail) {
     if (vr.state !== 'parked' && vr.state !== 'charging') continue;
     const list = vr.state === 'parked' ? vr.depot && vr.depot.parked : vr.depot && vr.depot.charging;
     if (!list || !list.includes(vr)) fail(`${vr.id} is ${vr.state} but not listed in its depot`);
+  }
+}
+
+/** The invariants of trucks and doors (docs/WAREHOUSE-DESIGN.md 6.3.5); silent for a plant without trucks. */
+function checkTrucks(lg, fail) {
+  for (const st of lg.stations) {
+    const tr = st.trucks;
+    if (!(tr instanceof TruckDesk)) continue; // a hand-made stand-in (tests/sim.seams.test.js holds loads on a fake `{ gate, docked, staged }`) has no desk to audit
+    const tag = `${st.id} trucks`;
+    const open = tr.doorsOpen();
+    if (tr.docked.length > open) fail(`${tag}: ${tr.docked.length} trucks docked but only ${open} doors open`);
+    if (tr.gate.length > GATE_LIMIT) fail(`${tag}: ${tr.gate.length} trucks at the gate (limit ${GATE_LIMIT})`);
+    if (tr.arrived !== tr.gate.length + tr.nDocked) fail(`${tag}: arrived ${tr.arrived} != gate ${tr.gate.length} + docked so far ${tr.nDocked}`);
+    if (tr.docked.length !== tr.nDocked - tr.departed) fail(`${tag}: ${tr.docked.length} at the doors != docked ${tr.nDocked} - departed ${tr.departed}`);
+    if (tr.short > tr.departed || tr.loadedTotal > tr.planned) fail(`${tag}: short ${tr.short}/departed ${tr.departed}, loaded ${tr.loadedTotal}/planned ${tr.planned}`);
+    for (const key of ['arrived', 'nDocked', 'departed', 'short', 'noShow', 'turnedAway', 'planned', 'loadedTotal', 'made']) {
+      if (!Number.isInteger(tr[key]) || tr[key] < 0) fail(`${tag}: counter ${key} = ${tr[key]}`);
+    }
+    // the gate is FIFO: trucks leave it in the order they arrived (ids are given in arrival order), and the doors fill in that order too
+    for (let i = 1; i < tr.gate.length; i++) {
+      if (!(tr.gate[i - 1].id < tr.gate[i].id)) fail(`${tag}: the gate is not in arrival order (${tr.gate[i - 1].id}, ${tr.gate[i].id})`);
+      if (tr.gate[i - 1].at > tr.gate[i].at + 1e-9) fail(`${tag}: gate truck ${tr.gate[i].id} arrived before ${tr.gate[i - 1].id}`);
+    }
+    for (let i = 1; i < tr.docked.length; i++) if (!(tr.docked[i - 1].id < tr.docked[i].id)) fail(`${tag}: trucks docked out of order (${tr.docked[i - 1].id}, ${tr.docked[i].id})`);
+    if (tr.gate.length > 0 && tr.docked.length > 0) {
+      const first = tr.gate[0].id;
+      for (const k of tr.docked) if (k.id > first) fail(`${tag}: truck ${k.id} docked while ${first} still waits at the gate`);
+    }
+    const doors = new Set();
+    const mine = new Map(); // truck id -> pallets of the station that carry it (pending, yard, output buffers)
+    const count = (list) => { for (const l of list) if (l.tk >= 0) mine.set(l.tk, (mine.get(l.tk) || 0) + 1); };
+    if (st.yardQ) count(st.yardQ);
+    for (const link of st.outLinks) count(link.queue);
+    for (const k of [...tr.gate, ...tr.docked]) count(k.pending);
+    for (const k of tr.gate) {
+      if (k.state !== 'gate' || k.door !== -1) fail(`${tag}: gate truck ${k.id} is ${k.state} with door ${k.door}`);
+    }
+    for (const k of tr.docked) {
+      if (!['checkin', 'work', 'checkout'].includes(k.state)) fail(`${tag}: docked truck ${k.id} is ${k.state}`);
+      if (k.door < 0 || k.door >= tr.doors || doors.has(k.door)) fail(`${tag}: truck ${k.id} uses door ${k.door} (${tr.doors} doors, used: ${[...doors]})`);
+      doors.add(k.door);
+      if (!(k.dockedAt >= k.at - 1e-9)) fail(`${tag}: truck ${k.id} docked at ${k.dockedAt} before it arrived at ${k.at}`);
+      if (k.state === 'checkin' && !(k.releaseAt >= k.dockedAt)) fail(`${tag}: truck ${k.id} check-in ends before it started`);
+    }
+    for (const k of [...tr.gate, ...tr.docked]) {
+      if (!(k.plan >= 1) || k.loaded < 0 || k.loaded > k.plan) fail(`${tag}: truck ${k.id} plan ${k.plan}, loaded ${k.loaded}`);
+      if ([k.id, k.at, k.plan, k.left, k.loaded, k.dockedAt].some((v) => Number.isNaN(v))) fail(`${tag}: truck ${k.id} has a NaN field`);
+      if (tr.role === 'in') {
+        const here = mine.get(k.id) || 0;
+        if (k.left < 0 || k.left > k.plan) fail(`${tag}: truck ${k.id} left ${k.left} of ${k.plan}`);
+        if (k.left !== here) fail(`${tag}: truck ${k.id} says ${k.left} pallets are not picked up yet but ${here} are in the station`);
+        const pend = k.state === 'gate' || k.state === 'checkin' ? k.plan : 0;
+        if (k.pending.length !== pend) fail(`${tag}: truck ${k.id} (${k.state}) holds ${k.pending.length} pending pallets, expected ${pend}`);
+        for (const l of k.pending) if (l.tk !== k.id) fail(`${tag}: pending pallet ${l.id} of truck ${k.id} carries tk ${l.tk}`);
+      } else if (k.pending.length > 0 || k.left !== k.plan) {
+        fail(`${tag}: outbound truck ${k.id} holds pallets or counts down left`);
+      }
+    }
+    if (tr.role === 'in') {
+      const known = new Set(tr.docked.map((k) => k.id));
+      for (const id of mine.keys()) if (!known.has(id) && !tr.gate.some((k) => k.id === id)) fail(`${tag}: pallets of truck ${id} exist but the truck is gone`);
+      if (tr.staged.length > 0) fail(`${tag}: a Goods in has staged pallets`);
+    } else {
+      if (tr.staged.length > tr.stagingCap) fail(`${tag}: ${tr.staged.length} pallets staged > staging space ${tr.stagingCap}`);
+      for (const l of tr.staged) if (l.claimed) fail(`${tag}: staged pallet ${l.id} is claimed`);
+      if (!(tr.room(st) >= 0)) fail(`${tag}: room ${tr.room(st)}`);
+      for (const k of tr.docked) if (k.state === 'checkin' && k.loaded > 0) fail(`${tag}: truck ${k.id} loaded ${k.loaded} pallets during check-in`);
+    }
   }
 }
