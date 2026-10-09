@@ -244,6 +244,47 @@ export class TrafficSystem {
   }
 
   /**
+   * Give a driving vehicle another way on, from a cell it has not reached yet, without stopping it (late dock choice, js/sim/logistics/docks.js).
+   * `route` is the complete new route: it starts where the old one did and has the old edges as far as the cell where the two part, which
+   * must lie beyond the vehicle's braking distance and two more cells, so whatever the new way holds (a stop line, a corner, the final stop) can
+   * still be met with the vehicle's own deceleration. It must be a legal continuation (no U-turn except at a dead end). Locks the vehicle
+   * holds on cells the new route does not use are let go (its body is not in them), the others and its place in a lock queue stay.
+   * @returns {boolean} false, and nothing changed, if the vehicle cannot take this route now (not driving, turning in place, too close)
+   */
+  reroute(tv, route) {
+    if (!tv.onRoad || !tv.driving || tv._route === null || tv._turn >= 0 || !route || !Array.isArray(route.nodes) || !Array.isArray(route.edges)) return false;
+    const edges = this.graph.edges;
+    const old = tv._route;
+    if (route.edges.length === 0 || route.nodes.length !== route.edges.length + 1 || route.nodes[0] !== tv._nodes[0]) return false;
+    for (let i = 0; i < route.edges.length; i++) {
+      const e = edges[route.edges[i]];
+      if (e === undefined || e.from !== route.nodes[i] || e.to !== route.nodes[i + 1]) return false;
+    }
+    let keep = 0; // edges the two routes have in common
+    while (keep < old.length && keep < route.edges.length && old[keep] === route.edges[keep]) keep++;
+    if (keep <= tv._ri) return false; // the edge the vehicle is on must stay
+    if (keep === old.length && keep === route.edges.length) return true; // the same route
+    if (keep * this.L - (tv._ri * this.L + tv.s) < stoppingDistance(tv.v, tv.decel) + 2 * this.L + tv.length) return false;
+    if (keep < route.edges.length) { // no turning round in mid-road at the cell where the routes part
+      const from = edges[route.edges[keep - 1]];
+      if (from.rev === route.edges[keep] && this.graph.out[from.to].length > 1) return false;
+    }
+    tv._route = route.edges.slice();
+    tv._nodes = route.nodes.slice();
+    tv._ext = this._extension(tv);
+    const used = new Set(tv._nodes);
+    for (const e of tv._ext) used.add(edges[e].to);
+    for (let k = tv._held.length - 1; k >= 0; k--) {
+      const node = tv._held[k];
+      if (used.has(node)) continue;
+      if (this._lock[node] === tv) this._lock[node] = null;
+      tv._held.splice(k, 1);
+      tv._heldQ.splice(k, 1);
+    }
+    return true;
+  }
+
+  /**
    * Closest node (graph distance, ignoring direction) with room for a vehicle of `length`. A node a vehicle can still
    * route from and to (same strongly connected part of the network as `near`) is preferred over a closer one that is
    * not, and a cell that is not a junction over a junction; -1 if there is no room anywhere.

@@ -96,6 +96,12 @@ export class VehicleRT {
     this.route = null;
     this.arrived = false;
     this.replan = false;
+    /** The vehicle's reservation at the dock it drives to (docks.js), null while it plans to stop at none. */
+    this.dock = null;
+    /** The dock cell the vehicle drove away from last (-1 once it has cleared the cell), when it left, and the station it served there. */
+    this.leaving = -1;
+    this.leftAt = 0;
+    this.leaveStation = null;
     /** Leaving a depot: the first leg may start in any direction (no arrival edge). */
     this.freeChoice = false;
     this.retryAt = 0;
@@ -247,32 +253,35 @@ function retryLater(vr, t) {
 }
 
 /** Hand a route to the traffic system; the cells it passes are counted as used (see idle.js, waiting places). */
-function driveRoute(lg, vr, route) {
+function driveRoute(lg, vr, route, t) {
+  const from = vr.tv.node;
   lg.traffic.drive(vr.tv, route);
   if (!vr.tv.driving) return false;
   vr.route = route;
   for (const node of route.nodes) lg.routeUse[node]++;
+  if (route.edges.length > 0) lg.docks.leaves(vr, from, t); // (the dock cell it drives away from stays taken for a moment)
   return true;
 }
 
-/** The dock (or waiting cell) the current leg ends at, as seen from `entry`; null when there is none. */
-function legTarget(lg, vr, entry) {
+/**
+ * The dock (or waiting cell) the current leg ends at, as seen from `entry`; null when there is none. Among the docks of a station the
+ * dock book picks the one where service starts soonest (docks.js), not simply the cheapest.
+ */
+function legTarget(lg, vr, entry, t) {
   if (vr.spot >= 0) return entry.search.dist(vr.spot) < Infinity ? { node: vr.spot } : null;
-  if (vr.state === 'toPickup') {
-    const { from, to } = vr.order.flow;
-    return lg.routes.pickupDock(entry, from.id, to.id);
-  }
-  return lg.routes.bestDock(entry, vr.targetId);
+  const toId = vr.state === 'toPickup' ? vr.order.flow.to.id : null;
+  return lg.docks.choose(vr, entry, vr.targetId, toId, t);
 }
 
 /** Plan and start the route to the current leg's target; arrive at once if already there. */
 function planLeg(lg, vr, t) {
   const tv = vr.tv;
   vr.replan = false;
+  lg.docks.release(vr); // a new plan replaces the old reservation (deadlock relocation, retry)
   if (tv.node < 0) return retryLater(vr, t);
   const entry = lg.routes.get(tv.node, arrivalEdgeOf(lg, vr), t, true);
   if (entry === null) { vr.retryAt = t; return false; } // this tick's search budget is spent: first thing in the next tick
-  const target = legTarget(lg, vr, entry);
+  const target = legTarget(lg, vr, entry, t);
   if (!target) {
     if (vr.spot < 0) return retryLater(vr, t);
     vr.spot = -1; // the waiting cell cannot be reached from here: stay where we are
@@ -280,8 +289,10 @@ function planLeg(lg, vr, t) {
     return true;
   }
   if (target.node === tv.node) { arrive(lg, vr, t); return true; }
-  if (!driveRoute(lg, vr, lg.routes.routeTo(entry, target.node))) return retryLater(vr, t);
+  const route = lg.routes.routeOfDock(entry, target);
+  if (!driveRoute(lg, vr, route, t)) return retryLater(vr, t);
   vr.freeChoice = false;
+  if (vr.spot < 0) lg.docks.reserve(vr, target.node, vr.targetId, t, lg.docks.travelAlong(vr, route, 0, route.edges.length), entry);
   return true;
 }
 
@@ -296,6 +307,7 @@ function arrive(lg, vr, t) {
   }
   const here = lg.graph.stationsAt.get(vr.tv.node);
   if (!here || !here.includes(vr.targetId)) { planLeg(lg, vr, t); return; }
+  lg.docks.arrived(vr, vr.tv.node, vr.targetId);
   switch (vr.state) {
     case 'toPickup': startLoading(lg, vr, t); break;
     case 'toDrop': startUnloading(lg, vr, t); break;
@@ -365,6 +377,7 @@ function releaseOrder(lg, vr, t, reason) {
   else for (const load of order.loads) load.claimed = false;
   releaseInbound(order.flow, order.qty);
   vr.order = null;
+  lg.docks.release(vr); // the dock it drove to is no longer expected
   lg.cancelOrder(order, vr, reason, t);
 }
 
@@ -468,6 +481,8 @@ export function vehiclePhaseA(lg, vr, t) {
         arrive(lg, vr, t);
       } else if (!vr.tv.driving && !vr.tv.disabled && (vr.replan || vr.retryAt <= t + EPS)) {
         planLeg(lg, vr, t); // relocated by deadlock resolution, or an earlier plan failed
+      } else if (vr.dock !== null && t + EPS >= vr.dock.nextCheck) {
+        lg.docks.rebind(vr, t); // still on the way: is another dock of the station better by now?
       }
       break;
     default:
@@ -513,12 +528,38 @@ export function vehiclePhaseB(lg, vr, dt, t) {
  */
 function die(lg, vr, t) {
   cancelDepotTrip(lg, vr);
+  lg.docks.release(vr);
   if (vr.state !== 'broken') vr.resumeState = vr.state;
   vr.spot = -1; // a dead vehicle no longer needs its waiting cell
   releaseOrder(lg, vr, t, 'vehicle-dead');
   setState(vr, 'dead', t);
   vr.tv.disabled = true;
   lg.emit('vehicleDead', { vehicle: vr, vehicleId: vr.id, t });
+}
+
+/**
+ * Take a vehicle out of the simulation (Logistics.removeVehicle): its order goes back to the dispatcher, the depot places and the dock it
+ * had reserved end, and it leaves the road. Loads it carries are scrapped: they leave the work in progress as consumed.
+ */
+export function removeVehicle(lg, vr, t) {
+  cancelDepotTrip(lg, vr);
+  lg.docks.forget(vr);
+  vr.spot = -1;
+  releaseOrder(lg, vr, t, 'vehicle-removed');
+  if (vr.load.length > 0) lg.retireInputs(vr.load.length);
+  vr.load = [];
+  if (vr.depot) {
+    for (const list of [vr.depot.parked, vr.depot.charging]) {
+      const i = list.indexOf(vr);
+      if (i >= 0) list.splice(i, 1);
+    }
+    vr.depot = null;
+  }
+  vr.targetId = null;
+  vr.route = null;
+  vr.state = 'dead';
+  lg.traffic.removeVehicle(vr.tv);
+  lg.markDirty();
 }
 
 function breakDown(lg, vr, t) {

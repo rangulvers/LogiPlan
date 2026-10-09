@@ -16,8 +16,9 @@ import { STATION_TYPES, STATION_TYPE_ORDER, OBSTACLE_KINDS, FLEET_PRESETS, GRID_
 import {
   getStation, getFlow, getFleet, flowsFrom, docksOf, roadAt, hasLink, cloneLayout, roadLengthMeters,
   updateStation, resizeStation, duplicateStation, removeStation, updateObstacle, removeObstacle, updateLabel, removeLabel,
-  eraseRoadCell, eraseLink, paintRoadPath, setRoadLimit, setNotes, updateSettings, resizeGrid, setCellSize,
+  eraseRoadCell, eraseLink, paintRoadPath, setRoadLimit, setNotes, updateSettings, resizeGrid, setCellSize, growGrid, trimGrid, trimmedSize,
 } from '../../model/layout.js';
+import { noteGrowth, blockOn, limitText, sizeLine } from '../editor/grow.js';
 import { DX, DY, opposite, parseKey } from '../../util/grid.js';
 import { formatNumber, formatPercent, formatDistance, round } from '../../util/format.js';
 import { numberField, selectField, textField, rangeField, segmentedField, stepperField, distField, section, humanSeconds } from './fields.js';
@@ -653,6 +654,62 @@ async function applyGrid(ctx, cols, rows, restore) {
   store.commit(`Resize plant to ${cols} × ${rows}`, (d) => { resizeGrid(d, cols, rows); });
 }
 
+/**
+ * The size of the plan and the keyboard route to what the '+' chips on the canvas do: extend it by one block (8 cells) on any side, or trim
+ * it to its content. Each is one undo step ("Extend plan", "Trim plan to content"); the view stays where it is (editor.js follows the content).
+ */
+function planSizeBlock(ctx) {
+  const { store } = ctx;
+  const size = h('p', { class: 'tnum', style: { margin: 0 }, 'data-role': 'plan-size' });
+  const SIDES = [['left', 'Left'], ['top', 'Up'], ['right', 'Right'], ['bottom', 'Down']];
+  const extend = (side) => {
+    const before = store.getState().layout.grid;
+    const done = store.commit('Extend plan', (d) => {
+      const shift = growGrid(d, blockOn(side));
+      if (d.grid.cols === before.cols && d.grid.rows === before.rows) return false;
+      noteGrowth(d, shift);
+      return undefined;
+    });
+    if (!done) ctx.toast(limitText(), { kind: 'warn' });
+  };
+  const buttons = SIDES.map(([side, text]) => [side, h('button', {
+    class: 'btn btn--sm', type: 'button', 'data-extend': side, 'aria-label': `Extend the plan to the ${side === 'top' ? 'top' : side === 'bottom' ? 'bottom' : side} by 8 cells`,
+    onclick: () => extend(side),
+  }, icon('plus', { size: 14 }), text)]);
+  const trim = h('button', {
+    class: 'btn btn--sm', type: 'button', 'data-role': 'trim',
+    onclick: () => { store.commit('Trim plan to content', (d) => { const r = trimGrid(d); if (!r.changed) return false; noteGrowth(d, r); return undefined; }); },
+  }, icon('fit', { size: 14 }), 'Trim to content');
+  const trimNote = h('p', { class: 'field__hint tnum', 'data-role': 'trim-note' });
+  let last = null;
+  return {
+    el: h('div', { class: 'stack', style: { '--gap': '8px' }, role: 'group', 'aria-label': 'Plan size' },
+      size,
+      h('div', { class: 'field__label' }, 'Extend the plan by 8 cells'),
+      h('div', { class: 'row row--wrap', style: { '--gap': '6px' } }, ...buttons.map(([, b]) => b)),
+      h('div', { class: 'row row--wrap', style: { '--gap': '8px' } }, trim),
+      trimNote,
+      hintLine('The plan also grows by itself when you draw or place something beyond its edge, and the + buttons on its edges add 8 cells.')),
+    update(layout) {
+      if (layout === last) return; // layouts are immutable snapshots
+      last = layout;
+      const { cols, rows, cellSize } = layout.grid;
+      size.textContent = `Plan size: ${sizeLine(cols, rows, cellSize)}`;
+      const full = { left: cols >= GRID_LIMITS.maxCols, right: cols >= GRID_LIMITS.maxCols, top: rows >= GRID_LIMITS.maxRows, bottom: rows >= GRID_LIMITS.maxRows };
+      for (const [side, button] of buttons) {
+        button.disabled = full[side];
+        button.title = full[side] ? `The plan cannot grow beyond ${GRID_LIMITS.maxCols} × ${GRID_LIMITS.maxRows} cells.` : '';
+      }
+      const t = trimmedSize(layout);
+      trim.disabled = !t.changed;
+      const hasContent = Object.keys(layout.roads).length + layout.stations.length + layout.obstacles.length + layout.labels.length > 0;
+      trimNote.textContent = t.changed
+        ? `${cols} × ${rows} → ${sizeLine(t.cols, t.rows, cellSize)}. Keeps 4 empty cells around the plan.`
+        : hasContent ? 'The plan has no empty edge to trim.' : 'The plan is empty: there is nothing to trim to.';
+    },
+  };
+}
+
 function summaryBlock() {
   const chips = h('div', { class: 'row row--wrap' });
   const draw = keyedRender(chips);
@@ -750,6 +807,7 @@ function plantView(ctx, memory) {
   });
   handedness.el.append(hintLine('Which side of a two-way road vehicles drive on.'));
   const summary = summaryBlock();
+  const planSize = planSizeBlock(ctx);
   const stations = stationsSection(ctx, memory);
 
   const el = flush(
@@ -757,7 +815,7 @@ function plantView(ctx, memory) {
       actionButton('Fit view', 'fit', () => ctx.actions.fitView())), summary.el),
     stations.el,
     rememberedSection(memory, 'Plant', '', name.el, notes.el).el,
-    rememberedSection(memory, 'Grid and scale', '', h('div', { class: 'field-grid' }, cols.el, rows.el), cell.el, handedness.el).el);
+    rememberedSection(memory, 'Grid and scale', '', planSize.el, h('div', { class: 'field-grid' }, cols.el, rows.el), cell.el, handedness.el).el);
 
   return {
     el,
@@ -769,6 +827,7 @@ function plantView(ctx, memory) {
       cell.set(layout.grid.cellSize);
       handedness.set(layout.settings.handedness);
       summary.update(layout);
+      planSize.update(layout);
       stations.update(layout);
     },
   };

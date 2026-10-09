@@ -27,7 +27,8 @@ This file is the contract between modules. When code and this document disagree,
 * Style: 2-space indent, semicolons, single quotes, `const`/`let`, small pure functions, JSDoc on exported symbols,
   a header comment per file stating its responsibility. Match the existing code (see `js/util/*.js`, `js/model/defaults.js`).
 * Tests: `node:test` + `node:assert/strict`, files `tests/<area>.<module>.test.js` (flat, matched by `tests/*.test.js`),
-  helpers in `tests/helpers/`. Tests must be deterministic and fast (each file < 10 s). Build test layouts with
+  helpers in `tests/helpers/`. Tests must be deterministic and fast (each file < 10 s; a slower one goes into a heavy shard of
+  `scripts/test-tiers.mjs`, every other file is in the fast tier by default). Build test layouts with
   `tests/helpers/ascii.js` (`layoutFromAscii`) or the model API — never depend on `Math.random`.
 * A change is only done when `npm run test:quiet` and `npm run check` pass.
 
@@ -35,7 +36,7 @@ This file is the contract between modules. When code and this document disagree,
 
 ```
 index.html                  app shell (relative asset paths only!)
-css/                        tokens.css, layout.css, components.css (+ print styles), guidance.css, impact.css
+css/                        tokens.css, layout.css, components.css (+ print styles), guidance.css, impact.css, drawmode.css (the Draw switch of the stroke tools)
 js/
   main.js                   bootstrap: build store, sim runner, UI; handle #share links
   util/    grid.js rng.js ids.js format.js dom.js                      (done)
@@ -46,9 +47,10 @@ js/
            dialogs.js dashboard.js charts.js compare.js report.js
            panels/ inspector.js fleet.js flows.js simulate.js checks.js
 tests/     *.test.js, helpers/ (ascii.js …), e2e/ (Playwright, run by hand: npm run test:e2e)
-scripts/   serve.mjs (dev server), check-imports.mjs
+scripts/   serve.mjs (dev server), check-imports.mjs, test-tiers.mjs (fast / heavy test tiers for CI)
 docs/      ARCHITECTURE.md (this file)
-.github/workflows/          ci.yml (tests on PR), pages.yml (deploy to GitHub Pages)
+.github/workflows/          ci.yml (PR: check, fast and heavy shards in parallel), pages.yml (fast gate, then deploy to GitHub Pages; heavy shards beside it),
+                            e2e.yml (browser tests, on demand and weekly)
 ```
 
 ## 3. Layering & dependency rules
@@ -174,10 +176,19 @@ addFleet(layout, preset = 'agv', patch?) → Fleet                 updateFleet(l
 removeFleet(layout, id) → boolean              // clears flow.fleetId refs     duplicateFleet(layout, id) → Fleet|null
 addObstacle(layout, { x, y, w, h, kind }) → Obstacle|null   updateObstacle / removeObstacle(layout, id)   // obstacles may not cover roads/stations
 addLabel(layout, { x, y, text, size? }) → Label     updateLabel / removeLabel(layout, id)
-resizeGrid(layout, cols, rows) → { removed: number } // drops/clips anything outside; clamps to GRID_LIMITS
+resizeGrid(layout, cols, rows) → { removed: number } // drops/clips anything outside; clamps to GRID_LIMITS (320 x 320 cells since the plan grows, defaults.js)
 setCellSize(layout, cellSize) → boolean
 translateAll(layout, dx, dy) → boolean         // shift everything (used when growing the grid to the left/top)
+
+// the plan grows with the work (js/ui/editor/grow.js decides how much, these do it)
+growGrid(layout, { left = 0, top = 0, right = 0, bottom = 0 }) → { dx, dy, left, top, right, bottom, cols, rows }
+   // adds cells on the sides and shifts everything by (left, top) with translateAll, so nothing is lost and the node order of the road graph (row by row)
+   // is kept; clamped to GRID_LIMITS (left/top are served first); returns what was really added; dx = left, dy = top (the move of the content)
+trimGrid(layout, { margin = 4 }) → { changed, dx, dy, left, top, right, bottom /* cells removed: <= 0 */, cols, rows }
+   // shrinks to contentBounds + margin, never below the minimum size, never drops anything; an empty plan is left alone.   trimmedSize(layout, opts) = the same without doing it
+contentBounds(layout) → { x, y, w, h } | null    // box around roads, stations, obstacles and labels (a label = the cell of its anchor)
 ```
+Growing is translation: the same plant on a bigger baseplate simulates **identically** (KPIs, heat and poses equal up to float rounding of about 1e-16; tests/sim.largegrid.test.js).
 
 ### 4.7 `js/model/validate.js` (owner: model agent)
 ```js
@@ -228,12 +239,20 @@ Graph = {
   docks: Map<stationId, number[]>, stationsAt: Map<nodeId, string[]>,
   x(id), y(id) → world metres of the cell centre,  cx(id), cy(id),
   edgeBetween(a, b) → edgeId | -1,
+  nodeIndex: Int32Array /* node id → position in `nodes` (compact index), -1 if not road */, baseCost: Float64Array /* default search cost per edge */,
+  edgeToK, edgeRev: Int32Array, outStartK: Int32Array /* flat copies of the links for the search; the exits of compact node k are edges outStartK[k] .. outStartK[k+1]-1 */,
   search(from, { arrivalEdge = -1, cost = null }) → Search,
   path(from, to, opts) → Route | null,
   scc: Int32Array /* strongly-connected component per node, -1 if not road */, sameScc(a, b)
 }
 Edge   = { id, from, to, dir, length /* = cellSize */, limit /* min(limit(from), limit(to)) */, rev /* opposite edge id or -1 */ }
 Search = { dist(node) → cost | Infinity, routeTo(node) → Route | null }
+```
+**Size.** The cell-indexed members (`isNode`, `out`, `in`, `limit`, …) are dense (one slot per grid cell, O(1) lookup by node id). A **search** costs time and memory in proportion to the ROAD graph only
+(its road cells + links, about 90 ns per road cell and link in Node): results are kept per compact node, the Dijkstra buffers (tentative edge costs, heap) are reused, nothing is sized by the grid. So are the search budget and the route cache
+(`routing.js`: `searchBudget`, `RouteCache` capacity), which makes a plant behave the same whatever room is left around it (the 320 x 320 baseplate costs nothing but its own dense arrays, a few MB).
+Measured (Node, one core): Two lines on a 320 x 320 baseplate runs 8 000 – 16 000 x real time; a plant that fills it (16 000 road cells, 300 stations, 50 vehicles) builds in 90 – 150 ms.
+```js
 Route  = { nodes: number[], edges: number[], cost: number }     // nodes.length === edges.length + 1, nodes[0] = start
 ```
 **Routing rule (no mid-road U-turns):** search runs over *directed edges*; after traversing edge `e` into node `v`, the next edge may not be
@@ -267,6 +286,8 @@ traffic.speedFactor = 1                  // runtime multiplier on every vehicle'
 traffic.onArrive = (tv) => {}            // route finished: tv stopped exactly at the last node's centre, tv.driving = false
 traffic.onDeadlock = ({ vehicles, nodes, resolved, victim }) => {}
 traffic.edgeCount(edgeId) → number       // vehicles currently on the edge (for congestion-aware costs)
+traffic.reroute(tv, route) → boolean     // give a DRIVING vehicle another way on from a cell it has not reached (late dock choice): `route` is the complete new route, it keeps the old edges up to
+                                         // the cell where the two part, which must lie beyond the braking distance + 2 cells (else false, nothing changed); no U-turn there; locks on cells the new route does not use are let go
 traffic.stats = { edgePasses: Int32Array, edgeWait: Float64Array /* veh·s waiting on edge */, nodeWait: Float64Array /* veh·s waiting in/at cell */,
                   waitVehicle: number, waitJunction: number, waitBroken: number /* cumulative veh·s by waitReason */,
                   deadlocks: number, totalWait: number /* = sum of the three */, drivingTime: number /* veh·s with a route and moving or waiting */ }
@@ -334,7 +355,21 @@ dock is reachable from the pickup dock; sort by **priority desc**, then by strat
 `nearest`: pickup route cost (m, then oldest age); `oldest`: oldest-load age desc (then nearest); `balanced`: `cost − 0.5·age(s) ` —
 and assign greedily; each assignment *claims* the loads and *reserves* `inbound` space immediately, so later pairs see reduced availability/space.
 `Order = { id, flowId, from, to, qty, vehicleId, loads, createdAt /* assignment time */, readySince, pickedAt, deliveredAt }`.
-Pickup/drop dock = nearest (route cost) dock of the station. Unreachable flows never get assigned (the UI lists them via `validateLayout`).
+Unreachable flows never get assigned (the UI lists them via `validateLayout`). Which dock of the station a vehicle drives to is decided by the **dock book** (below), not by route cost alone; the dispatcher ranks vehicles
+by the route cost to the cheapest dock (unchanged), the leg planned afterwards (`planLeg`) picks the dock.
+
+**Dock book** (`js/sim/logistics/docks.js`, `logistics.docks`, one `DockBook` per Logistics). Every dock cell has an *occupant* (the vehicle standing on it - loading, unloading, about to start, idle, broken - or still pulling out of it) and FIFO *reservations*
+(vehicles that planned a route to stop there: `vr.dock = { node, station, kind: 'pickup'|'drop'|'park'|'charge', service /* load/unload time + turnaround of the cell: 8 s at a dead end, 3 s on a through lane for the 1.2 m AGV, longer for longer vehicles */, eta, since, switches }`).
+A reservation is made when a leg to a dock is planned, replaced when it is planned again (deadlock relocation), released on arrival (the vehicle becomes the occupant), when its order is given back, when the vehicle dies or is removed
+(`logistics.removeVehicle(vr)`); that of a broken or dead vehicle stays but is ignored when estimating. `checkDockInvariants(lg)` (every reservation belongs to a vehicle that is on its way to a dock of that station, queued once; every such vehicle has one) holds on every tick.
+*Choice:* among the docks the vehicle can reach and get back from (and, for a pickup, from which the drop can still be reached: `routes.dockChoices`) it takes the one with the smallest **cost** =
+estimated time to start service (travel time (route cost / (top speed x 0.75)) + blocking delay (a stopped vehicle - docked, idle, broken, a long vehicle's overhung junction lock, or a reservation that gets to a dock cell on the way before this vehicle passes - holds it up until it has gone, but not one in the other lane of a two-way road: this is how docks lined up on one lane block each other)
++ wait (what the occupant still needs + the service of the reservations expected before it, in order of arrival; an idle vehicle that stays is expected to start making room when the first follower has waited `YIELD_AFTER` s)) + the **way out** (`DOCK_EXIT_WEIGHT` x the extra route of a dock that lies farther than the nearest choice).
+A wait for a dock whose approach cell is a junction (a spur of one cell off the main road) is spent on the junction and counts `DOCK_BLOCK_WEIGHT` (2) x; the cheapest-route dock is only left for a gain of more than `DOCK_MIN_GAIN` (3 s). Ties: cheaper route, then lower node id. A station with one usable dock is not evaluated; a vehicle that stands on a dock keeps it.
+A vehicle **longer than a cell** whose choice includes a dock that hangs on a spur of one cell (it would overhang the junction in front of the dock and hold its lock) keeps to the old rule - nearest dock, no switching on the way (`overhangs`, `overhangRule`): spreading such vehicles over the docks of a comb jammed the main road (72 comb plants of tuggers and forklifts: without the rule 5 are >10 % worse and 4 gridlock, with it none, 25 % more loads overall; the validator already warns `vehicle-longer-than-cell`).
+*Late rebinding:* a vehicle still driving looks again every 2 s from the first cell of its route beyond its braking distance + 2 cells and switches (via `traffic.reroute`, no U-turn) when another dock's cost (as above) is lower by more than max(8 s, 25 % of its own), at most once per approach.
+`logistics.docks.enabled = false` restores the old static ranking (cheapest returnable dock) - for comparisons and regression tests. Per (station, dock) counters `visits`, `busy` (s a vehicle was *served* on the cell: loading, unloading, pulling out), `held` (s an idle, broken or dead vehicle only stood on it), `wait` (vehicle-s that a vehicle with a reservation stood
+in a queue behind a vehicle on a dock of the same station) feed the KPIs. Looking never changes anything: `refreshOccupants` / `status` (called by the renderer) only read the vehicles; the simulation forgets `vr.leaving` itself at the start of every tick (`forgetLeavers`).
 
 **VehicleRT:** `id, fleetId, fleet, name, color, tv, state, order, load: Load[], battery /* 0..1 */, visible /* false while parked inside */, stateSince,
 x, y, heading, prevX, prevY, prevHeading /* mirrors of tv pose */, timeIn: {state: seconds}, trips, loadedDistance, emptyDistance`.
@@ -369,7 +404,9 @@ KpiReport = {
   stations: { [id]: { type, name,
       utilization /* busy fraction (process: mean over machines; source: 1 - blockedShare; storage: avgFill) */,
       starved, blocked, down /* time fractions */, avgIn, maxIn, avgOut, maxOut, avgFill, maxFill /* 0..1 */,
-      produced, consumed, arrivals, yardMax, yardNow, breakdowns } },
+      produced, consumed, arrivals, yardMax, yardNow, breakdowns,
+      docks: [{ node, cx, cy, visits /* services started there */, busyShare /* of the window a vehicle was served on the cell */, heldShare /* of it an idle / broken vehicle only stood on it */, waitBefore /* veh·s queued for it */ }],
+      dockWaitTotal /* veh·s vehicles queued for a dock of the station */, dockSkew? /* one dock does the work, another hardly any, vehicles wait: { busy, quiet[], reason: 'trap'|'lane'|'detour', waitPerVisit } */ } },
   fleets: { [fleetId]: { name, count,
       utilization /* 1 - idle/parked/charging-share: time spent working */,
       shares: { driving, waiting, loading, unloading, idle, parked, charging, broken },    // fractions of vehicle-time, sum to 1 (±1e-6)
@@ -395,6 +432,8 @@ leaves it) and `station-never-used` (a destination that received nothing in 15 m
 with a dwell of half the window or more is skipped, nothing could have left it yet).
 They never contradict the older rules: an unused fleet is not also oversized or told to get a spare, a saturated fleet is not told to add vehicles while another fleet that may do the same jobs
 hardly works, and an unconnected goods-in is not also "delivering more than the plant takes".
+**Docks:** `dock-bottleneck` (a station whose docks are *in service* ≥ 60 % of the time on average (loading, unloading, pulling out - not an idle vehicle that merely stands there) while vehicles queued ≥ 8 s per visit for them: "Vehicles queue at X: its only dock is busy 87 % of the time and vehicles waited 4 min. Add a second dock - any road cell touching the
+station - or a bypass bay."; silent for docks that are balanced and idle), `dock-idle-vehicles` (the same queue, but the docks are in service < 60 % of the time and idle vehicles that stay on the road stand on them ≥ 25 % of it: "Set the fleet to Park in depot") and `docks-unbalanced` (one dock takes ≥ 75 % of ≥ 20 visits while another gets ≤ 15 % and vehicles wait ≥ 5 s per visit - only said with the reason `stations[].dockSkew.reason`: a trap, docks lined up on one lane, a detour).
 Messages are plain language for a factory planner and quote the numbers.
 
 ### 5.5 `js/sim/engine.js` — `Simulation` (owner: engine agent, wave 2)
@@ -461,10 +500,13 @@ renderer.sim = Simulation | null        // live vehicles/station states when pre
 renderer.view = { selection: {kind, ids}, hover: {kind, id, cell}, tool, overlays: {…as store.ui.overlays}, ghost: null | { kind:'station', type, rect, valid } |
                   { kind:'obstacle', rect, valid }, paintPreview: null | { cells:[[cx,cy]…], oneWay, dir? }, flowPreview: null | { fromId, toPoint:[x,y] } | { toId, fromPoint:[x,y] },
                   marquee: null | rect, resizeHandles: boolean, connectHandle: null | { id, hover?, pressed? },
-                  connect: null | { role: 'from'|'to', anchorId, valid: Set<id>, exists: Set<id>, over, overStatus, snap, verb } }
+                  connect: null | { role: 'from'|'to', anchorId, valid: Set<id>, exists: Set<id>, over, overStatus, snap, verb },
+                  extension: null | { left, top, right, bottom /* cells the plan would gain */, ok, limited, hint }, extendChips: boolean, extendHover: null | 'left'|'top'|'right'|'bottom' }
+renderer.simShift = { dx, dy } | null   // cells the plan's content has moved since renderer.sim was built (it grew on the left or top): the vehicles are drawn and hit that far along; the layers that read the
+                                        // simulation's own geometry (heat, job lines, dock marks, deadlock rings) are left out until the replacement simulation arrives (set by the runner)
 renderer.resize()                       // call on container resize (handles devicePixelRatio)
 renderer.render(alpha)                  // draw a frame; alpha ∈ [0,1] interpolates vehicle poses between ticks
-renderer.hitTest(px, py) → { kind: 'station'|'obstacle'|'label'|'flow'|'vehicle'|'connect-handle'|'cell', id?, cell:[cx,cy], handle?: 'n'|'ne'|…|'move' }   // 'connect-handle' only while view.connectHandle is set
+renderer.hitTest(px, py) → { kind: 'station'|'obstacle'|'label'|'flow'|'vehicle'|'connect-handle'|'extend'|'cell', id?, cell:[cx,cy], handle?: 'n'|'ne'|…|'move' }   // 'connect-handle' only while view.connectHandle is set; 'extend' (id = the side) only while view.extendChips is on
 renderer.toDataURL(opts) → string       // PNG of the whole layout (offscreen, ignoring camera) for reports
 ```
 Visual spec (§7). Perf: static layer (baseplate, roads, obstacles, labels) cached on an offscreen canvas and redrawn only when layout/theme/zoom bucket changes; per frame draws stations' dynamic parts and vehicles. ≥ 60 fps with 100 vehicles.
@@ -474,15 +516,25 @@ Station/flow/vehicle visuals read the runtime fields of §5.3; the renderer must
 Translates pointer/keyboard input into store commits and `renderer.view` updates. `new Editor({ canvas, store, camera, renderer, ctx })`, `editor.setTool(name)`, `editor.startConnect(opts)`, `editor.destroy()`.
 Tools (shortcut): `select` (V), `pan` (H; also Space-drag / middle mouse / two-finger touch), `road` (R, two-way), `oneway` (O), `speedzone` (Z, option: factor),
 `erase` (E), `source`/`process`/`storage`/`sink`/`depot` (1–5), `obstacle` (W, option kind), `label` (T), `flow` (F).
-* **Road/one-way:** press-drag paints a free-hand path cell by cell (gaps from fast mouse movement filled with `lPath`), live preview, committed on release as **one** undo step.
-  `oneway` links follow the drag direction. Starting/ending on an existing road cell connects to it. Shift = straight line (L-shape). Blocked cells stop the stroke with a red preview.
+* **Road/one-way/eraser/speed zone** (`editor/roads.js`, `editor/strokes.js`): press-drag with a live preview, committed on release as **one** undo step; `oneway` links follow the drag direction. How the stroke follows the pointer is the **draw mode** (`ui.toolOptions.drawMode`, saved with the UI preferences, default `smart`; the "Draw: Smart | Straight | Free" control over the plan, shown with these four tools):
+  **smart** = straight by intent: an axis (H or V) is picked once the pointer is 1 cell from where it was pressed and the stroke runs along it to the pointer's projection; a **turn** (one corner at the projected cell, then the other axis) happens only when the pointer is `TURN_THRESHOLD` = 2 cells or more off the line (a finger needs at least 28 px, `turnThreshold`), so a wobble never makes a jog; moving back along the stroke retracts it, also through corners; fast jumps are interpolated in steps of 0.5 cell.
+  **straight** = hold Shift (or choose it): one straight line from the start, the axis locks at 1.5 cells and never flips. **free** = every cell the pointer visits, gaps filled with `lPath`. Shift pressed or released mid-stroke continues in the other mode from the current end. Shift+click (no drag) draws an L-shaped line from the end of this tool's previous stroke to the clicked cell (hovering with Shift previews it; undo, Esc, another tool and a plan change forget the start). Alt = erase. Blocked cells stop the stroke with a red tail. The preview (`view.paintPreview`) carries `label` (length near the pointer, "24 m · 12 cells") and, for a locked straight line, `guide` (axis and start cell, drawn across the plant).
 * **Station tools:** hover shows a ghost (green valid / red invalid); click places a default-size brick; press-drag sizes it. Select tool: drag to move (snap to grid, invalid = red ghost, release on invalid = cancel),
   drag edge/corner handles to resize, Delete removes, arrow keys nudge, Ctrl/Cmd+D duplicates.
 * **Flow tool:** click source station then destination station ⇒ `addFlow`; Esc cancels; invalid pairs show a toast-style hint via `ctx.toast`. Valid receivers glow while a sender is chosen (`view.connect`).
 * **Connecting without the Flow tool** (`js/ui/editor/connect.js` rules, `connector.js` behaviour): a selected Goods in / workstation / storage shows a round **flow handle** (`view.connectHandle`, hit as `'connect-handle'`) just outside the edge that faces its nearest valid destination; dragging it to a station adds the flow (undo label `Connect A → B`, new flow selected, toast), a plain click starts connect mode, Esc cancels. `editor.startConnect({ fromId } | { toId })` starts the same click mode for any station (the toast after placing a station calls it from its **Connect** action); it switches to Select. `view.connect = { role, anchorId, valid: Set, over, overStatus, snap, verb }` makes valid stations glow, the rest recede and labels the one under the pointer; `view.flowPreview` is `{ fromId, toPoint }` or, when the anchor receives, `{ toId, fromPoint }`.
 * **Eraser:** drag over cells removes road cells, obstacles and labels there (stations only via selection + Delete). **Speed zone:** paints `limit`.
+* **The plan grows with the work** (`editor/grow.js`, pure and unit-tested in tests/ui.editor.grow.test.js; `render/extend.js` draws it). The baseplate is made of **blocks of 8 cells** (`GRID_BLOCK`), at most 320 x 320 cells (`GRID_LIMITS`).
+  A **road / one-way stroke, a brick placed, sized, moved or resized, a label** may reach beyond an edge: the pointer keeps working outside the baseplate (pointer capture; `p.ux/uy/cx/cy` are real, kept within a window the plan could ever grow into) and the tool reports what it touches with `ed.showGrowth(extent)`.
+  `planGrowth(grid, extent)` gives whole blocks per side that hold the extent plus one spare cell (limit-aware: a stroke that runs into the largest plan stops at its edge with a message; an edit that needs more room than there is, or left + right together too much, is refused with the toast "The plan cannot grow beyond 320 × 320 cells."); the renderer shows the added ground as a translucent block with a dashed outline and "+8 columns" (`view.extension`),
+  and the status line says "The plan grows by 8 columns on the right." On release `ed.commitGrow(label, extent, (draft, shift) => …)` is **one** `store.commit` (label unchanged: "Draw road", "Move station") that calls `growGrid` and then the edit, so one undo takes both back. `shift` = `{ dx, dy }` is how far the content moved (left / top growth): tools add it to the coordinates they took from the pointer (`shiftRect`, `shiftCells`).
+  **The view stays:** the shift is noted on the new layout (`noteGrowth`), and the editor moves the camera by the same distance on the commit and, from the notes, on undo and redo (`contentShift`), so nothing moves on screen; the Properties buttons and the chips note their shift the same way.
+  Rules: eraser, speed zones and flow-handle drags never grow the plan; with the pointer **inside** the baseplate an item being moved or resized may not stick out (red ghost, "Move the pointer past the edge to extend the plan.").
+  **Auto-pan:** during a road stroke, a brick sized, moved or resized, a pointer within 24 px of (or beyond) the edge of the canvas pans the view, 60 → 900 px/s growing with the square of the proximity, until it leaves the zone (`autoPanVelocity`; handlers opt in with `autoPan()`).
+  **Edge chips:** with Select and the drawing tools (not eraser, slow zone, pan, flow), while the mouse is over the canvas (always on a touch screen), each edge of the baseplate shows a faint strip (28 – 40 px, outside the plan) with a round **+** chip in the middle of the visible part of the edge; hovering previews the block, a click / tap extends by one block ("Extend plan", one undo step, `view.extendChips`, hit as `'extend'`). Hidden below 2 px per cell, for a plan under 100 px on screen, while an edit shows its block, and where the chip would not fit into the window.
+  Keyboard route: Properties > Plant settings > Grid and scale has **Extend the plan by 8 cells** (Left, Up, Right, Down) and **Trim to content** ("48 × 32 → 40 × 24 cells, 80 × 48 m"), each undoable; the status line always shows the plan size.
 * Wheel = zoom at cursor, drag with pan tool/Space/middle = pan, double-click empty = fit. Esc = cancel current gesture / clear selection. Ctrl/Cmd+Z / Shift+Z / Y = undo/redo.
-* All gestures work with touch (pointer events, `touch-action: none` on the canvas; two-finger pan/pinch).
+* All gestures work with touch (pointer events, `touch-action: none` on the canvas; two-finger pan/pinch). While a tool gesture runs the editor sets `data-gesture` on the canvas (`syncView`); css/layout.css uses it to fade the card of an empty plant (`.stage__empty`, which sits in the middle of the plan and lets pointer and wheel through to the canvas, only its buttons take the pointer).
 Every layout change goes through `store.commit` with a clear human label ("Move station", "Draw road") — these appear in the undo tooltip.
 
 ### 6.4 Runner — `js/ui/runner.js` (owner: store agent)
@@ -509,6 +561,9 @@ Measured cost of the pre-roll (real headless Chromium on a shared, busy machine;
 Congestion lab 90–260 ms in 5–10 frames, Two lines 105–340 ms in 5–11 frames (the engine alone needs 70–380 ms in Node for the 1200 s: 90–140 ms once warm), a 160 × 160 plant with 100 vehicles (48 stations, 4031 road cells)
 0.9–1.0 s in 42–47 frames in the page and 0.6–1.2 s in Node (building the Simulation is one synchronous call of 60–90 ms). Edit to swapped-in simulation, debounce included: 0.3–0.6 s on the examples, 1.2–1.4 s on the big plant.
 The slowest animation-frame callback while priming was 16–28 ms on Two lines and 30–38 ms on the big plant (p95 15–19 ms), and no long task over 50 ms was reported; "1–3 frames" holds only for the Starter.
+**The plan grows while it runs.** Growing or trimming the plan on its left or top moves everything on it (`growGrid` / `trimGrid` note the move with `noteGrowth`, the editor moves the camera by it). The displayed simulation still stands in the old coordinates for the debounce and the pre-roll
+(0.3 to 1.4 s measured), so the runner adds up the moves it sees since that simulation was built (`runner.simShift`, `contentShift` of editor/grow.js on every commit, undo and redo; reset by a replacement, a load or a variant switch) and tells the renderer (`renderer.simShift`):
+the vehicles stay on their roads (the first version drew them 8 cells off for those frames). Growing on the right or below moves nothing and needs no shift. tests/e2e/roads-canvas-combined.mjs `running` samples every frame.
 **Baseline.** When a warm restart replaces a simulation that had measured ≥ 10 minutes, that simulation's last KpiReport becomes `runner.baseline.report` with the labels of the edits and `layout`, the plant it describes; further warm restarts keep the
 ORIGINAL baseline and only add labels, until `keepBaseline()` (the plant on screen, as it is now, becomes the reference, no labels; it returns false and leaves everything as it was while a replacement is being pre-rolled or the run is not yet reliable) or
 `dismissBaseline()`. Every cold start clears it.
@@ -588,7 +643,7 @@ Goal: someone who has never seen the tool can build a working plant without read
   *As built* (`js/ui/guidance.js`, UI in `js/ui/panels/nextsteps.js`, styles in `css/guidance.css`): `severity` is `'todo'|'warn'|'info'` (notes never block and are not counted as "steps to finish"); a step also has `scopes` (`'plant'|'flows'|'fleet'|'run'`, so the Flows and Fleet tabs show only their own), `icon` and `dismissible`; `fix.type` adds `'set-tab'` (`{ tab }`), `connect-flow` carries `pick: 'to'|'from'` (the end the planner chooses; `toId`/`fromId` hold the suggestion), `add-fleet` may carry `fleetId` (raise that fleet instead of adding one). `validDestinations`/`validOrigins` return station objects, `suggestDestination`/`suggestOrigin` a station object or `null`; `connectFixFor(layout, id)` is the ready-made fix for a toast's Connect action, `fixForIssue(layout, issue)` maps Checks issues to fixes. `guidanceFor(ctx)` holds what all surfaces share (dismissals in localStorage `logiplan:guidance-dismissed`, session progress: has it run, longest run, were the results opened) and a memoised `read(state)`. Suggestions in a list build on each other (a virtual flow per suggestion), so a fresh plant needs two Connect clicks, not four.
 * UI surfaces: a **Next steps** card at the top of Properties / Flows / Fleet; a canvas **guide chip** ("2 steps to finish") that opens the same list; a dismissible **Getting started** checklist; **Fix** buttons on Checks issues; inline **Loads in / Loads out** sections in the station inspector with "Add destination"; fleet cards explaining which flows they serve; Help section "How vehicles find work".
 * *As built, who serves which flow* (`js/ui/panels/jobs-info.js`, pure and Node-tested in `tests/ui.jobsinfo.test.js`; the drawing in `js/ui/panels/jobs-view.js`, driven by `tests/e2e/guidance-panels.mjs`): the station form of the Properties tab starts (under the header) with **Where do loads go?** and **Where do loads come from?** (non-collapsible; a row per flow with the station at the other end, the share in % and a weight stepper from two outgoing flows on, loads per cycle for a workstation, Flow settings, Remove; an "Add destination / Add origin" picker made of `validDestinations` / `validOrigins` + Connect that stays on the station, shown as a callout while the station has no flow; a depot gets a note instead). Each fleet card has **Jobs this fleet serves** (the model in two sentences, "4 flows share these 2 AGVs", the flows it may serve split into Any fleet / Only this fleet with an "Only this fleet" switch that sets `flow.fleetId`, warnings for a dedicated flow whose fleet has no vehicles and for a plant without vehicles). Each flow card in the Flows tab has **Served by: any fleet (AGV ×2, Forklift ×1)** / **only AGV ×2**, the loads waiting and delivered from the runner's cached `kpis()` while a simulation exists, and the tab opens with a collapsible **How vehicles find work** (remembered in localStorage `logiplan:flows-explainer`). Help has a page `vehicles` ("How vehicles find work", an inline SVG diagram, the loop, docks, several Goods in, dedicating vehicles, priority/batch/capacity, what to do when loads pile up, the Jobs overlay); the welcome dialog shows one of three rotating tips per visit (`WELCOME_TIPS`, localStorage `logiplan:welcome-tip`). The old "Connected flows" section of the station form is gone: the two blocks replace it.
-* Canvas: a **flow handle** on a selected station (drag from it to another station to create a flow), a toast with a **Connect** action right after placing a station, valid-target highlighting while connecting, a **Jobs** overlay (`js/ui/render/jobs.js`, `ui.overlays.jobs`: a dashed line from each vehicle with an order to the dock it is driving to, amber while it picks up and blue while it delivers, fading with distance, with a chip "→ Goods in 2" when zoomed in; and a badge "n waiting" on every station with loads ready and not yet claimed by a vehicle, red from 80 % of its output buffer).
+* Canvas: a **flow handle** on a selected station (drag from it to another station to create a flow), a toast with a **Connect** action right after placing a station, valid-target highlighting while connecting, a **Jobs** overlay (`js/ui/render/jobs.js`, `ui.overlays.jobs`: a dashed line from each vehicle with an order to the dock it is driving to, amber while it picks up and blue while it delivers, fading with distance, with a chip "→ Goods in 2" when zoomed in; and a badge "n waiting" on every station with loads ready and not yet claimed by a vehicle, red from 80 % of its output buffer; and, from 8 px per metre on, a small mark at the station edge of every dock cell: a hollow dot while the dock is free, a ring while a vehicle is on its way to it, a filled dot while a vehicle stands on it - `logistics.docks.status(node)`). The Results tab lists the docks of every used station (a bar for how busy each was, its visits, the time vehicles queued).
 
 * *As built, after the first-time-planner walkthrough* (`tests/e2e/walkthrough.mjs`, which drives the real app with mouse, finger and keyboard only and counts the actions): one question is asked once, and the answer tells the planner what it means. Details:
   the place tool puts no ghost over the brick it just placed (a red "blocked" ghost looked like a failed placement; the ghost of a station carries the planner's word "Goods in", not "Source"); a click on a road says "Put it beside the road, not on it";
@@ -608,11 +663,12 @@ Obstacles slate grey (walls hatched, racks with shelf lines). **UI chrome:** neu
 Status colours used consistently everywhere: busy/ok green, starved amber, blocked/waiting orange, down/error red, idle grey.
 
 ## 8. Quality gates
-* `npm run test:quiet` (unit + integration), `npm run check` (imports), `npm run test:e2e` (Playwright, headless Chromium, screenshots in `e2e-output/`).
+* `npm run test:quiet` (unit + integration; the same files as `npm run test:fast` + `npm run test:heavy`, which CI runs as parallel jobs), `npm run check` (imports), `npm run test:e2e` (Playwright, headless Chromium, screenshots in `e2e-output/`).
 * Simulation invariants that integration tests assert on every example and on random layouts: no overlapping vehicles; load conservation
   (`created = live + completed + consumed-by-processes` bookkeeping holds); buffers never exceed capacity or go negative; sim time monotonic; same seed ⇒ identical KPIs; no `NaN` anywhere in a `KpiReport`; vehicle state shares sum to 1.
 * No console errors/warnings in the browser during a full session (load → edit → run → compare → export).
 
 ## 9. Deployment
-`.github/workflows/pages.yml`: on push to `main`, run tests, assemble `_site/` (index.html, css/, js/, assets/, docs not needed), deploy with
-`actions/upload-pages-artifact` + `actions/deploy-pages`. Repo Settings → Pages → Source: **GitHub Actions**. All asset URLs relative so it works under `/<repo>/`.
+`.github/workflows/pages.yml`: on push to `main`, job `verify` (import check, fast test tier, assemble `_site/` (index.html, css/, js/, assets/, docs not needed), upload with
+`actions/upload-pages-artifact`), then job `deploy` (`actions/deploy-pages`, needs `verify` only, skipped when a newer commit is already on the branch). The heavy test tier runs beside the deploy
+(one job per shard) and turns the run red if it fails, without holding the deploy back: the pull request has already passed it (`ci.yml`). Repo Settings → Pages → Source: **GitHub Actions**. All asset URLs relative so it works under `/<repo>/`.

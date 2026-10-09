@@ -174,7 +174,7 @@ test('backlog counts loads that are ready now, not loads still in dwell', () => 
   assert.equal(sim.stats.report().flows.f1.backlog, 2);
 });
 
-test('the report has exactly the fields of docs/ARCHITECTURE.md 5.4 (plus traffic.brokenWait, flows[].avgBacklog, fleets[].unplaced, fleets[].vehicleTrips)', () => {
+test('the report has exactly the fields of docs/ARCHITECTURE.md 5.4 (plus traffic.brokenWait, flows[].avgBacklog, fleets[].unplaced, fleets[].vehicleTrips, stations[].docks and dockWaitTotal)', () => {
   const sim = lineSim({ fleets: [{ count: 1, battery: { enabled: true } }] });
   sim.veh('v1#1').state = 'toPickup';
   sim.complete('D', 90);
@@ -190,7 +190,7 @@ test('the report has exactly the fields of docs/ARCHITECTURE.md 5.4 (plus traffi
   assert.deepEqual(keys(r.leadTime), ['count', 'max', 'mean', 'min', 'p50', 'p90', 'p95']);
   assert.deepEqual(keys(r.wip), ['max', 'mean', 'now']);
   assert.deepEqual(keys(r.stations.P), [
-    'arrivals', 'avgFill', 'avgIn', 'avgOut', 'blocked', 'breakdowns', 'consumed', 'down', 'maxFill', 'maxIn', 'maxOut', 'name',
+    'arrivals', 'avgFill', 'avgIn', 'avgOut', 'blocked', 'breakdowns', 'consumed', 'dockWaitTotal', 'docks', 'down', 'maxFill', 'maxIn', 'maxOut', 'name',
     'produced', 'starved', 'type', 'utilization', 'yardMax', 'yardNow',
   ]);
   assert.deepEqual(keys(r.fleets.v1), [

@@ -9,11 +9,12 @@
 // by searching at all but by `canReach`, which sweeps the road graph backwards from the docks of X once and then
 // answers every query in constant time (exactly the answer a search would give, including the no-U-turn rule).
 //
-// Search budget. A search costs time in proportion to the size of the graph (about 1.4 ms on a 100 x 80 plant), and a
-// plant with 40 vehicles needs one search per vehicle the first time they are all looked at: 60 ms in a single tick, 2 s on the
-// largest plants. Callers that can wait ask with `deferrable`: each tick (beginTick) only `budget` new searches are started
-// for them and the others get null, to be asked again in the next tick. The budget is measured in graph size, so it is generous
-// on the small plants of the examples (never reached there) and one or two searches per tick on the biggest plant.
+// Search budget. A search costs time in proportion to the size of the ROAD graph (its road cells plus its links; the empty
+// cells of the baseplate cost nothing, so a plant behaves the same whatever room is left around it), and a plant with 40 vehicles
+// needs one search per vehicle the first time they are all looked at: 60 ms in a single tick, 2 s on the largest plants. Callers
+// that can wait ask with `deferrable`: each tick (beginTick) only `budget` new searches are started for them and the others get
+// null, to be asked again in the next tick. The budget is measured in road graph size, so it is generous on the small plants of
+// the examples (never reached there) and one or two searches per tick on the biggest plant.
 //
 // Dock choice. A station has several docks; the cheapest one is not always a good one. A dock is
 // "returnable" when the vehicle can get back to where it started (same strongly connected part of the road
@@ -24,11 +25,17 @@ import { CONGESTION_REFRESH, CONGESTION_WEIGHT, EPS, ROUTE_CACHE_BYTES, SEARCH_W
 
 const MAX_ENTRIES = 512;
 const MIN_ENTRIES = 8;
-const BYTES_PER_SLOT = 12; // a search keeps a Float64 and an Int32 per edge and per node
+/** Size of one search in units of road cells and links: the work it takes and (below) the memory it keeps. */
+const searchSize = (graph) => graph.edges.length + graph.nodes.length;
+/**
+ * Bytes a cached search keeps: a Float64 and an Int32 per road cell, an Int32 per link, and, as long as it has not explored the whole
+ * network (graph.js searches go on only as far as they are asked), a Float64 per link for the costs of the edges it has reached.
+ */
+const searchBytes = (graph) => 12 * graph.nodes.length + 12 * graph.edges.length + 256;
 
 /** New searches per tick for deferrable lookups on this graph: SEARCH_WORK_PER_TICK in units of one search's size, at least one. */
 export function searchBudget(graph) {
-  return Math.max(1, Math.floor(SEARCH_WORK_PER_TICK / (graph.edges.length + graph.nodeCount)));
+  return Math.max(1, Math.floor(SEARCH_WORK_PER_TICK / searchSize(graph)));
 }
 
 /** Drop the least recently used quarter of a full cache (a whole-cache flush would make a hot working set start over). */
@@ -41,22 +48,22 @@ function evict(map) {
  * Edges after whose traversal a dock of the station can still be reached (a vehicle that has just driven edge e stands at e.to).
  * Computed by one sweep backwards over the moves the routing rule allows: from e a vehicle may continue over every exit of e.to
  * except the reverse of e, unless that is its only exit (the dead-end reversal).
- * @returns {{ leads: Uint8Array, isDock: Uint8Array }} `leads`: 1 per edge id that leads to a dock; `isDock`: 1 per node id that is one
+ * @returns {{ leads: Uint8Array, isDock: Set<number> }} `leads`: 1 per edge id that leads to a dock; `isDock`: the dock nodes
  */
 function sweepToDocks(graph, dockNodes) {
   const { edges, out } = graph;
-  const isDock = new Uint8Array(graph.nodeCount);
-  for (const node of dockNodes) isDock[node] = 1;
+  const isDock = new Set(dockNodes);
   const leads = new Uint8Array(edges.length);
-  const queue = [];
-  for (const edge of edges) if (isDock[edge.to]) { leads[edge.id] = 1; queue.push(edge.id); }
-  for (let head = 0; head < queue.length; head++) {
+  const queue = new Int32Array(edges.length); // every edge is queued at most once
+  let tail = 0;
+  for (const node of dockNodes) for (const id of graph.in[node]) if (leads[id] === 0) { leads[id] = 1; queue[tail++] = id; }
+  for (let head = 0; head < tail; head++) {
     const next = edges[queue[head]];
     const otherExits = out[next.from].length > 1; // a vehicle may reverse into `next` only at a dead end
     for (const id of graph.in[next.from]) {
       if (leads[id] || (otherExits && edges[id].rev === next.id)) continue;
       leads[id] = 1;
-      queue.push(id);
+      queue[tail++] = id;
     }
   }
   return { leads, isDock };
@@ -78,7 +85,7 @@ export class RouteCache {
     /** Time of the current congestion snapshot. */
     this.stamp = -Infinity;
     this.edgeKey = graph.edges.length + 1;
-    const total = Math.floor(ROUTE_CACHE_BYTES / (BYTES_PER_SLOT * (graph.edges.length + graph.nodeCount) + 256));
+    const total = Math.floor(ROUTE_CACHE_BYTES / searchBytes(graph));
     /** Most searches kept: the plain-cost ones live for ever, so they get most of the memory budget. */
     this.fixedCapacity = Math.max(MIN_ENTRIES, Math.min(MAX_ENTRIES, Math.floor((total * 3) / 4)));
     this.capacity = Math.max(MIN_ENTRIES, Math.min(MAX_ENTRIES, Math.floor(total / 4)));
@@ -163,7 +170,7 @@ export class RouteCache {
     if (docks === undefined || docks.length === 0) return false;
     let sweep = this.sweeps.get(stationId);
     if (sweep === undefined) this.sweeps.set(stationId, (sweep = sweepToDocks(this.graph, docks)));
-    if (sweep.isDock[node] === 1) return true;
+    if (sweep.isDock.has(node)) return true;
     const exits = this.graph.out[node];
     if (exits === undefined) return false; // not a node of this graph
     const arrived = this.graph.edges[arrivalEdge];
@@ -190,10 +197,31 @@ export class RouteCache {
     return list;
   }
 
+  /**
+   * The route from an entry's start to `dock` (a dock of docksOf, or any `{ node }`), kept on the dock: the search of an entry never changes,
+   * so every vehicle that plans from there gets the same route object (nobody modifies a route; the traffic system copies it).
+   */
+  routeOfDock(entry, dock) {
+    if (dock.route === undefined) dock.route = entry.search.routeTo(dock.node);
+    return dock.route;
+  }
+
+  /** Seconds a vehicle needs for the route to `dock` at the speed limits (unit speed; cached on the dock): the plain length of the way, whatever the routing mode. */
+  baseTimeOfDock(entry, dock) {
+    if (dock.base === undefined) {
+      const route = this.routeOfDock(entry, dock);
+      let sum = 0;
+      if (route === null) sum = Infinity;
+      else for (const e of route.edges) sum += this.graph.baseCost[e];
+      dock.base = sum;
+    }
+    return dock.base;
+  }
+
   /** The edge a vehicle driving to `dock` arrives over (the entry's own arrival edge for a zero-length route). */
   arrivalEdgeAt(entry, dock) {
     if (dock.arrivalEdge === undefined) {
-      const route = entry.search.routeTo(dock.node);
+      const route = this.routeOfDock(entry, dock);
       dock.arrivalEdge = route && route.edges.length > 0 ? route.edges[route.edges.length - 1] : entry.arrivalEdge;
     }
     return dock.arrivalEdge;
@@ -219,6 +247,30 @@ export class RouteCache {
       entry.pickups.set(key, found);
     }
     return found;
+  }
+
+  /**
+   * The docks of `stationId` a vehicle at an entry's start may choose between, cheapest first: the reachable ones of the best class (the
+   * returnable ones if there are any, else the others) and, with `toId` (a pickup), only those from which a dock of `toId` can still be
+   * reached. The first one is what bestDock / pickupDock return; docks.js picks among them by the estimated time to start service.
+   * @returns {Array<{ node: number, dist: number, back: boolean, arrivalEdge: number }>}
+   */
+  dockChoices(entry, stationId, toId = null) {
+    const key = toId === null ? stationId : stationId + '>' + toId;
+    if (entry.choices === undefined) entry.choices = new Map();
+    let list = entry.choices.get(key);
+    if (list === undefined) {
+      list = [];
+      let back = null;
+      for (const dock of this.docksOf(entry, stationId)) {
+        if (back !== null && dock.back !== back) break; // sorted: the returnable docks come first
+        if (toId !== null && !this.canReach(dock.node, this.arrivalEdgeAt(entry, dock), toId)) continue;
+        back = dock.back;
+        list.push(dock);
+      }
+      entry.choices.set(key, list);
+    }
+    return list;
   }
 
   /** Route from an entry's start to `node`, or null when unreachable. */

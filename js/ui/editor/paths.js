@@ -3,6 +3,7 @@
 
 import { lPath, dirFromTo, cellKey } from '../../util/grid.js';
 import { isCellFree } from '../../model/layout.js';
+import { inReach } from './grow.js';
 
 const sameCell = (a, b) => a[0] === b[0] && a[1] === b[1];
 
@@ -38,10 +39,16 @@ export function uniqueCells(cells) {
 /**
  * Split a stroke where the model would stop painting it: at the first cell that is off the baseplate or covered by a
  * station or obstacle (the same test as paintRoadPath). `blocked` holds that cell and every later one (they are not painted).
+ * With `grow` the ground the plan could still grow into counts as free (the plan grows for the stroke, editor/grow.js); only cells
+ * beyond what it could ever reach, and stations and walls, stop the stroke.
  * @returns {{ paint: number[][], blocked: number[][] }}
  */
-export function clipStroke(layout, cells) {
-  const i = cells.findIndex(([cx, cy]) => !isCellFree(layout, cx, cy));
+export function clipStroke(layout, cells, { grow = false } = {}) {
+  const { grid } = layout;
+  const free = grow
+    ? (cx, cy) => (cx >= 0 && cy >= 0 && cx < grid.cols && cy < grid.rows ? isCellFree(layout, cx, cy) : inReach(grid, cx, cy))
+    : (cx, cy) => isCellFree(layout, cx, cy);
+  const i = cells.findIndex(([cx, cy]) => !free(cx, cy));
   if (i < 0) return { paint: cells, blocked: [] };
   return { paint: cells.slice(0, i), blocked: uniqueCells(cells.slice(i)) };
 }

@@ -199,4 +199,6 @@ export function emptyLayout(overrides = {}) {
 }
 
 export const OBSTACLE_KINDS = ['wall', 'rack', 'column'];
-export const GRID_LIMITS = { minCols: 8, maxCols: 160, minRows: 8, maxRows: 160, minCell: 0.5, maxCell: 10 };
+export const GRID_LIMITS = { minCols: 8, maxCols: 320, minRows: 8, maxRows: 320, minCell: 0.5, maxCell: 10 };
+/** Cells in one extension block of the baseplate: the unit by which the plan grows (the edge '+' strips, auto-grow, Plant settings). */
+export const GRID_BLOCK = 8;

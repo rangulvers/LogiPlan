@@ -4,6 +4,7 @@
 import { h } from '../../util/dom.js';
 import { textField } from '../panels/fields.js';
 import { addLabel } from '../../model/layout.js';
+import { labelExtent } from './grow.js';
 
 const LABEL_MAX = 200;
 
@@ -49,23 +50,26 @@ export function openTextBox(doc, { x, y, value = '', onSubmit, onCancel }) {
   return { close };
 }
 
-/** The label tool: a click opens the text box at the pointer; confirming adds the label there (snapped to half cells). */
+/**
+ * The label tool: a click opens the text box at the pointer; confirming adds the label there (snapped to half cells). A click beyond the
+ * edge of the baseplate adds it there and the plan grows to hold it (one undo step).
+ */
 export function createLabelTool(ed) {
+  const snap = (p) => ({ x: Math.round(p.ux * 2) / 2, y: Math.round(p.uy * 2) / 2 });
   return {
     busy: () => false,
     down() {
       return true;
     },
     up(p) {
-      const grid = ed.layout().grid;
-      const at = { x: Math.min(grid.cols, Math.max(0, Math.round(p.ux * 2) / 2)), y: Math.min(grid.rows, Math.max(0, Math.round(p.uy * 2) / 2)) };
+      const at = snap(p);
       ed.editText({
         clientX: p.clientX,
         clientY: p.clientY,
         onSubmit: (text) => {
           let id = null;
-          const ok = ed.commit('Add label', (draft) => {
-            const label = addLabel(draft, { ...at, text });
+          const ok = ed.commitGrow('Add label', labelExtent(ed.layout().grid, at.x, at.y), (draft, shift) => {
+            const label = addLabel(draft, { x: at.x + shift.dx, y: at.y + shift.dy, text });
             id = label ? label.id : null;
             return id !== null;
           });
@@ -75,7 +79,12 @@ export function createLabelTool(ed) {
     },
     hover(p) {
       ed.view.hover = { kind: 'cell', cell: p.cell };
+      const at = snap(p);
+      ed.showGrowth(labelExtent(ed.layout().grid, at.x, at.y)); // the plan would grow for a label placed here
       ed.hoverStatus(p);
+    },
+    cancel() {
+      ed.showGrowth(null);
     },
   };
 }

@@ -96,10 +96,13 @@ test('budget: the default is no limit, searchBudget scales with the size of the 
   assert.equal(cache.budget, Infinity);
   const small = buildGraph(layoutFromAscii(['A.......', '++++++++'], { stations: { A: 'source' }, fleets: [] }));
   const big = buildGraph(blockPlant(160, 160, 12, 1, 1));
-  assert.equal(searchBudget(small), Math.floor(SEARCH_WORK_PER_TICK / (small.edges.length + small.nodeCount)));
+  // the work of a search follows the ROAD graph (cells with a road + links), not the baseplate: empty room around a plant costs nothing
+  assert.equal(searchBudget(small), Math.floor(SEARCH_WORK_PER_TICK / (small.edges.length + small.nodes.length)));
   assert.ok(searchBudget(small) > 100, 'a small plant is not limited in practice');
-  assert.ok(searchBudget(big) >= 1 && searchBudget(big) <= 3, `${searchBudget(big)} searches per tick on the largest grid`);
-  assert.ok(searchBudget(big) * (big.edges.length + big.nodeCount) <= SEARCH_WORK_PER_TICK || searchBudget(big) === 1);
+  // 10 ms of searching per tick at about 100 ns per road cell and link: 8 searches on the 160 x 160 block plant (3900 road cells), 1-2 on the largest 320 x 320 one
+  assert.ok(searchBudget(big) >= 1 && searchBudget(big) <= 8, `${searchBudget(big)} searches per tick on a big plant`);
+  assert.ok(searchBudget(buildGraph(blockPlant(320, 320, 12, 1, 1))) <= 2, 'and at most two on the largest baseplate');
+  assert.ok(searchBudget(big) * (big.edges.length + big.nodes.length) <= SEARCH_WORK_PER_TICK || searchBudget(big) === 1);
 });
 
 test('budget: congestion costs of an older snapshot are searched again when asked for, or used as they are when the tick has no search left', () => {

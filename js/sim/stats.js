@@ -42,6 +42,13 @@
 //    so the list never has more entries than the traffic counter. A jam that stands and is reported again (traffic loses
 //    track of it for a moment and counts it anew) is announced by the engine as 'deadlockRepeat' and taken off the
 //    counter again: traffic.deadlocks counts jams, not reports.
+//  * Docks: every station reports `docks` ([{ node, cx, cy, visits, busyShare, heldShare, waitBefore }]: services started on the cell, share of
+//    the window a vehicle was served there (loading, unloading, pulling out), share of it that an idle, broken or dead vehicle only stood on it,
+//    vehicle-seconds that vehicles with a reservation for it stood in a queue behind a vehicle on a dock of the station) and `dockWaitTotal`
+//    (their sum). The counters belong to the dock book (logistics/docks.js); the window is their delta
+//    since reset(). `dockSkew` appears only when one dock takes most visits, another hardly any and vehicles wait (docks.js dockSkew).
+
+import { dockSkew } from './logistics/docks.js';
 
 /** Sim seconds between two series points (before decimation). */
 export const SERIES_INTERVAL = 60;
@@ -61,6 +68,7 @@ export const HOTSPOT_COUNT = 10;
 export const DEADLOCK_EVENT_CAP = 50;
 
 const NONE = Object.freeze([]);
+const ZERO3 = Object.freeze([0, 0, 0, 0]);
 const EPS = 1e-9;
 /** A storage counts as completely full above this fill. */
 const FULL = 1 - EPS;
@@ -501,6 +509,9 @@ export class Stats {
       const ms = st.machines;
       for (let j = 0; j < this.mCount[i] && ms && j < ms.length; j++) this.prevDown[this.mOff[i] + j] = ms[j].state === 'down' ? 1 : 0;
     }
+    this.snapDocks = new Map();
+    const book = lg.docks;
+    if (book && book.byStation) for (const [id, docks] of book.byStation) this.snapDocks.set(id, docks.map((d) => [d.visits, d.busy, d.wait, d.held]));
     for (let i = 0; i < vehicles.length; i++) {
       const v = vehicles[i];
       this.snapVehicle[i * VEHICLE_FIELDS] = nn(v.trips);
@@ -751,8 +762,42 @@ export class Stats {
         yardMax: k === K_SOURCE ? Math.max(this.yardMax[i], yardNow) : 0,
         yardNow,
         breakdowns: this.breakdowns[i],
+        ...this._dockReport(st, dur),
       };
     }
+    return out;
+  }
+
+  /**
+   * The docks of a station in this window: `docks` = [{ node, cx, cy, visits, busyShare, heldShare, waitBefore }] (visits = services started there,
+   * busyShare = share of the time a vehicle was served on the cell, heldShare = share of the time an idle / broken vehicle only stood on it, waitBefore = vehicle-seconds vehicles with a reservation for it stood in
+   * a queue behind a vehicle on a dock of the station) and `dockWaitTotal` = the waits of all its docks added up. A station with
+   * several docks that use one far more than another, while vehicles wait, also gets `dockSkew` (why; see explainDockSkew).
+   */
+  _dockReport(st, dur) {
+    const book = this.sim.logistics?.docks;
+    const list = book && book.byStation ? book.byStation.get(st.id) : undefined;
+    if (!list || list.length === 0) return { docks: [], dockWaitTotal: 0 };
+    const snap = this.snapDocks.get(st.id) || NONE;
+    const cols = (this.sim.graph && this.sim.graph.cols) || (this.sim.layout && this.sim.layout.grid && this.sim.layout.grid.cols) || 1;
+    let total = 0;
+    const docks = list.map((d, j) => {
+      const was = snap[j] || ZERO3;
+      const waitBefore = Math.max(0, nn(d.wait) - was[2]);
+      total += waitBefore;
+      return {
+        node: d.node,
+        cx: d.node % cols,
+        cy: Math.floor(d.node / cols),
+        visits: Math.max(0, nn(d.visits) - was[0]),
+        busyShare: dur > 0 ? Math.min(1, Math.max(0, nn(d.busy) - was[1]) / dur) : 0,
+        heldShare: dur > 0 ? Math.min(1, Math.max(0, nn(d.held) - nn(was[3])) / dur) : 0,
+        waitBefore,
+      };
+    });
+    const out = { docks, dockWaitTotal: total };
+    const skew = this.sim.graph ? dockSkew(this.sim.graph, docks, total) : null;
+    if (skew) out.dockSkew = skew;
     return out;
   }
 

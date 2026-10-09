@@ -185,8 +185,9 @@ test('editor: keys are ignored in text fields and behind dialogs, and browser sh
 
 // ---- road tools ---------------------------------------------------------------------------------------------------
 
-test('editor: a road stroke is one commit with a live preview, filled gaps and links; undo/redo keys work', () => {
+test('editor: a road stroke is one commit with a live preview, filled gaps and links; undo/redo keys work (free draw mode)', () => {
   const t = setup();
+  t.store.setUi({ toolOptions: { drawMode: 'free' } }); // the free-hand stroke follows every cell; smart mode has its own tests below
   t.key('r');
   t.mouse.down([5, 5]);
   t.mouse.move([9, 7]);
@@ -207,22 +208,28 @@ test('editor: a road stroke is one commit with a live preview, filled gaps and l
   assert.equal(Object.keys(t.state().layout.roads).length, 7);
 });
 
-test('editor: a stroke dragged beyond the edge of the plant (the pointer is captured) stops at the last column and row', () => {
+test('editor: a stroke dragged beyond the edge of the plant (the pointer is captured) makes the plan grow instead of stopping at the edge', () => {
+  // Changed on purpose (expandable canvas): the stroke used to stop at the last column and row. The plan now grows by whole blocks of
+  // 8 cells to hold it, in the same undo step; tests/ui.editor.grow.test.js covers growth on every side, the limit and the camera.
   const t = setup();
   t.key('r');
   t.mouse.drag([[30, 10], [90, 10], [90, 60]]);
   const cells = Object.keys(t.state().layout.roads);
-  assert.equal(cells.length, 10 + 13, 'row 10 from x = 30 to 39, then column 39 down to the last row (y = 23)');
-  assert.ok(t.state().layout.roads['39,23']);
+  assert.equal(cells.length, 61 + 50, 'row 10 from x = 30 to 90, then column 90 down to y = 60');
+  assert.ok(t.state().layout.roads['90,60']);
+  assert.deepEqual([t.state().layout.grid.cols, t.state().layout.grid.rows], [40 + 56, 24 + 40], 'x reaches 90: 51 cells + 1 spare = 7 blocks; y reaches 60: 37 + 1 = 5 blocks');
   assert.deepEqual(checkInvariants(t.state().layout), []);
+  assert.equal(t.state().undoLabel, 'Draw road');
+  t.key('z', { ctrlKey: true });
+  assert.deepEqual([t.state().layout.grid.cols, t.state().layout.grid.rows, Object.keys(t.state().layout.roads).length], [40, 24, 0], 'one undo takes the growth and the road back');
 });
 
-test('editor: Shift draws an L-shaped line, one-way follows the drag direction, a click paints a plate', () => {
+test('editor: Shift draws one straight line (the axis locks), one-way follows the drag direction, a click paints a plate', () => {
   const t = setup();
   t.key('r');
   t.mouse.drag([[2, 2], [8, 5]], { shiftKey: true });
-  assert.equal(Object.keys(t.state().layout.roads).length, 7 + 3);
-  assert.ok(t.state().layout.roads['8,2'] && !t.state().layout.roads['5,3']);
+  assert.equal(Object.keys(t.state().layout.roads).length, 7, 'a straight line along the dominant axis, no L any more');
+  assert.ok(t.state().layout.roads['8,2'] && !t.state().layout.roads['8,5'] && !t.state().layout.roads['5,3']);
   t.key('o');
   t.mouse.drag([[12, 12], [16, 12]]);
   assert.equal(t.state().undoLabel, 'Draw one-way road');
@@ -230,6 +237,172 @@ test('editor: Shift draws an L-shaped line, one-way follows the drag direction, 
   t.key('r');
   t.mouse.click([30, 20]);
   assert.deepEqual(t.state().layout.roads['30,20'], { out: 0 });
+});
+
+// ---- draw modes: smart (default), straight, free ------------------------------------------------------------------------
+
+/** Pointer position in a cell with fractions: t.at(cx, cy, fx, fy). */
+const at = (t, cx, cy, fx = 0.5, fy = 0.5) => t.px(cx, cy, fx, fy);
+
+test('editor: the draw mode is smart by default and the road tools use it: a jittery horizontal drag is one straight line', () => {
+  const t = setup();
+  assert.equal(t.state().ui.toolOptions.drawMode, 'smart');
+  t.key('r');
+  const rng = createRng(3);
+  t.fire(t.canvas, 'pointerdown', at(t, 4, 10));
+  for (let x = 4.5; x <= 30.5; x += 0.8) t.fire(t.canvas, 'pointermove', at(t, Math.floor(x), 10, x % 1, 0.5 + (rng.next() * 2 - 1) * 0.95 + 0));
+  t.fire(t.canvas, 'pointerup', at(t, 30, 10));
+  const roads = Object.keys(t.state().layout.roads);
+  assert.equal(roads.length, 27, 'cells 4..30 of row 10');
+  assert.ok(roads.every((k) => k.endsWith(',10')), 'not one cell off the row');
+  assert.equal(t.state().undoLabel, 'Draw road');
+  assert.equal(t.state().layout.roads['4,10'].out, 2);
+});
+
+test('editor: a deliberate L in smart mode has one corner; the preview carries the length label and the status the same numbers', () => {
+  const t = setup();
+  t.key('r');
+  t.mouse.down([5, 5]);
+  for (let x = 6; x <= 15; x++) t.mouse.move([x, 5]);
+  for (let y = 6; y <= 11; y++) t.mouse.move([15, y]);
+  const pv = t.renderer.view.paintPreview;
+  assert.equal(pv.cells.length, 11 + 6);
+  assert.equal(pv.label.text, '34 m · 17 cells', 'cellSize 2: 17 cells are 34 m');
+  assert.equal(pv.guide, null, 'no axis guide for a smart stroke');
+  assert.match(t.statuses.at(-1), /^Road: 17 cells \(34 m\)/);
+  t.mouse.up([15, 11]);
+  assert.equal(Object.keys(t.state().layout.roads).length, 17);
+  assert.deepEqual(t.state().layout.roads['15,5'].out, 8 | 4, 'the corner links west and south');
+  assert.equal(t.state().undoLabel, 'Draw road');
+  t.key('z', { ctrlKey: true });
+  assert.equal(Object.keys(t.state().layout.roads).length, 0, 'one undo step');
+});
+
+test('editor: the draw mode of the store decides: straight makes every stroke a straight line, free keeps the wobble', () => {
+  const wobble = [[5, 5], [8, 6], [11, 4], [14, 6], [17, 5]];
+  const t = setup();
+  t.store.setUi({ toolOptions: { drawMode: 'straight' } });
+  t.key('r');
+  t.mouse.drag(wobble);
+  assert.equal(Object.keys(t.state().layout.roads).length, 13, 'one straight line from x = 5 to 17');
+  t.key('z', { ctrlKey: true });
+  t.store.setUi({ toolOptions: { drawMode: 'free' } });
+  t.mouse.drag(wobble);
+  assert.ok(Object.keys(t.state().layout.roads).length > 13, 'every cell the pointer visited');
+  t.key('z', { ctrlKey: true });
+  t.store.setUi({ toolOptions: { drawMode: 'smart' } });
+  t.mouse.drag(wobble);
+  assert.equal(Object.keys(t.state().layout.roads).length, 13, 'smart: the wobble of one cell is ignored');
+});
+
+test('editor: Shift locks the axis of one straight line; pressed or released in the middle of a stroke it changes the mode from the end', () => {
+  const t = setup();
+  t.key('r');
+  t.mouse.down([5, 5]);
+  t.mouse.move([12, 5]);
+  t.fire(t.win, 'keydown', { key: 'Shift', shiftKey: true }); // Shift pressed: a straight line starts at (12, 5)
+  t.mouse.move([14, 5], { shiftKey: true });
+  t.mouse.move([14, 12], { shiftKey: true }); // swings to the vertical axis: the lock stays horizontal
+  const pv = t.renderer.view.paintPreview;
+  assert.deepEqual(pv.cells.at(-1), [14, 5]);
+  assert.deepEqual(pv.guide, { axis: 'h', cell: [12, 5] }, 'the locked axis is part of the preview');
+  t.fire(t.win, 'keyup', { key: 'Shift', shiftKey: false }); // released: smart again from (14, 5)
+  t.mouse.move([14, 12]);
+  t.mouse.up([14, 12]);
+  const roads = t.state().layout.roads;
+  assert.ok(roads['14,5'] && roads['14,12'] && roads['5,5'], 'the stroke continued down from where the straight line ended');
+  assert.equal(Object.keys(roads).length, 10 + 7);
+  assert.equal(t.state().undoLabel, 'Draw road', 'still one undo step');
+});
+
+test('editor: Shift+click draws a line from the end of the previous stroke; hovering with Shift previews it; Esc and other tools forget the start', () => {
+  const t = setup();
+  t.key('r');
+  t.mouse.drag([[3, 3], [10, 3]]);
+  const before = Object.keys(t.state().layout.roads).length;
+  t.fire(t.canvas, 'pointermove', { ...at(t, 16, 8), buttons: 0, shiftKey: true });
+  const hover = t.renderer.view.paintPreview;
+  assert.deepEqual(hover.cells[0], [10, 3], 'the preview starts at the end of the last stroke');
+  assert.deepEqual(hover.cells.at(-1), [16, 8]);
+  assert.equal(hover.label.text, '24 m · 12 cells');
+  t.fire(t.canvas, 'pointermove', { ...at(t, 16, 8), buttons: 0, shiftKey: false });
+  assert.equal(t.renderer.view.paintPreview, null, 'Shift released: the preview goes');
+  t.mouse.click([16, 8], { shiftKey: true });
+  const roads = t.state().layout.roads;
+  assert.equal(Object.keys(roads).length, before + 11, 'L-shaped along the dominant axis: 6 cells right, then 5 down');
+  assert.ok(roads['16,3'] && roads['16,8'] && !roads['10,8']);
+  assert.equal(t.state().undoLabel, 'Draw road');
+  t.mouse.click([20, 10], { shiftKey: true }); // chained: continues from (16, 8)
+  assert.ok(t.state().layout.roads['20,8'] && t.state().layout.roads['20,10'], 'a second Shift+click goes on from the last end');
+  t.key('Escape');
+  const n = Object.keys(t.state().layout.roads).length;
+  t.key('r');
+  t.mouse.click([30, 20], { shiftKey: true });
+  assert.equal(Object.keys(t.state().layout.roads).length, n + 1, 'after Esc a Shift+click is just a click: no line from the old end');
+});
+
+test('editor: Shift+click without an earlier stroke, or on the end cell itself, is a plain click', () => {
+  const t = setup();
+  t.key('r');
+  t.mouse.click([8, 8], { shiftKey: true });
+  assert.deepEqual(t.state().layout.roads['8,8'], { out: 0 });
+  t.mouse.click([8, 8], { shiftKey: true });
+  assert.equal(Object.keys(t.state().layout.roads).length, 1);
+  t.key('z', { ctrlKey: true });
+  t.mouse.click([12, 12], { shiftKey: true });
+  assert.equal(Object.keys(t.state().layout.roads).length, 1, 'undo forgot the start of the line');
+});
+
+test('editor: Shift+press and drag is a new straight line, not a continuation', () => {
+  const t = setup();
+  t.key('r');
+  t.mouse.drag([[3, 3], [10, 3]]);
+  t.mouse.drag([[20, 12], [20, 17]], { shiftKey: true });
+  const roads = t.state().layout.roads;
+  assert.ok(roads['20,12'] && roads['20,17']);
+  assert.equal(roads['10,12'], undefined);
+  assert.equal(Object.keys(roads).length, 8 + 6);
+});
+
+test('editor: Alt-drag still erases in smart mode, and the eraser and speed zone use the draw mode too', () => {
+  const t = setup({ layout: plant() });
+  t.key('r');
+  t.mouse.drag([[6, 9], [12, 8]], { altKey: true }); // along the road at row 9; the wobble of one cell is ignored
+  assert.equal(t.state().undoLabel, 'Erase road');
+  const roads = t.state().layout.roads;
+  assert.ok(roads['5,9'] && !roads['6,9'] && !roads['12,9'] && roads['13,9'], 'cells 6..12 are gone');
+  t.key('z', { ctrlKey: true });
+  t.key('e');
+  t.mouse.drag([[6, 9], [9, 10], [12, 9]]);
+  assert.equal(Object.keys(t.state().layout.roads).length, Object.keys(roads).length, 'the eraser: smart, the same seven cells');
+  t.key('z', { ctrlKey: true });
+  t.key('z'); // the speed zone tool
+  t.mouse.drag([[6, 9], [9, 8], [12, 9]]);
+  assert.equal(t.state().layout.roads['9,9'].limit, 0.5);
+  assert.equal(t.state().layout.roads['12,9'].limit, 0.5);
+});
+
+test('editor: a finger draws in smart mode too and is not thrown off by its own wobble', () => {
+  const t = setup();
+  t.key('r');
+  const rng = createRng(8);
+  const touch = { pointerType: 'touch' };
+  t.fire(t.canvas, 'pointerdown', { ...at(t, 4, 10), ...touch });
+  for (let x = 4.5; x <= 30.5; x += 0.6) t.fire(t.canvas, 'pointermove', { ...at(t, Math.floor(x), 10, x % 1, 0.5 + (rng.next() * 2 - 1) * 1.4), ...touch });
+  t.fire(t.canvas, 'pointerup', { ...at(t, 30, 10), ...touch });
+  const roads = Object.keys(t.state().layout.roads);
+  assert.equal(roads.length, 27);
+  assert.ok(roads.every((k) => k.endsWith(',10')));
+});
+
+test('editor: the stroke tools say how to draw in their hint, in the words of the draw mode', () => {
+  const t = setup();
+  t.key('r');
+  assert.equal(t.editor.hint(), 'Drag to draw. Hold Shift for a straight line. Alt = erase.');
+  t.store.setUi({ toolOptions: { drawMode: 'free' } });
+  assert.match(t.editor.hint(), /^Drag to draw freehand\. Hold Shift/);
+  t.store.setUi({ toolOptions: { drawMode: 'straight' } });
+  assert.match(t.editor.hint(), /Every stroke is a straight line/);
 });
 
 test('editor: a stroke into a station stops before it, shows the blocked part, and nothing is committed on a blocked start', () => {
@@ -305,7 +478,7 @@ test('editor: placement ghost, click places a default brick centred on the point
   assert.equal(t.renderer.view.ghost.valid, false);
 });
 
-test('editor: dragging sizes the brick (any direction, clamped to the plate); a tiny jiggle is a click; Shift+click returns to Select', () => {
+test('editor: dragging sizes the brick (any direction, up to the edge of the plate); a tiny jiggle is a click; Shift+click returns to Select', () => {
   const t = setup();
   t.key('1');
   t.mouse.drag([[20, 5], [25, 8]]);
@@ -315,8 +488,8 @@ test('editor: dragging sizes the brick (any direction, clamped to the plate); a 
   t.mouse.drag([[12, 20], [8, 17]]);
   assert.deepEqual([t.state().layout.stations[1].x, t.state().layout.stations[1].y, t.state().layout.stations[1].w, t.state().layout.stations[1].h], [8, 17, 5, 4]);
   t.key('3');
-  t.mouse.drag([[30, 20], [90, 90]]);
-  assert.deepEqual([t.state().layout.stations[2].w, t.state().layout.stations[2].h], [10, 4], 'clamped to the baseplate');
+  t.mouse.drag([[30, 20], [39, 23]]);
+  assert.deepEqual([t.state().layout.stations[2].w, t.state().layout.stations[2].h], [10, 4], 'up to the last column and row of the baseplate (a drag beyond it grows the plan: ui.editor.grow.test.js)');
   t.key('5');
   t.mouse.down([2, 2]);
   t.mouse.move([2, 2], { clientX: t.px(2, 2).clientX + 2 });
@@ -422,10 +595,10 @@ test('editor: obstacles and labels move by dragging too (obstacle ghost, label t
   assert.deepEqual([t.state().layout.labels[0].x, t.state().layout.labels[0].y], [13, 21]);
   assert.equal(t.state().undoLabel, 'Move label');
   t.mouse.down([13, 21]);
-  t.mouse.move([13, 60]);
-  t.mouse.up([13, 60]);
-  assert.deepEqual([t.state().layout.labels[0].x, t.state().layout.labels[0].y], [13, 21], 'a label cannot be dropped outside the plant area');
-  assert.match(t.toasts.at(-1).message, /plant area/);
+  t.mouse.move([13, 5000]);
+  t.mouse.up([13, 5000]);
+  assert.deepEqual([t.state().layout.labels[0].x, t.state().layout.labels[0].y], [13, 21], 'a label cannot be dropped where the plan could never grow to (a drop just beyond the edge makes it grow: ui.editor.grow.test.js)');
+  assert.match(t.toasts.at(-1).message, /cannot grow beyond 320/);
 });
 
 test('editor: a group moves together; an invalid member refuses the whole move', () => {

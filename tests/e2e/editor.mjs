@@ -63,6 +63,8 @@ await withBrowser(async ({ page, url, errors, browser }) => {
   };
   const release = async (mods = []) => { await page.mouse.up(); await free(mods); };
   const press = (k) => page.keyboard.press(k);
+  /** The draw mode of the road, one-way, eraser and slow-zone tools: 'smart' (the default), 'straight' or 'free'. */
+  const drawMode = (mode) => page.evaluate((m) => window.harness.store.setUi({ toolOptions: { drawMode: m } }), mode);
   const frame = (p = page) => p.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
   const snap = async (name, p = page) => { await frame(p); await p.screenshot({ path: path.join(OUT, `editor-${name}.png`) }); };
   const theme = async (mode) => { await page.evaluate((m) => window.harness.setTheme(m), mode); await frame(); };
@@ -132,13 +134,13 @@ await withBrowser(async ({ page, url, errors, browser }) => {
 
   // ---- road tools ------------------------------------------------------------------------------------------------------
 
-  await test('road: free-hand loop is ONE undo step with a live preview and two-way links; undo and redo', async () => {
+  await test('road: a loop of deliberate turns is ONE undo step with a live preview and two-way links; undo and redo', async () => {
     await open();
     await press('r');
     await move([5, 5]);
     assert.equal((await view()).hover.kind, 'cell');
     assert.deepEqual((await view()).hover.cell, [5, 5]);
-    assert.match(await status(), /^Cell 5, 5 \(10 m, 10 m\) · Drag to draw a two-way road\. Shift = straight line/);
+    assert.match(await status(), /^Cell 5, 5 \(10 m, 10 m\) · Drag to draw\. Hold Shift for a straight line\. Alt = erase\./);
     await drag([[5, 5], [20, 5], [20, 15], [5, 15], [5, 5]], { keep: true });
     const mid = await view();
     assert.equal(mid.paintPreview.cells.length > 40, true, 'live preview');
@@ -164,8 +166,9 @@ await withBrowser(async ({ page, url, errors, browser }) => {
     assert.equal(await roadCount(), 50, 'Ctrl+Y redoes too');
   });
 
-  await test('road: a fast mouse leaves gaps that are filled with an L-shaped path; a click paints one plate', async () => {
+  await test('road, free mode: a fast mouse leaves gaps that are filled with an L-shaped path; a click paints one plate', async () => {
     await open();
+    await drawMode('free'); // the default (smart) follows the way the pointer went instead, see tests/e2e/roads-straight.mjs
     await press('r');
     await move([2, 2]);
     await page.mouse.down();
@@ -178,9 +181,13 @@ await withBrowser(async ({ page, url, errors, browser }) => {
     await page.mouse.down();
     await page.mouse.move(1900, 700, { steps: 3 }); // far outside the window: the pointer stays captured
     await page.mouse.up();
+    // Changed on purpose (expandable canvas): the stroke used to stop at the edge of the plant. The plan now grows to hold it, in the same step.
+    const grownCols = await page.evaluate(() => window.harness.store.getState().layout.grid.cols);
     assert.ok(await road(39, 20), 'the stroke follows the pointer to the edge of the plant');
-    assert.equal(await road(40, 20), undefined, 'and no further');
+    assert.ok(await road(40, 20), 'and beyond it');
+    assert.ok(grownCols > 40 && grownCols % 8 === 0, `the plan grew by whole blocks of 8 cells: ${grownCols} columns`);
     await press('Control+z');
+    assert.equal(await page.evaluate(() => window.harness.store.getState().layout.grid.cols), 40, 'one undo takes the growth back');
     await click([12, 12]);
     assert.equal(await roadCount(), 12);
     assert.deepEqual(await road(12, 12), { out: 0 }, 'a single plate with no links');
@@ -190,26 +197,37 @@ await withBrowser(async ({ page, url, errors, browser }) => {
     assert.equal(await road(12, 12), undefined, 'clicking an existing plate changed nothing, so one undo removed the plate');
   });
 
-  await test('road: Shift draws a straight L-shaped line from the start, also when pressed in mid-stroke', async () => {
+  await test('road: Shift draws ONE straight line with a locked axis, also when pressed in mid-stroke; Shift+click continues from the last end', async () => {
     await open();
     await press('r');
     await drag([[2, 10], [9, 13]], { mods: ['Shift'] });
-    assert.equal(await roadCount(), 8 + 3, 'horizontal leg first, then the vertical one');
-    assert.ok(await road(9, 10) && await road(9, 13));
+    assert.equal(await roadCount(), 8, 'a straight line along the dominant (horizontal) axis, no L any more');
+    assert.ok(await road(9, 10));
+    assert.equal(await road(9, 13), undefined);
     assert.equal(await road(5, 12), undefined);
     await press('Control+z');
-    await drag([[2, 4], [6, 4], [6, 7]], { keep: true });
+    await drag([[2, 4], [6, 4], [6, 7]], { keep: true }); // smart: right 4, down 3
     assert.equal((await view()).paintPreview.cells.length, 5 + 3);
-    await hold(['Shift']);
+    await hold(['Shift']); // a straight line starts at the end of the L
     assert.deepEqual((await view()).paintPreview.cells.at(-1), [6, 7]);
-    assert.equal((await view()).paintPreview.cells.length, 5 + 3, 'the L from (2,4) to (6,7): 5 + 3 cells');
-    await move([4, 9], 2);
-    assert.equal((await view()).paintPreview.cells.length, 3 + 5, 'Shift: straight from the start (2,4) to (4,9)');
-    assert.deepEqual((await view()).paintPreview.cells.at(-1), [4, 9]);
+    await move([6, 11], 3);
+    assert.equal((await view()).paintPreview.cells.length, 5 + 3 + 4, 'locked vertical: straight on from (6,7) to (6,11)');
+    assert.deepEqual((await view()).paintPreview.guide, { axis: 'v', cell: [6, 7] }, 'the locked axis is in the preview');
+    await move([12, 7], 3);
+    assert.deepEqual((await view()).paintPreview.cells.at(-1), [6, 7], 'the pointer swung to the other axis: the lock stays, the line follows its y only (here back at its start)');
+    await move([6, 11], 3);
     await free(['Shift']);
-    await move([5, 9], 1);
-    assert.equal((await view()).paintPreview.cells.length, 9, 'without Shift the stroke continues free-hand from where the straight line ended');
+    await move([10, 11], 3);
+    assert.equal((await view()).paintPreview.cells.length, 5 + 3 + 4 + 4, 'without Shift the stroke goes on smart from where the straight line ended');
     await release();
+    assert.equal(await undoLabel(), 'Draw road');
+    assert.equal(await roadCount(), 16);
+    await press('Control+z');
+    assert.equal(await roadCount(), 0, 'one undo step for all of it');
+    await drag([[3, 15], [8, 15]]);
+    await click([12, 18], { mods: ['Shift'] });
+    assert.equal(await roadCount(), 6 + 4 + 3, 'Shift+click: from the end of the last stroke, 4 cells right, then 3 down');
+    assert.ok(await road(12, 15) && await road(12, 18));
     assert.equal(await undoLabel(), 'Draw road');
   });
 
@@ -287,6 +305,7 @@ await withBrowser(async ({ page, url, errors, browser }) => {
     await open();
     await press('r');
     await drag([[3, 8], [14, 8]]);
+    await drawMode('free'); // the zig-zag below crosses the road three times: smart mode would draw it as one line
     await press('z');
     assert.equal((await ui()).toolOptions.factor, 0.5);
     assert.match(await status(), /50 %/);
@@ -375,7 +394,7 @@ await withBrowser(async ({ page, url, errors, browser }) => {
     assert.equal((await layout()).stations.length, 2);
   });
 
-  await test('stations: press-drag sizes the brick from any direction, at least 1 x 1, clamped to the baseplate', async () => {
+  await test('stations: press-drag sizes the brick from any direction, at least 1 x 1, up to the edge of the baseplate (beyond it the plan grows)', async () => {
     await open();
     await press('1');
     await drag([[20, 5], [25, 8]], { keep: true });
@@ -389,8 +408,17 @@ await withBrowser(async ({ page, url, errors, browser }) => {
     await drag([[12, 20], [8, 17]]);
     assert.deepEqual(rectOf(await station('s2')), [8, 17, 5, 4], 'dragging up and to the left works the same');
     await press('3');
-    await drag([[30, 20], [60, 40]]);
-    assert.deepEqual(rectOf(await station('s3')), [30, 20, 10, 4], 'clamped to the 40 x 24 baseplate');
+    await drag([[30, 20], [39, 23]]);
+    assert.deepEqual(rectOf(await station('s3')), [30, 20, 10, 4], 'up to the last column and row of the 40 x 24 baseplate');
+    // Changed on purpose (expandable canvas): a brick sized beyond the baseplate used to be clamped to it; the plan now grows to hold it (tests/e2e/canvas-grow.mjs)
+    await drag([[30, 10], [60, 18]]);
+    const [bx, by, bw, bh] = rectOf(await station('s4'));
+    assert.deepEqual([bx, by, bh], [30, 10, 9], 'sized to the pointer');
+    assert.ok(bw >= 31, `and beyond the 40 x 24 baseplate: ${bw} columns wide`);
+    assert.deepEqual(await page.evaluate(() => { const g = window.harness.store.getState().layout.grid; return [g.cols, g.rows]; }),
+      [40 + 8 * Math.ceil((bx + bw - 40 + 1) / 8), 24], 'the plan grew by whole blocks of 8 cells (and one spare cell), only to the right');
+    await press('Control+z');
+    assert.equal(await page.evaluate(() => window.harness.store.getState().layout.grid.cols), 40, 'one undo takes the brick and the growth back');
     await press('5');
     await move([2, 2]);
     const p = await at(2, 2);

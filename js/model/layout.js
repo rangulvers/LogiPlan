@@ -1318,3 +1318,116 @@ export function translateAll(layout, dx, dy) {
   }
   return true;
 }
+
+// ---------------------------------------------------------------------------------------------------------
+// Growing and trimming the plan (the canvas extends with the work: docs/ARCHITECTURE.md 4.6)
+// ---------------------------------------------------------------------------------------------------------
+
+/** A whole number of cells, never negative (fractions are rounded, junk counts as 0). */
+const cellCount = (v) => Math.max(0, toInt(v) ?? 0);
+
+/**
+ * The smallest cell rectangle {x, y, w, h} that holds everything on the plan: road cells, stations, obstacles and
+ * labels (a label counts as the cell its anchor lies in). Null for an empty plan.
+ */
+export function contentBounds(layout) {
+  let x0 = Infinity;
+  let y0 = Infinity;
+  let x1 = -Infinity;
+  let y1 = -Infinity;
+  const take = (ax, ay, bx, by) => {
+    if (ax < x0) x0 = ax;
+    if (ay < y0) y0 = ay;
+    if (bx > x1) x1 = bx;
+    if (by > y1) y1 = by;
+  };
+  for (const key of Object.keys(layout.roads)) {
+    const comma = key.indexOf(','); // "cx,cy": faster than parseKey, and this runs over every road cell of a plan of up to 100 000 cells
+    const cx = +key.slice(0, comma);
+    const cy = +key.slice(comma + 1);
+    take(cx, cy, cx + 1, cy + 1);
+  }
+  for (const e of layout.stations) take(e.x, e.y, e.x + e.w, e.y + e.h);
+  for (const e of layout.obstacles) take(e.x, e.y, e.x + e.w, e.y + e.h);
+  for (const l of layout.labels) take(Math.floor(l.x), Math.floor(l.y), Math.floor(l.x) + 1, Math.floor(l.y) + 1);
+  return x1 > x0 && y1 > y0 ? { x: x0, y: y0, w: x1 - x0, h: y1 - y0 } : null;
+}
+
+/**
+ * Add cells to the sides of the baseplate. Everything on the plan keeps its place relative to everything else: what
+ * lies right of or below the new cells moves with them (the whole plan is shifted by `left` columns and `top` rows
+ * with translateAll), so nothing is ever lost and the node order of the road graph (row by row, left to right) is kept.
+ * The result is clamped to GRID_LIMITS: when the request does not fit, `left` (and `top`) are served first and `right`
+ * (and `bottom`) get what is left; the returned numbers are what was really added.
+ * @param {object} layout edited in place
+ * @param {{ left?: number, top?: number, right?: number, bottom?: number }} [sides] cells to add; negative or junk counts as 0
+ * @returns {{ dx: number, dy: number, left: number, top: number, right: number, bottom: number, cols: number, rows: number }}
+ *   `dx` / `dy`: how far the content moved in cells (= `left` / `top`); `cols` / `rows`: the new size
+ */
+export function growGrid(layout, sides) {
+  const want = isObj(sides) ? sides : {};
+  const { cols, rows } = layout.grid;
+  const roomX = Math.max(0, GRID_LIMITS.maxCols - cols);
+  const roomY = Math.max(0, GRID_LIMITS.maxRows - rows);
+  const left = Math.min(cellCount(want.left), roomX);
+  const right = Math.min(cellCount(want.right), roomX - left);
+  const top = Math.min(cellCount(want.top), roomY);
+  const bottom = Math.min(cellCount(want.bottom), roomY - top);
+  if (left + right + top + bottom === 0) return { dx: 0, dy: 0, left: 0, top: 0, right: 0, bottom: 0, cols, rows };
+  layout.grid.cols = cols + left + right;
+  layout.grid.rows = rows + top + bottom;
+  if (left || top) translateAll(layout, left, top); // cannot be refused: the grid has just become larger
+  return { dx: left, dy: top, left, top, right, bottom, cols: layout.grid.cols, rows: layout.grid.rows };
+}
+
+/** One axis of trimGrid: the kept range [from, to) of `size` cells around content [c0, c1), at least `min` cells long. */
+function trimAxis(c0, c1, size, margin, min) {
+  let from = Math.max(0, c0 - margin);
+  let to = Math.min(size, c1 + margin);
+  let missing = min - (to - from); // below the minimum size: take cells back, from the far edge first
+  if (missing > 0) {
+    const more = Math.min(missing, size - to);
+    to += more;
+    missing -= more;
+    from -= Math.min(missing, from);
+  }
+  return [from, to];
+}
+
+/**
+ * What trimGrid would do, without doing it: the kept range of cells { x0, x1, y0, y1 } (old cell numbers), the new size and the
+ * move of the content. `changed` is false for an empty plan and for one that has nothing to trim.
+ * @param {object} layout
+ * @param {{ margin?: number }} [opts] empty cells kept around the content, default 4
+ */
+export function trimmedSize(layout, opts) {
+  const { cols, rows } = layout.grid;
+  const none = { changed: false, x0: 0, y0: 0, x1: cols, y1: rows, cols, rows, dx: 0, dy: 0 };
+  const margin = cellCount((opts ?? {}).margin ?? 4);
+  const b = contentBounds(layout);
+  if (!b) return none;
+  const [x0, x1] = trimAxis(b.x, b.x + b.w, cols, margin, GRID_LIMITS.minCols);
+  const [y0, y1] = trimAxis(b.y, b.y + b.h, rows, margin, GRID_LIMITS.minRows);
+  if (x0 === 0 && y0 === 0 && x1 === cols && y1 === rows) return none;
+  return { changed: true, x0, y0, x1, y1, cols: x1 - x0, rows: y1 - y0, dx: 0 - x0, dy: 0 - y0 };
+}
+
+/**
+ * Shrink the baseplate to the content plus `margin` empty cells on every side (never below the minimum size, never
+ * dropping anything: only empty cells are removed, and the content moves up/left by the cells removed there). An empty
+ * plan is left alone.
+ * @param {object} layout edited in place
+ * @param {{ margin?: number }} [opts] default 4
+ * @returns {{ changed: boolean, dx: number, dy: number, left: number, top: number, right: number, bottom: number, cols: number, rows: number }}
+ *   `left`, `top`, `right`, `bottom`: cells removed from that side as negative numbers (the mirror of growGrid); `dx` / `dy`: the
+ *   move of the content in cells (= `left` / `top`)
+ */
+export function trimGrid(layout, opts) {
+  const { cols, rows } = layout.grid;
+  const t = trimmedSize(layout, opts);
+  if (!t.changed) return { changed: false, dx: 0, dy: 0, left: 0, top: 0, right: 0, bottom: 0, cols, rows };
+  if (t.x0 || t.y0) translateAll(layout, -t.x0, -t.y0); // content only moves inside the old grid: cannot be refused
+  layout.grid.cols = t.cols;
+  layout.grid.rows = t.rows;
+  return { changed: true, dx: t.dx, dy: t.dy, left: t.dx, top: t.dy, right: t.x1 - cols, bottom: t.y1 - rows, cols: t.cols, rows: t.rows };
+}

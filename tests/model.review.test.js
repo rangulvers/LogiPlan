@@ -14,7 +14,7 @@ import * as L from '../js/model/layout.js';
 import { validateLayout } from '../js/model/validate.js';
 import * as S from '../js/model/serialize.js';
 import { EXAMPLES } from '../js/model/examples.js';
-import { emptyLayout, defaultGrid, RUNTIME_KEYS } from '../js/model/defaults.js';
+import { emptyLayout, defaultGrid, RUNTIME_KEYS, GRID_LIMITS } from '../js/model/defaults.js';
 import { buildGraph } from '../js/sim/graph.js';
 import { createRng } from '../js/util/rng.js';
 import { DX, DY, DIR_BIT, opposite, cellKey, dirFromTo, parseKey } from '../js/util/grid.js';
@@ -212,7 +212,7 @@ test('conformance: return values have the documented types (objects from add*, n
 test('conformance: createLayout is emptyLayout plus clamped overrides; cloneLayout is a deep, independent copy', () => {
   assert.deepEqual(L.createLayout(), emptyLayout());
   assert.deepEqual(L.createLayout({ cols: 30 }).grid, { cols: 30, rows: 32, cellSize: 2 });
-  assert.deepEqual(L.createLayout({ rows: 5000, cellSize: 99 }).grid, { cols: 48, rows: 160, cellSize: 10 });
+  assert.deepEqual(L.createLayout({ rows: 5000, cellSize: 99 }).grid, { cols: 48, rows: GRID_LIMITS.maxRows, cellSize: 10 });
   const l = EXAMPLES[1].build();
   const c = L.cloneLayout(l);
   c.stations[0].params.outCap = 77;

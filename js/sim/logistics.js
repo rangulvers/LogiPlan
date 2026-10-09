@@ -44,10 +44,11 @@ import { createRng } from '../util/rng.js';
 import { DISPATCH_STRATEGIES, ROUTING_MODES, defaultSettings } from '../model/defaults.js';
 import { BLOCKED_RETRY, DISPATCH_INTERVAL, EPS, atLeast, num, whole } from './logistics/common.js';
 import { dispatch } from './logistics/dispatcher.js';
+import { DockBook } from './logistics/docks.js';
 import { applyIdlePolicy } from './logistics/idle.js';
 import { RouteCache, searchBudget } from './logistics/routing.js';
 import { StationRT, finalizeStation, rescaleArrivals, rescaleCycles, stepStation } from './logistics/stations.js';
-import { createVehicles, vehiclePhaseA, vehiclePhaseB } from './logistics/vehicles.js';
+import { createVehicles, removeVehicle, vehiclePhaseA, vehiclePhaseB } from './logistics/vehicles.js';
 
 const FLOW_FROM = new Set(['source', 'process', 'storage']);
 const FLOW_TO = new Set(['process', 'storage', 'sink']);
@@ -124,6 +125,8 @@ export class Logistics {
     for (const st of this.stations) finalizeStation(st);
     this.depots = this.stations.filter((s) => s.type === 'depot');
     this.chargerDepots = this.depots.filter((d) => d.chargers > 0 && (graph.docks.get(d.id) || []).length > 0);
+    /** Who stands on and who is on the way to each dock; which dock a vehicle drives to (logistics/docks.js). */
+    this.docks = new DockBook(this);
     for (const st of this.stations) if (st.type === 'source' && !(this.runtime.demandFactor > 0)) st.nextArrival = Infinity;
 
     traffic.onArrive = (tv) => this.handleArrive(tv);
@@ -175,6 +178,7 @@ export class Logistics {
     if (!(dt > 0) || !Number.isFinite(t)) return;
     this.time = t;
     this.routes.beginTick();
+    this.docks.tick(dt, t);
     for (const vr of this.vehicles) vehiclePhaseA(this, vr, t);
     for (const st of this.stations) stepStation(st, dt, t, this);
     if (this.dirty || t + EPS >= this.nextDispatch) {
@@ -215,6 +219,21 @@ export class Logistics {
     const victim = info && info.victim;
     const vr = victim && (victim.owner || (typeof victim === 'string' ? this.vehicles.find((v) => v.id === victim) : victim));
     if (vr && vr.lg === this && info.resolved !== false) vr.replan = true;
+  }
+
+  /**
+   * Take a vehicle out of the simulation for good (a vehicle sold or scrapped while the plant runs; also what tests use to check that
+   * nothing is left behind). Its order goes back to the dispatcher, its dock reservation and depot places end and it leaves the road.
+   * @param {object} vr a VehicleRT of this Logistics
+   * @param {number} [t] sim time (default: the end of the last tick)
+   * @returns {boolean} false when the vehicle is not one of ours
+   */
+  removeVehicle(vr, t = this.now) {
+    const i = this.vehicles.indexOf(vr);
+    if (i < 0) return false;
+    removeVehicle(this, vr, t);
+    this.vehicles.splice(i, 1);
+    return true;
   }
 
   // ---- services used by the parts ------------------------------------------------------------------------------

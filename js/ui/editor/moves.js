@@ -6,6 +6,7 @@
 
 import { addFlow, addObstacle, addLabel, duplicateStation, updateLabel } from '../../model/layout.js';
 import { blockReason } from './snapping.js';
+import { blockReasonGrowing, labelExtent, planGrowth, limitReason } from './grow.js';
 
 /** Selection kinds the select tool can move. */
 export const MOVABLE_KINDS = Object.freeze(['station', 'obstacle', 'label']);
@@ -26,10 +27,12 @@ export const isMovable = (selection) => !!selection && MOVABLE_KINDS.includes(se
 /**
  * Check translating the selection by (dx, dy) cells. Stations and obstacles must land inside the grid on free ground
  * (they may take the place of items that move along with them); labels must stay on the baseplate.
+ * `beyond` = { x, y } (pointerBeyond): on an axis where the pointer is beyond the baseplate the items may leave it, the plan grows to hold
+ * them (up to the largest plan); without it nothing may leave the baseplate.
  * @returns {{ ok: boolean, reason: string|null, moves: Array<{ id: string, type?: string, obstacleKind?: string, from: object, to: object }> }}
  *   `moves[i].from/to` are {x,y,w,h} for stations and obstacles and {x,y} for labels.
  */
-export function checkMove(layout, selection, dx, dy) {
+export function checkMove(layout, selection, dx, dy, beyond = null) {
   const items = selectedItems(layout, selection);
   const kind = selection && selection.kind;
   const moving = new Set(items.map((i) => i.id));
@@ -41,7 +44,7 @@ export function checkMove(layout, selection, dx, dy) {
   let reason = items.length ? null : 'nothing to move';
   const moves = items.map((item) => {
     const to = kind === 'label' ? { x: item.x + dx, y: item.y + dy } : { x: item.x + dx, y: item.y + dy, w: item.w, h: item.h };
-    const why = kind === 'label' ? labelBlock(layout, to) : blockReason(rest, to);
+    const why = kind === 'label' ? labelBlock(layout, to, beyond) : (beyond ? blockReasonGrowing(rest, to, {}, beyond) : blockReason(rest, to));
     if (why && !reason) reason = why;
     const from = kind === 'label' ? { x: item.x, y: item.y } : { x: item.x, y: item.y, w: item.w, h: item.h };
     return { id: item.id, type: item.type, obstacleKind: kind === 'obstacle' ? item.kind : undefined, from, to };
@@ -49,8 +52,13 @@ export function checkMove(layout, selection, dx, dy) {
   return { ok: reason === null, reason, moves };
 }
 
-function labelBlock(layout, p) {
-  return p.x >= 0 && p.y >= 0 && p.x <= layout.grid.cols && p.y <= layout.grid.rows ? null : 'it would leave the plant area';
+function labelBlock(layout, p, beyond) {
+  const { cols, rows } = layout.grid;
+  const outX = p.x < 0 || p.x > cols;
+  const outY = p.y < 0 || p.y > rows;
+  if (!outX && !outY) return null;
+  if (!beyond || (outX && !beyond.x) || (outY && !beyond.y)) return 'it would leave the plant area';
+  return planGrowth(layout.grid, labelExtent(layout.grid, p.x, p.y)).ok ? null : limitReason();
 }
 
 /**

@@ -3,8 +3,14 @@
 //   new Renderer(canvas, { camera, theme })   theme = 'auto' | 'light' | 'dark' | a getTheme() palette
 //   renderer.layout = Layout | null           set / replace; the static layer is rebuilt when the object changes
 //   renderer.sim = Simulation | null          live station states, vehicles, heatmap, deadlocks
+//   renderer.simShift = { dx, dy } | null     cells the plan's content has moved since `sim` was built (the plan grew on its left or top while the old
+//                                             simulation stands on screen waiting for its warm replacement): the vehicles are drawn that far along so they
+//                                             stay on their roads; the layers that read the simulation's own geometry (heat, job lines, dock marks,
+//                                             deadlock rings) are left out until the replacement arrives
 //   renderer.view = { selection, hover, tool, overlays, ghost, paintPreview, flowPreview, marquee, resizeHandles,
-//                     connectHandle, connect }
+//                     connectHandle, connect, extension, extendChips, extendHover }
+//        extension { left, top, right, bottom, ok, limited, hint } | null: the translucent block(s) of baseplate an edit would add (render/extend.js)
+//        extendChips: show the '+' strips and chips on the four edges (hit as 'extend'); extendHover: the side whose chip the pointer is on
 //        connectHandle { id, hover?, pressed? } | null: draw the flow handle of that station (render/connecting.js)
 //        connect { role, anchorId, valid: Set, over, overStatus, snap, verb } | null: highlight where a flow may end
 //        flowPreview { fromId, toPoint } or, when the anchor receives, { toId, fromPoint }
@@ -45,6 +51,7 @@ import {
 import { drawHover, drawSelection, drawGhost, drawPaintPreview, drawMarquee, itemRectPx, handleRect } from './render/interaction.js';
 import { drawConnectHandle, drawConnectTargets, hitConnectHandle } from './render/connecting.js';
 import { drawJobLines, drawWaitingBadges } from './render/jobs.js';
+import { drawExtension, drawEdgeChips, hitExtendChip } from './render/extend.js';
 import { distToCurve, hitHandle, pointInRect } from './render/geometry.js';
 import { plantBounds, MIN_ZOOM, MAX_ZOOM, DEFAULT_ZOOM } from './camera.js';
 
@@ -75,6 +82,9 @@ export function createView() {
     resizeHandles: false,
     connectHandle: null,
     connect: null,
+    extension: null,
+    extendChips: false,
+    extendHover: null,
   };
 }
 
@@ -107,7 +117,7 @@ const finiteOr = (v, fallback) => (Number.isFinite(v) ? v : fallback);
 function createFrame() {
   const fr = {
     theme: null, layout: null, scene: null, sim: null, view: EMPTY_VIEW, overlays: DEFAULT_OVERLAYS,
-    zoom: DEFAULT_ZOOM, dpr: 1, cs: 2, tx: 0, ty: 0, ox: 0, oy: 0, w: 0, h: 0,
+    zoom: DEFAULT_ZOOM, dpr: 1, cs: 2, tx: 0, ty: 0, ox: 0, oy: 0, w: 0, h: 0, simDx: 0, simDy: 0,
     vis: { x0: 0, y0: 0, x1: 0, y1: 0 }, alpha: 1, now: 0,
     selKind: null, selIds: EMPTY, hoverKind: null, hoverId: null, hoverVehicle: null, selFleet: null,
     showIds: false, idFont: '', reducedMotion: false, coarse: false, hand: 1,
@@ -166,6 +176,7 @@ function setupFrame(fr, r, alpha, now) {
   fr.zoom = zoom;
   fr.dpr = r.dpr;
   fr.cs = fr.scene ? fr.scene.cs : 2;
+  applySimShift(fr, r);
   fr.w = r.cssW;
   fr.h = r.cssH;
   fr.tx = Math.round((r.cssW / 2) * r.dpr - camX * s);
@@ -185,6 +196,50 @@ function setupFrame(fr, r, alpha, now) {
   fr.showIds = fr.overlays.ids === true;
   fr.idFont = idFontOf(fr.theme);
   return fr;
+}
+
+/** The move of the simulation's world against the plan, in metres (see Renderer.simShift); both 0 when it has not moved. */
+function applySimShift(fr, r) {
+  const shift = r.simShift;
+  const dx = shift && Number.isFinite(shift.dx) ? shift.dx * fr.cs : 0;
+  const dy = shift && Number.isFinite(shift.dy) ? shift.dy * fr.cs : 0;
+  fr.simDx = fr.sim ? dx : 0;
+  fr.simDy = fr.sim ? dy : 0;
+}
+
+const simMoved = (fr) => fr.simDx !== 0 || fr.simDy !== 0;
+
+/**
+ * Run `fn` with the frame moved by the shift of the simulation, so that what is drawn from the simulation's own coordinates lands on the plan
+ * where the same place is now. The origin (tx, ty in device pixels, ox, oy in CSS pixels) and the visible window are put back afterwards.
+ */
+function inSimFrame(fr, fn) {
+  const { simDx: dx, simDy: dy } = fr;
+  if (dx === 0 && dy === 0) return fn();
+  const { tx, ty, ox, oy } = fr;
+  const vis = fr.vis;
+  const [vx0, vy0, vx1, vy1] = [vis.x0, vis.y0, vis.x1, vis.y1];
+  const k = fr.zoom;
+  fr.tx = tx + dx * k * fr.dpr;
+  fr.ty = ty + dy * k * fr.dpr;
+  fr.ox = ox + dx * k;
+  fr.oy = oy + dy * k;
+  vis.x0 = vx0 - dx;
+  vis.x1 = vx1 - dx;
+  vis.y0 = vy0 - dy;
+  vis.y1 = vy1 - dy;
+  try {
+    return fn();
+  } finally {
+    fr.tx = tx;
+    fr.ty = ty;
+    fr.ox = ox;
+    fr.oy = oy;
+    vis.x0 = vx0;
+    vis.y0 = vy0;
+    vis.x1 = vx1;
+    vis.y1 = vy1;
+  }
 }
 
 /** +1 for right-hand traffic, -1 for left-hand (which side of a two-way road vehicles use). */
@@ -220,6 +275,7 @@ export class Renderer {
     this.camera = camera;
     this.layout = null;
     this.sim = null;
+    this.simShift = null;
     this.view = createView();
     this.dpr = 1;
     this.cssW = 0;
@@ -336,7 +392,9 @@ export class Renderer {
     // the flow handle floats above vehicles and bricks, but the resize handle sitting at the middle of the same edge keeps its zone
     const connectId = resize ? null : hitConnectHandle(fr, px, py);
     if (connectId) return result('connect-handle', connectId);
-    const vehicle = hitVehicle(fr, px, py);
+    const extendSide = fr.view.extendChips ? hitExtendChip(fr, px, py) : null; // the '+' chips on the edges of the baseplate
+    if (extendSide) return result('extend', extendSide);
+    const vehicle = inSimFrame(fr, () => hitVehicle(fr, px, py));
     if (vehicle) return result('vehicle', vehicle.id);
     if (resize) return result(fr.selKind, fr.selIds[0], { handle: resize });
     const label = ctx ? hitLabel(ctx, fr, px, py) : null;
@@ -393,6 +451,7 @@ export class Renderer {
       w: out.width, h: out.height, alpha: 1, now: 0,
     });
     Object.assign(fr.vis, { x0: -pad, y0: -pad, x1: scene.width + pad, y1: scene.height + pad });
+    applySimShift(fr, this);
     fr.hand = handSide(fr);
     applyInteraction(fr, view, false);
     fr.showIds = fr.overlays.ids === true;
@@ -431,7 +490,8 @@ export class Renderer {
 function drawLayers(ctx, fr, heat, forceHeat) {
   const { dpr, zoom } = fr;
   const mode = heatMode(fr);
-  if (mode && fr.sim) {
+  const moved = simMoved(fr); // the simulation's geometry is not the plan's any more: only what can be moved (the vehicles) is drawn from it
+  if (mode && fr.sim && !moved) {
     refreshHeat(heat, fr, mode, forceHeat);
     ctx.setTransform(zoom * dpr, 0, 0, zoom * dpr, fr.tx, fr.ty);
     drawHeat(ctx, heat, HEAT_BLEED_DEVICE_PX / (zoom * dpr));
@@ -443,15 +503,17 @@ function drawLayers(ctx, fr, heat, forceHeat) {
   drawFlowMarkers(ctx, fr);
   drawLabels(ctx, fr);
   if (!fr.sim) return;
-  drawJobLines(ctx, fr); // under the vehicles, so a vehicle sits on top of the line that starts at it
-  drawVehicles(ctx, fr);
+  if (!moved) drawJobLines(ctx, fr); // under the vehicles, so a vehicle sits on top of the line that starts at it
+  inSimFrame(fr, () => drawVehicles(ctx, fr));
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   drawWaitingBadges(ctx, fr);
-  drawDeadlocks(ctx, fr);
+  if (!moved) drawDeadlocks(ctx, fr);
 }
 
 /** Hover, selection, ghost, previews and marquee, in that order. Expects the CSS-pixel transform. */
 function drawInteraction(ctx, fr, view) {
+  drawExtension(ctx, fr, view.extension);
+  drawEdgeChips(ctx, fr);
   drawHover(ctx, fr);
   drawSelection(ctx, fr);
   drawGhost(ctx, fr, view.ghost);

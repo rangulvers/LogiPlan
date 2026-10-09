@@ -1,8 +1,15 @@
 name: CI
 
-# Runs on pull requests only: a branch push that has an open PR would otherwise start the same suite twice
-# (once for `push`, once for `pull_request`). Pushes to main are tested by pages.yml before it deploys.
+# Pull requests only: a branch push that has an open PR would otherwise start the same checks twice (once for `push`, once for
+# `pull_request`). Pushes to main are checked by pages.yml, which deploys after the fast gate and runs the heavy tests beside it.
 # `workflow_dispatch` allows a manual run on any branch.
+#
+# The suite is cut into tiers (scripts/test-tiers.mjs, proven complete by tests/test-tiers.test.js) that run as parallel jobs, so the
+# time to a verdict is that of the slowest job, not the sum:
+#   check   imports resolve, the site assembles                         (seconds)
+#   fast    every test file that is not heavy                           (unit and logic tests)
+#   heavy   seeded fuzz runs, performance bounds, long simulations      (one job per shard, see matrix)
+#   ci      one verdict for all of them: "All checks". Make this the required check of the branch, the matrix legs may change.
 on:
   pull_request:
   workflow_dispatch:
@@ -16,17 +23,74 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  check:
+    name: Check imports and site
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22
       - name: Import / export consistency
         run: npm run check
-      - name: Unit & integration tests
-        run: npm run test:quiet
       - name: Site assembles
         run: node scripts/build-site.mjs _site-ci
+
+  fast:
+    name: Tests (fast)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Fast tests
+        run: npm run test:fast
+
+  heavy:
+    # The shards are the groups of HEAVY_SHARDS in scripts/test-tiers.mjs. The list below must name 1 to SHARD_COUNT: a missing number
+    # would silently skip those tests, so tests/test-tiers.test.js fails when this list and the script disagree.
+    name: Tests (heavy ${{ matrix.shard }}/5)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Heavy tests
+        run: npm run test:heavy -- --shard ${{ matrix.shard }}
+
+  ci:
+    # The single verdict. `!cancelled()` (not the default success()) so that it runs, and fails, when a job failed: a job that is
+    # skipped because its needs failed would otherwise count as passed for a required check.
+    name: All checks
+    needs: [check, fast, heavy]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions: {}
+    steps:
+      - name: Every job succeeded
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "check, fast, heavy: $RESULTS"
+          for result in $RESULTS; do
+            if [ "$result" != "success" ]; then
+              echo "::error::At least one job did not succeed ($RESULTS)"
+              exit 1
+            fi
+          done

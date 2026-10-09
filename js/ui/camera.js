@@ -5,8 +5,8 @@
 // is pixels per metre, always kept inside [MIN_ZOOM, MAX_ZOOM]. Every method tolerates non-finite input
 // (it is ignored) and a viewport of 0 x 0, so UI code never has to guard its calls.
 //
-// MIN_ZOOM is low enough that fit() shows the largest baseplate the model allows (160 cells of 10 m =
-// 1600 m, GRID_LIMITS) with the default 32 px padding on a 224 px wide viewport, so "fit view" never cuts
+// MIN_ZOOM is low enough that fit() shows the largest baseplate the model allows (320 cells of 10 m =
+// 3200 m, GRID_LIMITS) with the default 32 px padding on a 384 px wide viewport, so "fit view" never cuts
 // a plant off on a real screen.
 
 import { clamp } from '../util/format.js';
@@ -85,6 +85,16 @@ export class Camera {
   pan(dxPx, dyPx) {
     this.x -= finite(dxPx, 0) / this.zoom;
     this.y -= finite(dyPx, 0) / this.zoom;
+    return this;
+  }
+
+  /**
+   * Move the viewpoint by (dx, dy) world metres: the content of the plan moved by that much (the plan grew on its left or top), and
+   * the view follows so that nothing moves on screen.
+   */
+  translate(dx, dy) {
+    this.x += finite(dx, 0);
+    this.y += finite(dy, 0);
     return this;
   }
 

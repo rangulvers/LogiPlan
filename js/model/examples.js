@@ -210,7 +210,7 @@ export const EXAMPLES = [
       'Try: change the AGV count (9 now) in the Fleet tab and compare throughput and the traffic wait share in the Results tab. Do more vehicles really mean more output? With 6 AGVs the output is the same and the wait share falls by about a third; every AGV beyond 9 only adds a little more waiting.',
       'Try: let each AGV carry two pallets (Capacity 2 in the Fleet tab). Fewer stops at the docks mean shorter queues: the wait share falls by about half.',
       'Try: cut the load and unload time in the Fleet tab from 24 s to 12 s. The docks free up sooner and the wait share falls by more than half.',
-      'Try: draw a one-way road from the cross aisle just below Inbound B east along the north side of Packing and down to the main aisle (cells 24,4 → 32,4 → 32,8). Packing gets a second dock and the traffic wait share drops by about a third.',
+      'Try: draw a one-way road from the cross aisle just below Inbound B east along the north side of Packing and down to the main aisle (cells 24,4 → 32,4 → 32,8). Packing gets a second dock and the traffic wait share drops by about 40 %: vehicles then take whichever of its docks is free.',
     ],
     build: buildCongestionLab,
   },

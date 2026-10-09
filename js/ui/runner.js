@@ -7,6 +7,7 @@
 //   runner.step(seconds = 1) -> Promise<number>     runner.reset()     runner.setSpeed(x) -> number
 //   runner.kpis() / runner.insights()     latest results (cached 250 ms), null while there is no simulation
 //   runner.priming / runner.primeProgress / runner.warm     warm restart state (see below)
+//   runner.simShift     { dx, dy } cells the plan's content has moved since the displayed simulation was built (the plan grew on its left or top), or null
 //   runner.baseline / runner.keepBaseline() / runner.dismissBaseline()     the "before" numbers of the change-impact card
 //   runner.on(event, fn) -> off           'state' | 'frame' | 'kpis' | 'rebuild' | 'baseline' | 'priming' | 'error'
 //   runner.destroy()
@@ -86,6 +87,7 @@
 
 import { RUNTIME_KEYS } from '../model/defaults.js';
 import { layoutChangeKind } from '../model/layout.js';
+import { contentShift } from './editor/grow.js';
 
 /** Selectable speeds in simulated seconds per real second. */
 export const SPEEDS = Object.freeze([1, 2, 5, 10, 30, 60, 120, 300, 600, 1200]);
@@ -233,6 +235,8 @@ export function createRunner(options = {}) {
   let coldPending = false; // a plant was loaded or a variant switched since then: the next rebuild starts from an empty plant
   let baseline = null; // { report, simTime, labels, edits } or null, see the header
   let warmInfo = null; // { preRoll } of the displayed simulation, null after a cold start
+  let simShift = null; // { dx, dy }: cells the plan's content moved since the displayed simulation was built (growing on the left or top), else null
+  let seenLayout = store.getState().layout; // the layout of the last store notification, to tell how far the content moved
   const cache = { kpis: null, insights: null };
   const handlers = Object.fromEntries(EVENTS.map((name) => [name, new Set()]));
 
@@ -330,6 +334,7 @@ export function createRunner(options = {}) {
     endStep();
     const had = sim !== null;
     sim = null;
+    simShift = null;
     builtFrom = null;
     runtimeApplied = null;
     renderer.sim = null;
@@ -355,6 +360,7 @@ export function createRunner(options = {}) {
     endStep();
     forgetEdits();
     sim = next;
+    simShift = null;
     builtFrom = layout;
     runtimeApplied = runtimeOf(layout);
     target = sim.time;
@@ -468,6 +474,7 @@ export function createRunner(options = {}) {
       pendingStep.target = p.sim.time + remaining;
     }
     sim = p.sim;
+    simShift = null;
     builtFrom = p.layout;
     runtimeApplied = runtimeOf(p.layout);
     warmInfo = { preRoll: sim.time };
@@ -602,7 +609,26 @@ export function createRunner(options = {}) {
     else buildSim('structural');
   }
 
+  /**
+   * Growing the plan on its left or top (or trimming it there) moves everything on it (editor/grow.js noteGrowth): remember how far, as long as the
+   * displayed simulation was built before, so that the renderer can keep its vehicles on their roads until the replacement arrives.
+   */
+  function followShift(info, layout) {
+    const previous = seenLayout;
+    seenLayout = layout;
+    if (info.type === 'load' || info.type === 'scenario') {
+      simShift = null; // another plant: nothing of the displayed simulation belongs to it
+      return;
+    }
+    const move = sim ? contentShift(info.type, previous, layout) : null;
+    if (!move) return;
+    const dx = (simShift ? simShift.dx : 0) + move.dx;
+    const dy = (simShift ? simShift.dy : 0) + move.dy;
+    simShift = dx !== 0 || dy !== 0 ? { dx, dy } : null;
+  }
+
   const unsubscribe = store.subscribe((state, info) => {
+    if (state.layout !== seenLayout) followShift(info, state.layout);
     if (destroyed || !sim || !info.layoutChanged) return;
     if (layoutChangeKind(builtFrom, state.layout) === 'structural') {
       if (info.type === 'load' || info.type === 'scenario') coldPending = true; // another plant, not an edit of this one
@@ -719,6 +745,7 @@ export function createRunner(options = {}) {
     const layout = store.getState().layout;
     if (renderer.layout !== layout) renderer.layout = layout;
     if (renderer.sim !== sim) renderer.sim = sim;
+    if (renderer.simShift !== simShift) renderer.simShift = simShift;
     try {
       renderer.render(alpha);
     } catch (err) {
@@ -883,6 +910,10 @@ export function createRunner(options = {}) {
     /** Simulated seconds on the clock (0 without a simulation). */
     get time() {
       return sim ? sim.time : 0;
+    },
+    /** { dx, dy }: cells the plan's content has moved since the displayed simulation was built (the plan grew on its left or top), or null. */
+    get simShift() {
+      return simShift;
     },
     /** True while a replacement for the displayed simulation is being pre-rolled after an edit (warm restart). */
     get priming() {

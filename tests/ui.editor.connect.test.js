@@ -867,7 +867,9 @@ test('drawJobLines: one dashed line with an arrow head per vehicle that has an o
   const idle = new Simulation(EXAMPLES.find((e) => e.id === 'starter').build(), { seed: 1 });
   const quiet = recorder();
   drawJobLines(quiet, frameFor(idle));
-  assert.equal(quiet.calls.length, 0, 'before the first order nothing is drawn');
+  // (the dock markers - small dots at the docks, hollow while free - are part of the overlay: no line, no arrow head, no chip)
+  assert.ok(!quiet.calls.some((c) => c[0] === 'moveTo' || c[0] === 'lineTo' || c[0] === 'fillText'), 'before the first order no line and no chip is drawn');
+  assert.ok(quiet.calls.filter((c) => c[0] === 'arc').length >= 1, 'but the docks are marked');
 });
 
 test('drawJobLines: chips never cover each other, and a hovered vehicle keeps its chip when two would collide', () => {

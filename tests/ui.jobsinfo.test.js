@@ -348,9 +348,13 @@ test('the picker lists exactly the stations the model accepts, closest first (gu
 
 // ---- welcome tips -----------------------------------------------------------------------------------------
 
-test('welcome tips: three tips, one about connecting a new Goods in, each with a title and a text', () => {
-  assert.equal(WELCOME_TIPS.length, 3);
-  assert.equal(new Set(WELCOME_TIPS.map((t) => t.id)).size, 3);
+test('welcome tips: a few tips, one about connecting a new Goods in and one about Shift, each with a title and a text', () => {
+  assert.ok(WELCOME_TIPS.length >= 3);
+  assert.equal(new Set(WELCOME_TIPS.map((t) => t.id)).size, WELCOME_TIPS.length, 'unique ids');
+  const shift = WELCOME_TIPS.find((t) => t.id === 'shift-straight');
+  assert.ok(shift, 'a tip about drawing straight roads with Shift');
+  assert.match(shift.text, /Hold Shift/);
+  assert.match(shift.text, /Shift\+click/);
   for (const tip of WELCOME_TIPS) {
     assert.ok(tip.title.length > 3 && tip.text.length > 30, tip.id);
     assert.ok(!/\s{2}/.test(tip.text), 'no stray double spaces');
@@ -367,8 +371,8 @@ test('welcome tips rotate: the next one after the last visit, wrapping, junk sta
   assert.equal(nextTipIndex(-1), 0);
   assert.equal(nextTipIndex(0), 1);
   assert.equal(nextTipIndex(1), 2);
-  assert.equal(nextTipIndex(2), 0, 'wraps around');
-  assert.equal(nextTipIndex(41), 0, 'an index from a longer list still lands inside this one');
+  assert.equal(nextTipIndex(WELCOME_TIPS.length - 1), 0, 'wraps around');
+  assert.equal(nextTipIndex(41), 42 % WELCOME_TIPS.length, 'an index from a longer list still lands inside this one');
   const seen = new Set();
   let last = null;
   for (let i = 0; i < WELCOME_TIPS.length; i++) {

@@ -13,7 +13,10 @@
 //
 // Additions beyond the rules named in the spec: `blocked` (a workstation that cannot get rid of its output),
 // `no-output` (nothing left the plant at all, so a stuck plant is never reported as 'good') and `unplaced`
-// (vehicles that found no room on the road and do not take part in the simulation).
+// (vehicles that found no room on the road and do not take part in the simulation). Docks: `dock-bottleneck` (vehicles queue for a station whose
+// docks are busy nearly all the time: add a dock), `dock-idle-vehicles` (the same queue, but the docks are taken by idle vehicles that stay on the
+// road: let them park) and `docks-unbalanced` (one dock does the work while others stand unused and vehicles wait; said only when the report
+// names the reason, stations[].dockSkew); all stay silent for docks that are balanced and idle.
 //
 // Advice about the number of vehicles comes from ONE verdict per flow (transportState), so the rules cannot
 // contradict each other: "add a vehicle" is only said when every fleet that may serve the flow is saturated and
@@ -64,6 +67,16 @@ export const STATION_NEVER_USED_MIN_SUPPLY = 3; // loads the supplier produced m
 export const TRAFFIC_WAIT_SHARE = 0.12;
 export const TRAFFIC_CRITICAL_WAIT_SHARE = 0.25;
 export const TRAFFIC_HOTSPOT_CELLS = 3;
+
+// Docks. A station's docks are busy this much on average (the share of the window a vehicle was SERVED on them: loading, unloading, pulling out)
+// AND vehicles waited at least this long per visit for one of them: a queue at the station that more docks (or a shorter hand-over) would dissolve.
+// Docks that an idle vehicle only stands on (fleets that stay on the road) are not busy but taken: with this share of the window taken that way
+// and the same waiting the advice is to let the idle vehicles park, not to add docks.
+export const DOCK_BUSY_SHARE = 0.6;
+export const DOCK_HELD_SHARE = 0.25;
+export const DOCK_WAIT_PER_VISIT = 8; // s
+export const DOCK_MIN_VISITS = 10;
+export const DOCK_WARNING_WAIT_PER_VISIT = 30; // s: a warning rather than a note
 
 // Supply and buffers.
 export const SUPPLY_BLOCKED_SHARE = 0.25;
@@ -759,6 +772,96 @@ function trafficCongestion(ctx) {
     detail, suggestion, spots.length ? { cells: spots.map((c) => [c.cx, c.cy]) } : {})];
 }
 
+// ---- rules: docks -------------------------------------------------------------------------------------------------
+
+const cellsOf = (docks) => docks.map((d) => cellText(d));
+/** "(12, 2)" or "(12, 2) and (15, 2)" or "(12, 2), (15, 2) and (18, 2)". */
+const cellsText = (docks) => {
+  const list = cellsOf(docks);
+  return list.length <= 1 ? list.join('') : `${list.slice(0, -1).join(', ')} and ${list[list.length - 1]}`;
+};
+
+/** A queue in front of a station whose docks are busy nearly all the time: add a dock, or make the hand-over quicker. */
+function dockBottlenecks(ctx) {
+  const out = [];
+  for (const s of ctx.stations) {
+    const docks = s.docks || [];
+    if (docks.length === 0) continue;
+    const visits = sum(docks.map((d) => d.visits));
+    const wait = s.dockWaitTotal || 0;
+    const busy = sum(docks.map((d) => d.busyShare)) / docks.length;
+    if (!(visits >= DOCK_MIN_VISITS && busy >= DOCK_BUSY_SHARE && wait >= DOCK_WAIT_PER_VISIT * visits)) continue;
+    const perVisit = wait / visits;
+    const only = docks.length === 1;
+    const title = only
+      ? `Vehicles queue at ${s.name}: its only dock is busy ${pct(busy)} of the time and vehicles waited ${formatDuration(wait)}.`
+      : `Vehicles queue at ${s.name}: its ${docks.length} docks are busy ${pct(busy)} of the time on average and vehicles waited ${formatDuration(wait)}.`;
+    const detail = `Over ${formatDuration(ctx.duration)}, ${plural(visits, 'vehicle', 'vehicles')} stopped at ${s.name}; together they stood in a queue for a dock for ${formatDuration(wait)} (${formatDuration(perVisit)} per visit). `
+      + `${only ? 'The dock' : 'The docks'} at ${cellsText(docks)} ${only ? 'was' : 'were'} occupied ${pct(busy)} of the time, so a vehicle that arrives usually finds ${only ? 'it' : 'every one of them'} taken.`;
+    const suggestion = only
+      ? 'Add a second dock - any road cell touching the station - or a bypass bay.'
+      : 'Add another dock - any road cell touching the station - or shorten the load and unload time of the vehicles that stop here.';
+    out.push(candidate('dock-bottleneck', s.id, perVisit >= DOCK_WARNING_WAIT_PER_VISIT ? 'warning' : 'info', Math.min(1, busy), title, detail, suggestion,
+      { stationIds: [s.id], cells: docks.map((d) => [d.cx, d.cy]) }));
+  }
+  return out;
+}
+
+/** The same queue, but idle vehicles that stay on the road stand on the docks: more docks would only be taken by them too. */
+function dockIdleVehicles(ctx) {
+  const out = [];
+  for (const s of ctx.stations) {
+    const docks = s.docks || [];
+    if (docks.length === 0) continue;
+    const visits = sum(docks.map((d) => d.visits));
+    const wait = s.dockWaitTotal || 0;
+    const busy = sum(docks.map((d) => d.busyShare)) / docks.length;
+    const held = sum(docks.map((d) => d.heldShare || 0)) / docks.length;
+    if (!(visits >= DOCK_MIN_VISITS && held >= DOCK_HELD_SHARE && busy < DOCK_BUSY_SHARE && wait >= DOCK_WAIT_PER_VISIT * visits)) continue;
+    const perVisit = wait / visits;
+    const only = docks.length === 1;
+    out.push(candidate('dock-idle-vehicles', s.id, perVisit >= DOCK_WARNING_WAIT_PER_VISIT ? 'warning' : 'info', Math.min(1, held),
+      `Idle vehicles stand on ${only ? 'the dock' : 'the docks'} of ${s.name} ${pct(held)} of the time and vehicles queue behind them.`,
+      `Over ${formatDuration(ctx.duration)}, vehicles waited ${formatDuration(wait)} for a dock of ${s.name} (${formatDuration(perVisit)} per visit), although ${only ? 'it was' : 'they were'} only ${pct(busy)} of the time in use: `
+        + `a vehicle with nothing to do stays where its last job ended, and ${only ? 'the dock at' : 'the docks at'} ${cellsText(docks)} ${only ? 'is' : 'are'} often where that is.`,
+      'Set the fleet to "Park in depot" instead of "Stay on road" (Fleet tab; the plant needs a Parking station for that), so idle vehicles leave the docks free.',
+      { stationIds: [s.id], cells: docks.map((d) => [d.cx, d.cy]) }));
+  }
+  return out;
+}
+
+const SKEW_TEXT = {
+  trap: {
+    why: (q) => `vehicles that drive to ${q.length === 1 ? 'it' : 'them'} cannot get back out again (a one-way dead end), so ${q.length === 1 ? 'it is' : 'they are'} only a last resort`,
+    fix: (q) => `Make the road at ${cellsText(q)} two-way, or connect it onwards, so vehicles can leave again.`,
+  },
+  lane: {
+    why: (q, b) => `the docks lie one behind the other on one lane, so a vehicle standing on ${cellText(b)} blocks the way to ${cellsText(q)}`,
+    fix: (q) => `Give ${cellsText(q)} a side road of its own, or add a dock that can be reached without passing another one.`,
+  },
+  detour: {
+    why: (q) => `${cellsText(q)} ${q.length === 1 ? 'is' : 'are'} a long way round, so vehicles only go there when the wait at the nearer dock is longer than the extra drive`,
+    fix: (q, b) => `Bring the road to ${cellsText(q)} closer to where vehicles arrive, or add another dock next to ${cellText(b)}.`,
+  },
+};
+
+/** One dock does nearly all the work while others stand unused and vehicles wait: only said when the report knows why. */
+function docksUnbalanced(ctx) {
+  const out = [];
+  for (const s of ctx.stations) {
+    const skew = s.dockSkew;
+    if (!skew || !SKEW_TEXT[skew.reason]) continue;
+    const text = SKEW_TEXT[skew.reason];
+    const wait = s.dockWaitTotal || 0;
+    out.push(candidate('docks-unbalanced', s.id, skew.waitPerVisit >= DOCK_WARNING_WAIT_PER_VISIT ? 'warning' : 'info', skew.busy.share,
+      `${s.name}: the dock at ${cellText(skew.busy)} takes ${pct(skew.busy.share)} of the visits while ${cellsText(skew.quiet)} ${skew.quiet.length === 1 ? 'is' : 'are'} hardly used.`,
+      `Vehicles waited ${formatDuration(wait)} for a dock of ${s.name} in ${formatDuration(ctx.duration)} (${formatDuration(skew.waitPerVisit)} per visit), although ${skew.quiet.length === 1 ? 'another dock was' : 'other docks were'} free: ${text.why(skew.quiet, skew.busy)}.`,
+      text.fix(skew.quiet, skew.busy),
+      { stationIds: [s.id], cells: [skew.busy, ...skew.quiet].map((d) => [d.cx, d.cy]) }));
+  }
+  return out;
+}
+
 function deadlocks(ctx) {
   const t = ctx.traffic;
   if (!(t.deadlocks > 0)) return [];
@@ -809,7 +912,7 @@ function goodNews(ctx) {
 const RULES = [
   bottlenecks, blockedWorkstations, starvedWorkstations, bufferProblems, supplyExceedsCapacity, stationBreakdowns,
   saturatedFleets, oversizedFleets, emptyDriving, unplacedVehicles, batteryProblems, vehicleBreakdowns, trafficCongestion, deadlocks,
-  noOutput, fleetsWithoutJobs, unusedFleets, idleVehicles, unconnectedSources, neverUsedStations,
+  noOutput, fleetsWithoutJobs, unusedFleets, idleVehicles, unconnectedSources, neverUsedStations, dockBottlenecks, dockIdleVehicles, docksUnbalanced,
 ];
 
 function notEnoughData(report) {

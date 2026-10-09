@@ -1,0 +1,56 @@
+name: E2E (browser)
+
+# The browser tests (tests/e2e, real Chromium through Playwright) take about ten minutes, so they do not run on every pull request:
+# on demand ("Run workflow", optionally with the names of some scripts) and once a week to catch drift (a new Chromium, a changed font).
+# A failure keeps the screenshots and logs of the run as an artifact.
+on:
+  workflow_dispatch:
+    inputs:
+      scripts:
+        description: 'Only these scripts, names without .mjs, separated by spaces (empty: all). Example: app editor'
+        required: false
+        default: ''
+  schedule:
+    - cron: '23 4 * * 1' # Mondays 04:23 UTC
+
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    name: Browser tests (Chromium)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # Playwright is deliberately not a dependency of the app (no package-lock, no build step). The version is the one the scripts were
+      # written and checked against; raise it on purpose, not by accident.
+      - name: Install Playwright and Chromium
+        run: |
+          npm install --no-save playwright@1.56.1
+          npx playwright install --with-deps chromium
+      - name: Browser tests
+        env:
+          SCRIPTS: ${{ inputs.scripts }}
+          E2E_JOBS: 2
+        # "app editor" becomes two arguments; the input is split into words, never run as part of the command.
+        run: |
+          read -r -a names <<< "$SCRIPTS"
+          npm run test:e2e -- "${names[@]}"
+      - name: Keep screenshots and logs
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-output
+          path: e2e-output
+          retention-days: 14
+          if-no-files-found: ignore

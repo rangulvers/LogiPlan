@@ -1,0 +1,64 @@
+/* Draw mode of the road, one-way, slow-zone and eraser tools: the "Draw: Smart | Straight | Free" group in the tool options bar
+   over the bottom of the plan (js/ui/app.js createToolOptions). Tokens only, light and dark come from tokens.css. */
+
+.drawmode {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+
+.drawmode[hidden] {
+  display: none;
+}
+
+.drawmode__hint {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: 0 var(--sp-2) 0 var(--sp-2);
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+}
+
+/* the options bar may need two lines on a narrow stage instead of running off its edge */
+.stage__options .stagebar {
+  flex-wrap: wrap;
+  justify-content: center;
+  row-gap: var(--sp-1);
+}
+
+/* no Shift key on a touch screen: the Straight mode is one tap away */
+@media (pointer: coarse) {
+  .drawmode__hint {
+    display: none;
+  }
+}
+
+/* A narrow stage has no room for the hint or the group names, and the bar must stay one line: two lines would reach up into the
+   "steps to finish" chip. It starts at the left edge instead of the middle, so it stays clear of the zoom buttons at the right. */
+@media (max-width: 640px) {
+  .drawmode__hint,
+  .stage__options .overlays__label {
+    display: none;
+  }
+
+  .stage__options {
+    left: var(--sp-2);
+    right: calc(var(--sp-2) * 2 + 40px);
+    transform: none;
+  }
+
+  .stage__options .stagebar {
+    justify-content: flex-start;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .stage__options .stagebar::-webkit-scrollbar {
+    display: none;
+  }
+}
