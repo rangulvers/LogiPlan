@@ -20,6 +20,7 @@ import { OPS_CHECKS, validateOps } from '../js/model/validate-ops.js';
 import { dist } from '../js/model/defaults.js';
 import { layoutFromAscii } from './helpers/ascii.js';
 import { checkInvariants, createWorld, injectLoads } from './helpers/logistics-invariants.js';
+import { createAuditor } from './helpers/engine-review-gen.js';
 
 const OFF = dist('const', 0);
 const starter = () => EXAMPLES.find((e) => e.id === 'starter').build();
@@ -265,4 +266,31 @@ test('logistics-invariants counts the loads that trucks hold (pending at the gat
   assert.ok(checkInvariants(w.lg).length > 0);
   w.lg.completeLoad(held, src, 0); // tidy up: the load leaves the system
   assert.deepEqual(checkInvariants(w.lg), []);
+});
+
+test('the engine-review auditor (tests/helpers/engine-review-gen.js) counts the loads that trucks hold, and asks st.capacity for the capacity of a storage', () => {
+  const layout = layoutFromAscii(['A..S..D', '+++++++'], {
+    stations: { A: { type: 'source', params: { interArrival: OFF } }, S: { type: 'storage', params: { capacity: 4 } }, D: 'sink' }, flows: [['A', 'S'], ['S', 'D']],
+  });
+  const sim = new Simulation(layout, { seed: 1 });
+  const auditor = createAuditor(sim);
+  const src = sim.stations.find((st) => st.type === 'source');
+  const held = sim.logistics.createLoad(src, 0, 0, 'source'); // exists, but is in no queue: where a truck keeps it until check-in is over
+  assert.ok(auditor.full().some((m) => /live loads: found 0 in the plant/.test(m)), 'without a trucks field the load is lost');
+  src.trucks = { gate: [{ id: 't1', pending: [held] }], docked: [], staged: [] };
+  assert.deepEqual(auditor.full(), [], 'waiting at the gate');
+  src.trucks = { gate: [], docked: [{ id: 't1', pending: [held] }], staged: [] };
+  assert.deepEqual(auditor.full(), [], 'at a door');
+  src.trucks = { gate: [], docked: [], staged: [held] };
+  assert.deepEqual(auditor.full(), [], 'staged');
+  src.trucks = { gate: [{ id: 't1', pending: [held] }], docked: [], staged: [held] };
+  assert.ok(auditor.full().some((m) => /found twice/.test(m)), 'a pallet in two places is caught');
+  src.trucks = null;
+  sim.logistics.completeLoad(held, src, 0);
+  const store = sim.stations.find((st) => st.type === 'storage');
+  Object.defineProperty(store, 'capacity', { get: () => 0 }); // a storage that answers 0 while it holds nothing is fine; one that holds more than it answers is not
+  assert.deepEqual(auditor.full(), []);
+  const stored = sim.logistics.createLoad(src, 0, 0, 'source');
+  store.pool.push(stored);
+  assert.ok(auditor.full().some((m) => /holds 1 > capacity 0/.test(m)), 'the auditor reads st.capacity, not params.capacity (4)');
 });

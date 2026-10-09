@@ -108,7 +108,7 @@ const EPS = 1e-6;
 /** Above this many live loads the conservation walk is skipped (the counters are still compared with the event ledger). */
 const WALK_LIMIT = 5000;
 
-/** Every load found in the containers of the plant, with where it was found. Walks yards, queues, storage pools, machines, vehicles. */
+/** Every load found in the containers of the plant, with where it was found. Walks yards, queues, storage pools, trucks (when a station has them), machines, vehicles. */
 function loadsOf(sim) {
   const found = [];
   let inCycles = 0;
@@ -117,6 +117,10 @@ function loadsOf(sim) {
     for (const link of st.outLinks || []) for (const l of link.queue) found.push([l, `${st.id}.out(${link.flow.id})`]);
     for (const link of st.inLinks || []) for (const l of link.queue) found.push([l, `${st.id}.in(${link.flow.id})`]);
     if (st.pool) for (const l of st.pool) found.push([l, `${st.id}.pool`]);
+    if (st.trucks) { // optional (milestone M1, same containers as tests/helpers/logistics-invariants.js): loads that exist but sit on a truck or are staged
+      for (const tk of [...(st.trucks.gate || []), ...(st.trucks.docked || [])]) for (const l of tk.pending || []) found.push([l, `${st.id}.truck.${tk.id}`]);
+      if (Array.isArray(st.trucks.staged)) for (const l of st.trucks.staged) found.push([l, `${st.id}.staged`]);
+    }
     for (const m of st.machines || []) {
       for (const l of m.holding) found.push([l, `${st.id}.held`]);
       inCycles += m.inputs;
@@ -281,8 +285,8 @@ export function createAuditor(sim, { shrink = 0.95, penetration = 0.005, bendShr
         if (m.state === 'busy' && !(m.remaining >= -EPS && m.cycleTime > 0)) out.push(`${label}: busy machine remaining ${m.remaining} cycle ${m.cycleTime}`);
       }
     } else if (st.type === 'storage') {
-      if (st.outCount > st.params.capacity) out.push(`${label}: holds ${st.outCount} > capacity ${st.params.capacity}`);
-      if (st.outCount + st.inboundTotal > st.params.capacity) out.push(`${label}: holds ${st.outCount} + inbound ${st.inboundTotal} > capacity ${st.params.capacity}`);
+      if (st.outCount > st.capacity) out.push(`${label}: holds ${st.outCount} > capacity ${st.capacity}`); // st.capacity: the one accessor (M3 derives it for racks)
+      if (st.outCount + st.inboundTotal > st.capacity) out.push(`${label}: holds ${st.outCount} + inbound ${st.inboundTotal} > capacity ${st.capacity}`);
     } else if (st.type === 'depot') {
       if (st.parked.length + st.charging.length > st.slots) out.push(`${label}: ${st.parked.length} parked + ${st.charging.length} charging > ${st.slots} slots`);
       if (st.charging.length > st.chargers) out.push(`${label}: ${st.charging.length} charging > ${st.chargers} chargers`);
