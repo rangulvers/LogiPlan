@@ -1,0 +1,42 @@
+{
+  "what": "CPU seconds per simulated hour of the three example plants, seed 1, best of the rounds (scripts/perf-baseline.mjs). For people: no test reads these numbers.",
+  "caveat": "Measured with process.cpuUsage (user + system, all threads) on a shared machine: the same code moves by a few percent between runs, and the absolute figures depend on the machine and its load at the time. Compare trees with --root in one run, or re-measure both on the machine you use; do not compare these figures with another machine.",
+  "recordedOn": "2026-10-09",
+  "recordedAt": "milestone M0, before any change of production code (the tree with the dock work merged)",
+  "node": "v22.22.0",
+  "machine": {
+    "cpus": 4,
+    "model": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+    "platform": "linux 6.18.44-fc-v80",
+    "loadAverageAtStart": 1.08
+  },
+  "method": {
+    "runs": 11,
+    "simulatedHoursPerRun": 8,
+    "seed": 1,
+    "timed": "Simulation#advance(3600 * simulatedHoursPerRun) on a freshly built simulation (KPI warm-up 600 s), after one untimed run of 1 simulated hour per example; the figure is the best round, per simulated hour"
+  },
+  "examples": {
+    "starter": {
+      "cpuSecondsPerSimulatedHour": 0.05677,
+      "cpuSecondsMedian": 0.06103,
+      "cpuSecondsWorst": 0.06625,
+      "wallSecondsBest": 0.05631,
+      "timesRealTime": 63408
+    },
+    "two-lines": {
+      "cpuSecondsPerSimulatedHour": 0.19481,
+      "cpuSecondsMedian": 0.20615,
+      "cpuSecondsWorst": 0.46764,
+      "wallSecondsBest": 0.19416,
+      "timesRealTime": 18480
+    },
+    "congestion-lab": {
+      "cpuSecondsPerSimulatedHour": 0.16383,
+      "cpuSecondsMedian": 0.17301,
+      "cpuSecondsWorst": 0.18295,
+      "wallSecondsBest": 0.16319,
+      "timesRealTime": 21975
+    }
+  }
+}
