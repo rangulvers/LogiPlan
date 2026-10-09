@@ -108,7 +108,9 @@ export function createChecksPanel(ctx) {
 
   function issueCallout(issue) {
     const hint = issue.code === 'station-no-dock' ? h('span', { class: 'field__hint' }, 'Select the station and drag it next to a road.') : null;
-    const buttons = [fixControl(issue), showButton(issue), hint, issue.severity === 'info' ? dismissButton(issue) : null].filter(Boolean);
+    // a fix that only shows the place ("Show docks", docks-share-lane) is the Show button: one of them is enough
+    const showsPlace = fixForIssue(ctx.store.getState().layout, issue)?.type === 'focus';
+    const buttons = [fixControl(issue), showsPlace ? null : showButton(issue), hint, issue.severity === 'info' ? dismissButton(issue) : null].filter(Boolean);
     return callout({
       severity: issue.severity, title: issue.message, text: issue.hint,
       actions: buttons.length ? h('div', { class: 'row row--wrap', style: { marginTop: '6px' } }, buttons) : null,

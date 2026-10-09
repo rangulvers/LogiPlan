@@ -62,6 +62,7 @@ import { createGuideChip } from './panels/nextsteps.js';
 import { createImpactHint } from './panels/impact.js';
 import { createDashboard } from './dashboard.js';
 import { createCompare } from './compare.js';
+import { clockChip, clockStart, coldRestartText, isDayPlant, shouldShowColdRestartToast } from './day-plant.js';
 
 // ---------------------------------------------------------------------------------------------------------
 // Constants
@@ -729,13 +730,15 @@ function createSimBar({ runner, store }) {
     onchange: () => runner.setSpeed(Number(speed.value)),
   }, SPEEDS.map((s) => h('option', { value: String(s) }, `${s}×`)));
   const clock = h('span', { class: 'simbar__clock tnum', role: 'timer', 'aria-label': 'Simulated time', title: 'Simulated time (hours:minutes:seconds)' }, '0:00:00');
+  const dayText = h('span', { class: 'tnum' });
+  const dayChip = h('span', { class: 'chip chip--info simbar__day', hidden: true, role: 'timer', 'aria-label': 'Time of day in the plant', 'data-role': 'day-clock' }, icon('clock', { size: 14 }), dayText); // a plant that follows a truck timetable: "Mon 06:42"
   const chip = h('span', { class: 'chip', role: 'status' });
   const limited = h('span', { class: 'chip chip--warn', hidden: true, title: LIMITED_HINT }, icon('warning', { size: 14 }), h('span', { class: 'simbar__limited-text' }, 'Speed limited'));
   const el = h('div', { class: 'toolbar toolbar--panel stagebar simbar', role: 'group', 'aria-label': 'Simulation controls' },
     iconButton('reset', 'Reset simulation', { tip: 'Reset to time 0', onclick: () => runner.reset() }),
     play,
     iconButton('step', `Step forward ${STEP_SECONDS} second`, { tip: `Step ${STEP_SECONDS} s (.)`, onclick: () => { void runner.step(STEP_SECONDS); } }),
-    h('div', { class: 'toolbar__sep', role: 'separator' }), speed, clock, chip, limited);
+    h('div', { class: 'toolbar__sep', role: 'separator' }), speed, clock, dayChip, chip, limited);
   const cache = {};
   let primingSince = null; // when the current pre-roll was first seen (ms), for the progress in the chip
 
@@ -750,6 +753,8 @@ function createSimBar({ runner, store }) {
     });
     changed(cache, 'speed', runner.speed, (s) => { if (document.activeElement !== speed) speed.value = String(s); });
     changed(cache, 'clock', formatClock(runner.time), (t) => { clock.textContent = t; });
+    const day = clockChip(state.layout, runner.time);
+    changed(cache, 'day', day ? day.label : '', (label) => { dayChip.hidden = !label; dayText.textContent = label; dayChip.title = day ? day.title : ''; });
     // a pre-roll that takes longer than a moment shows its progress in steps of 20 %
     const stamp = performance.now();
     if (!runner.priming) primingSince = null;
@@ -1489,7 +1494,11 @@ function startUpdateLoop(core, chrome) {
       } else if (sim && reason === 'reset') {
         ctx.toast('Simulation reset to an empty plant at 0:00.');
       } else if (sim && reason === 'structural' && sim.time < clockBeforeRebuild) {
-        ctx.toast(`${label ? `Plant changed: ${label}. ` : ''}Simulation reset to an empty plant at 0:00.`);
+        const layout = store.getState().layout;
+        const again = isDayPlant(layout) // a day plant starts again at its clock; the first time the toast explains why (copy 7 of 7.6)
+          ? (shouldShowColdRestartToast() ? coldRestartText(layout) : `The simulation starts again at ${clockStart(layout)}.`)
+          : 'Simulation reset to an empty plant at 0:00.';
+        ctx.toast(`${label ? `Plant changed: ${label}. ` : ''}${again}`);
       }
       clockBeforeRebuild = 0;
       refresh();

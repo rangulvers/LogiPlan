@@ -31,6 +31,7 @@ import { MIN_DATA_SECONDS } from '../sim/insights.js';
 import { summarizeReport } from '../sim/experiments.js';
 import { niceTicks } from './charts.js';
 import { buildComparison, buildSweep, formatParamValue, getLastResults, headline, resultStaleness, sweepSeries } from './compare.js';
+import { clockRow, doorCheckRow, doorResultRows, withTrucks } from './report-ops.js';
 
 // =================================================================================================
 // Safe markup
@@ -99,8 +100,10 @@ export function stationParams(station) {
   const p = station.params || {};
   switch (station.type) {
     case 'source':
-      return [['Time between arrivals', describeDist(p.interArrival)], ['Loads per arrival', formatNumber(p.batch)],
-        ['Output buffer', `${count(p.outCap, 'load', 'loads')} per outgoing flow`], ['First arrival', p.startDelay > 0 ? `after ${formatDuration(p.startDelay)}` : 'at the start']];
+      return withTrucks(station, [['Time between arrivals', describeDist(p.interArrival)], ['Loads per arrival', formatNumber(p.batch)],
+        ['Output buffer', `${count(p.outCap, 'load', 'loads')} per outgoing flow`], ['First arrival', p.startDelay > 0 ? `after ${formatDuration(p.startDelay)}` : 'at the start']]);
+    case 'sink':
+      return withTrucks(station, []);
     case 'process':
       return [['Cycle time', describeDist(p.cycle)], ['Parallel machines', formatNumber(p.machines)], ['Loads produced per cycle', formatNumber(p.outPerCycle)],
         ['Input slots', `${formatNumber(p.inCap)} per incoming flow`], ['Output slots', `${formatNumber(p.outCap)} per outgoing flow`], ['Breakdowns', describeBreakdowns(p.mtbf, p.mttr)]];
@@ -187,6 +190,7 @@ export function plantRows(layout) {
     .filter(([, n]) => n > 0)
     .map(([type, n]) => `${n} × ${stationTypeName(type).toLowerCase()}`);
   const vehicles = layout.fleets.reduce((sum, f) => sum + f.count, 0);
+  const clock = clockRow(layout);
   return [
     ['Floor area', `${formatNumber(width)} × ${formatNumber(depth)} m (${formatNumber(width * depth)} m²), grid of ${cols} × ${rows} cells of ${formatNumber(cellSize, 2)} m`],
     ['Road network', `${formatDistance(roadLengthMeters(layout))} (${count(roadCellCount(layout), 'cell', 'cells')})`],
@@ -194,6 +198,7 @@ export function plantRows(layout) {
     ['Material flows', formatNumber(layout.flows.length)],
     ['Vehicles', `${formatNumber(vehicles)} in ${count(layout.fleets.length, 'fleet', 'fleets')}`],
     ['Obstacles', formatNumber(layout.obstacles.length)],
+    ...(clock ? [clock] : []),
   ];
 }
 
@@ -487,7 +492,8 @@ function resultsSection(ctx, layout) {
     html`<h3>Vehicle fleets</h3>`,
     table(['Fleet', { text: 'Vehicles', num: true }, { text: 'Working', num: true }, { text: 'Driving', num: true }, { text: 'Waiting in traffic', num: true }, { text: 'Loading / unloading', num: true },
       { text: 'Idle / parked', num: true }, { text: 'Charging / broken', num: true }, { text: 'Trips per vehicle and hour', num: true }, { text: 'Empty driving', num: true }], fleetResultRows(report)),
-    flowResultRows(report, layout).length ? html`<h3>Material flows</h3>${table(['Flow', { text: 'Delivered', num: true }, { text: 'Load waits for a vehicle', num: true }, { text: 'Transport time', num: true }, { text: 'Loads waiting (average)', num: true }], flowResultRows(report, layout))}` : null);
+    flowResultRows(report, layout).length ? html`<h3>Material flows</h3>${table(['Flow', { text: 'Delivered', num: true }, { text: 'Load waits for a vehicle', num: true }, { text: 'Transport time', num: true }, { text: 'Loads waiting (average)', num: true }], flowResultRows(report, layout))}` : null,
+    doorResultRows(report, layout).length ? html`<h3>Dock doors</h3>${table(['Station', { text: 'Doors', num: true }, { text: 'Trucks served', num: true }, { text: 'Gate wait', num: true }, { text: 'Door time', num: true }, { text: 'Doors busy', num: true }, { text: 'Gate queue (average)', num: true }, { text: 'Left short', num: true }], doorResultRows(report, layout))}<p class="small">Door time includes waiting for a free forklift. The lead time of loads from a Goods in with trucks includes the wait of their truck at the gate.</p>` : null);
 }
 
 const SEVERITY_NAME = { critical: 'Critical', warning: 'Warning', info: 'Note', good: 'Good', error: 'Error' };
@@ -570,7 +576,7 @@ function comparisonSection(ctx, results) {
 // ---- assumptions and checks --------------------------------------------------------------------
 
 function assumptionsSection(layout) {
-  const stations = layout.stations.map((s) => [html`<b>${s.name}</b>`, stationTypeName(s.type), `${formatNumber(s.w * layout.grid.cellSize, 1)} × ${formatNumber(s.h * layout.grid.cellSize, 1)} m`, params(stationParams(s))]);
+  const stations = layout.stations.map((s) => [html`<b>${s.name}</b>`, stationTypeName(s.type), `${formatNumber(s.w * layout.grid.cellSize, 1)} × ${formatNumber(s.h * layout.grid.cellSize, 1)} m`, params([...stationParams(s), ...(doorCheckRow(s, layout) ? [doorCheckRow(s, layout)] : [])])]);
   const flows = layout.flows.map((f) => flowCells(f, layout));
   const fleets = layout.fleets.map((f) => [html`<b>${f.name}</b>`, { v: formatNumber(f.count), num: true }, params(fleetParams(f, layout))]);
   return section('Assumptions',

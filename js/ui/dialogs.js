@@ -27,6 +27,7 @@ import { exportProject, importProject, shareUrl, decodeShare } from '../model/se
 import { formatNumber } from '../util/format.js';
 import { numberField, textField, segmentedField, callout, uid } from './panels/fields.js';
 import { createVehiclesHelp } from './panels/jobs-view.js';
+import { createTrucksHelp } from './panels/trucks-help.js';
 
 const plural = (n, one, many = `${one}s`) => `${formatNumber(n)} ${n === 1 ? one : many}`;
 const quoted = (name) => `“${name}”`;
@@ -728,6 +729,7 @@ function openHelp(dlg, { tab } = {}) {
     { id: 'quick', label: 'Quick start', content: quickStartTab() },
     { id: 'tools', label: 'Tools & shortcuts', content: toolsTab() },
     { id: 'vehicles', label: 'How vehicles find work', content: createVehiclesHelp() },
+    { id: 'trucks', label: 'Trucks and dock doors', content: createTrucksHelp() },
     { id: 'simulation', label: 'How the simulation works', content: simulationTab() },
     { id: 'tips', label: 'Tips', content: tipsTab() },
   ], tab, 'Help topics');

@@ -4,8 +4,10 @@
 // an edit that removes the last key of a newer row used to leave a stale stamp and the store rolled the edit back ("schema must be 1").
 // The rule now (docs/ARCHITECTURE.md 3.1): a mutator that adds or removes persisted extension content ends with reconcileLayout(layout)
 // (extensions.js), which re-derives the optional blocks that other content implies and the stamp. These tests prove it with stand-in
-// sanitizers that plug in the way M1 will, through the real store, and make a NEW exported mutator of layout.js a failing test until it is
+// sanitizers that plug in the way M1 does, through the real store, and make a NEW exported mutator of layout.js a failing test until it is
 // classified here (so the next milestone cannot add one without deciding whether it has to reconcile).
+// M1 UPDATE: the stand-ins now REPLACE the real sanitizers for the length of a test and the real ones are put back afterwards (they used to be
+// deleted); updateCalendar is classified as a mutator; the real sanitizers are driven the same way in tests/model.ops-trucks.test.js.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as L from '../js/model/layout.js';
@@ -15,6 +17,7 @@ import { EXTENSION_BLOCKS, reconcileLayout } from '../js/model/extensions.js';
 import { schemaNeeded } from '../js/model/schema.js';
 import { createStore } from '../js/store/store.js';
 import { createRng } from '../js/util/rng.js';
+import { MUTATORS, READERS, anyOf, pick } from './helpers/layout-mutators.js';
 
 const clone = (v) => structuredClone(v);
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -57,6 +60,7 @@ function standInCalendar(raw, layout) {
 function withStandIn(fn, { calendar = true } = {}) {
   return async () => {
     const blocks = [...EXTENSION_BLOCKS];
+    const real = { source: OPS_SANITIZERS.source, sink: OPS_SANITIZERS.sink };
     OPS_SANITIZERS.source = standInTrucks;
     OPS_SANITIZERS.sink = standInTrucks;
     if (calendar) {
@@ -66,8 +70,8 @@ function withStandIn(fn, { calendar = true } = {}) {
     try {
       await fn();
     } finally {
-      delete OPS_SANITIZERS.source;
-      delete OPS_SANITIZERS.sink;
+      OPS_SANITIZERS.source = real.source;
+      OPS_SANITIZERS.sink = real.sink;
       EXTENSION_BLOCKS.length = 0;
       EXTENSION_BLOCKS.push(...blocks);
     }
@@ -191,61 +195,6 @@ test('removeFleet and removeFlow re-derive the stamp (keys of later rows, set by
 // Every exported function of layout.js is classified, and every mutator keeps the layout consistent
 // ---------------------------------------------------------------------------------------------------------------------------
 
-/** Exports that only read (or build a new layout): they cannot make a stamp stale. */
-const READERS = new Set([
-  'checkInvariants', 'cleanId', 'cleanText', 'cloneLayout', 'contentBounds', 'createLayout', 'docksOf', 'flowsFrom', 'flowsTo', 'getFleet', 'getFlow',
-  'getStation', 'hasLink', 'isCellFree', 'isRectFree', 'labelAt', 'layoutChangeKind', 'normalizeLayout', 'obstacleAt', 'roadAt', 'roadCellCount',
-  'roadLengthMeters', 'stationAt', 'trimmedSize',
-]);
-
-const pick = (rng, list) => list[rng.int(list.length)];
-const anyOf = (list, rng) => (list.length ? pick(rng, list) : undefined);
-const cell = (l, rng) => [rng.int(l.grid.cols), rng.int(l.grid.rows)];
-const OPS_PATCHES = [
-  { trucks: { doors: 4 } }, { trucks: { doors: 1 } }, { trucks: { mode: 'schedule' } }, { trucks: { mode: 'rate' } },
-  { trucks: { interArrival: { mean: 1800 } } }, { trucks: null }, null, 'junk', {},
-];
-
-/**
- * One call per exported mutator, with arguments that are valid often enough to change something. `rng` chooses the target.
- * A mutator that is not in this table (and not in READERS) fails the classification test below.
- */
-const MUTATORS = {
-  addStation: (l, rng) => L.addStation(l, { type: pick(rng, ['source', 'sink', 'process', 'storage']), x: cell(l, rng)[0], y: cell(l, rng)[1] }),
-  moveStation: (l, rng) => L.moveStation(l, anyOf(l.stations, rng)?.id, ...cell(l, rng)),
-  resizeStation: (l, rng) => { const s = anyOf(l.stations, rng); return s && L.resizeStation(l, s.id, { x: s.x, y: s.y, w: 1 + rng.int(4), h: 1 + rng.int(3) }); },
-  updateStation: (l, rng) => L.updateStation(l, anyOf(l.stations, rng)?.id, rng.next() < 0.7 ? { ops: pick(rng, OPS_PATCHES) } : { name: `n${rng.int(99)}`, params: { batch: 1 + rng.int(3) } }),
-  removeStation: (l, rng) => L.removeStation(l, anyOf(l.stations, rng)?.id),
-  duplicateStation: (l, rng) => L.duplicateStation(l, anyOf(l.stations, rng)?.id),
-  addFlow: (l, rng) => L.addFlow(l, anyOf(l.stations, rng)?.id, anyOf(l.stations, rng)?.id),
-  updateFlow: (l, rng) => L.updateFlow(l, anyOf(l.flows, rng)?.id, { weight: 1 + rng.int(4) }),
-  removeFlow: (l, rng) => L.removeFlow(l, anyOf(l.flows, rng)?.id),
-  addFleet: (l, rng) => L.addFleet(l, pick(rng, ['agv', 'forklift', 'tugger'])),
-  updateFleet: (l, rng) => L.updateFleet(l, anyOf(l.fleets, rng)?.id, { count: 1 + rng.int(4) }),
-  removeFleet: (l, rng) => L.removeFleet(l, anyOf(l.fleets, rng)?.id),
-  duplicateFleet: (l, rng) => L.duplicateFleet(l, anyOf(l.fleets, rng)?.id),
-  addObstacle: (l, rng) => L.addObstacle(l, { x: cell(l, rng)[0], y: cell(l, rng)[1] }),
-  updateObstacle: (l, rng) => L.updateObstacle(l, anyOf(l.obstacles, rng)?.id, { kind: 'wall' }),
-  removeObstacle: (l, rng) => L.removeObstacle(l, anyOf(l.obstacles, rng)?.id),
-  addLabel: (l, rng) => L.addLabel(l, { text: 'x', x: cell(l, rng)[0], y: cell(l, rng)[1] }),
-  updateLabel: (l, rng) => L.updateLabel(l, anyOf(l.labels, rng)?.id, { text: 'y' }),
-  removeLabel: (l, rng) => L.removeLabel(l, anyOf(l.labels, rng)?.id),
-  setName: (l, rng) => L.setName(l, `plant ${rng.int(9)}`),
-  setNotes: (l, rng) => L.setNotes(l, `note ${rng.int(9)}`),
-  updateSettings: (l, rng) => L.updateSettings(l, { dt: pick(rng, [0.1, 0.25]) }),
-  resizeGrid: (l, rng) => L.resizeGrid(l, 6 + rng.int(60), 6 + rng.int(40)),
-  setCellSize: (l, rng) => L.setCellSize(l, pick(rng, [1, 2, 3])),
-  translateAll: (l, rng) => L.translateAll(l, rng.int(3) - 1, rng.int(3) - 1),
-  growGrid: (l, rng) => L.growGrid(l, { left: rng.int(3), top: rng.int(3), right: rng.int(3), bottom: rng.int(3) }),
-  trimGrid: (l) => L.trimGrid(l),
-  paintRoadPath: (l, rng) => L.paintRoadPath(l, [cell(l, rng), cell(l, rng)]),
-  paintRoadCell: (l, rng) => L.paintRoadCell(l, ...cell(l, rng)),
-  eraseRoadCell: (l, rng) => L.eraseRoadCell(l, ...cell(l, rng)),
-  eraseLink: (l, rng) => L.eraseLink(l, ...cell(l, rng), pick(rng, [0, 1, 2, 3])),
-  setRoadLimit: (l, rng) => L.setRoadLimit(l, ...cell(l, rng), pick(rng, [0.5, 1, null])),
-  flipRoadDirection: (l, rng) => L.flipRoadDirection(l, ...cell(l, rng), pick(rng, [0, 1, 2, 3])),
-};
-
 test('every exported function of layout.js is classified: a reader, or a mutator that the consistency test below drives', () => {
   const exported = Object.keys(L).filter((name) => typeof L[name] === 'function');
   const unknown = exported.filter((name) => !READERS.has(name) && !(name in MUTATORS));
@@ -326,7 +275,9 @@ test('mergeOps: null removes a key at any depth, arrays and scalars replace, __p
   assert.equal(mergeOps('source', undefined, { trucks: { interArrival: { mean: 99 } } }).trucks.interArrival.mean, 99, 'a block that does not exist yet is created');
 }));
 
-test('mergeOps without any sanitizer (the M0 state) still returns undefined for every input', () => {
-  for (const patch of [null, {}, { trucks: { doors: 3 } }, 'x', 5, [], undefined]) assert.equal(mergeOps('source', { trucks: { doors: 2 } }, patch), undefined);
-  assert.equal(Object.keys(clone(OPS_SANITIZERS)).length, 0);
+test('mergeOps for a station type without a sanitizer (Workstation, Storage, Parking) returns undefined for every input', () => {
+  for (const type of ['process', 'storage', 'depot']) {
+    for (const patch of [null, {}, { trucks: { doors: 3 } }, 'x', 5, [], undefined]) assert.equal(mergeOps(type, { trucks: { doors: 2 } }, patch), undefined);
+  }
+  assert.deepEqual(Object.keys(OPS_SANITIZERS).sort(), ['sink', 'source']);
 });

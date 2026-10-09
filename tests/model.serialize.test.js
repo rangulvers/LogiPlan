@@ -145,7 +145,7 @@ test('importProject: JSON from a newer schema is accepted with a warning', () =>
   const future = { app: 'logiplan', schema: 4, name: 'From the future', scenarios: [{ id: 'a', name: 'A', layout: { ...plant(), schema: 9, hologram: { on: true } } }] };
   const p = importProject(JSON.stringify(future));
   assert.equal(p.warnings.length, 1);
-  assert.match(p.warnings[0], /newer version of LogiPlan \(format 9; this version reads format 1\)/);
+  assert.match(p.warnings[0], /newer version of LogiPlan \(format 9; this version reads format 2\)/);
   assert.equal(p.scenarios[0].layout.schema, 1);
   assert.ok(!('hologram' in p.scenarios[0].layout));
   assert.deepEqual(L.checkInvariants(p.scenarios[0].layout), []);

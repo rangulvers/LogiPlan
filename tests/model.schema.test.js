@@ -5,7 +5,9 @@
 //   plus the seams themselves: the empty sanitizers (sanitizeOps, mergeOps, sanitizeCalendar, normalizeExtensions) drop everything, so no
 //   layout can carry an `ops` or `calendar` key yet; updateStation accepts an `ops` patch, duplicateStation copies `ops`, checkInvariants
 //   accepts exactly schemaNeeded.
-// M0 ONLY: the tests under "nothing of the warehouse module survives yet" describe the empty seams and change when M1 fills them in.
+// M1 UPDATE: M1 fills the seams for Goods in and Goods out (ops.trucks) and the clock (calendar.startTod, startDay), so the tests that described
+// the EMPTY seams now describe what is still empty (every other station type, every later row of the schema table); the rest is unchanged.
+// The exhaustive tests of the M1 content are in tests/model.ops-trucks.test.js; these stand-in tests prove the wiring and still pass beside the real sanitizers.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as L from '../js/model/layout.js';
@@ -166,8 +168,8 @@ test('A0.3 schemaNeeded: an unknown key or an empty block does not raise the sch
   }
 });
 
-test('A0.3 SCHEMA_MAX: this build implements the base schema only (M1 raises it to 2)', () => {
-  assert.equal(SCHEMA_MAX, 1);
+test('A0.3 SCHEMA_MAX: this build implements rows 1 and 2 of the table (M1: trucks and the clock; M2 raises it to 3)', () => {
+  assert.equal(SCHEMA_MAX, 2);
   assert.ok(SCHEMA_MAX >= SCHEMA_BASE);
 });
 
@@ -185,30 +187,38 @@ const JUNK_OPS = [
   { __proto__: { x: 1 }, rack: { levels: 'many' } }, { calendar: { staffing: [] }, pick: {} },
 ];
 
-test('the empty sanitizers return undefined for anything and never throw', () => {
+test('types that have no options drop every ops block, and the truck types drop everything that holds no trucks block; none of it throws', () => {
   for (const type of Object.keys(STATION_TYPES)) {
+    const carries = type === 'source' || type === 'sink';
     for (const raw of JUNK_OPS) {
-      assert.equal(sanitizeOps(type, raw), undefined);
-      assert.equal(mergeOps(type, { trucks: { doors: 2 } }, raw), undefined);
-      assert.equal(mergeOps(type, undefined, raw), undefined);
+      const hasTrucks = raw !== null && typeof raw === 'object' && Object.hasOwn(raw, 'trucks') && raw.trucks !== null && typeof raw.trucks === 'object' && !Array.isArray(raw.trucks);
+      const out = sanitizeOps(type, raw);
+      assert.equal(out !== undefined, carries && hasTrucks, `${type} ${JSON.stringify(raw)}`);
+      if (!carries) assert.equal(mergeOps(type, { trucks: { doors: 2 } }, raw), undefined);
+      assert.equal(mergeOps(type, undefined, null), undefined, 'null removes the block');
+      assert.doesNotThrow(() => mergeOps(type, out, raw));
     }
   }
-  for (const raw of [undefined, null, 3, 'x', {}, { startTod: 6 * 3600, startDay: 0 }, { shifts: [{}] }]) {
-    assert.equal(sanitizeCalendar(raw, plant()), undefined);
-    assert.equal(mergeCalendar({ startTod: 0, startDay: 0 }, raw), undefined);
+  for (const raw of [undefined, null, 3, 'x', []]) {
+    assert.equal(sanitizeCalendar(raw, plant()), undefined, 'a plant without a timetable has a clock only if the file has one');
+    assert.equal(mergeCalendar(undefined, raw), undefined, 'nothing to merge into');
   }
-  assert.deepEqual(normalizeExtensions({ calendar: { startTod: 0, startDay: 0 }, loadTypes: [{ id: 'a' }] }, plant()), {});
+  assert.deepEqual(sanitizeCalendar({ startTod: 6 * 3600, startDay: 0, shifts: [{}] }, plant()), { startTod: 21600, startDay: 0 }, 'M1 keeps the two clock keys; shifts arrive with M2');
+  assert.deepEqual(sanitizeCalendar({}, plant()), { startTod: 0, startDay: 0 });
+  assert.deepEqual(mergeCalendar({ startTod: 0, startDay: 0 }, { startTod: '07:30' }), { startTod: 27000, startDay: 0 });
+  assert.equal(mergeCalendar({ startTod: 0, startDay: 0 }, null), undefined);
+  assert.deepEqual(normalizeExtensions({ calendar: { startTod: 0, startDay: 0 }, loadTypes: [{ id: 'a' }] }, plant()), { calendar: { startTod: 0, startDay: 0 } }, 'loadTypes (M5) is still dropped');
   assert.deepEqual(normalizeExtensions({}, plant()), {});
 });
 
-test('the registries that milestones add to are empty in M0', () => {
-  assert.deepEqual(Object.keys(OPS_SANITIZERS), []);
+test('the registries that milestones add to hold what M1 registers: trucks for Goods in and Goods out, the calendar block', () => {
+  assert.deepEqual(Object.keys(OPS_SANITIZERS).sort(), ['sink', 'source']);
   assert.deepEqual(EXTENSION_BLOCKS.map((b) => b.key), ['calendar']);
 });
 
-test('the tables of documented keys exist, are frozen and are empty until a milestone adds keys', () => {
-  assert.ok(Array.isArray(OPS_KEYS) && Object.isFrozen(OPS_KEYS));
-  assert.ok(Array.isArray(CALENDAR_KEYS) && Object.isFrozen(CALENDAR_KEYS));
+test('the tables of documented keys are frozen and every entry has a sample the sanitizer keeps', () => {
+  assert.ok(Array.isArray(OPS_KEYS) && Object.isFrozen(OPS_KEYS) && OPS_KEYS.length > 0);
+  assert.ok(Array.isArray(CALENDAR_KEYS) && Object.isFrozen(CALENDAR_KEYS) && CALENDAR_KEYS.length > 0);
   for (const entry of OPS_KEYS) { // structural check for the entries that milestones add (10.2 drives the round trip from this table)
     assert.equal(typeof entry.key, 'string');
     assert.ok(Array.isArray(entry.types) && entry.types.every((t) => Object.hasOwn(STATION_TYPES, t)), entry.key);
@@ -217,40 +227,49 @@ test('the tables of documented keys exist, are frozen and are empty until a mile
   }
 });
 
-test('nothing of the warehouse module survives normalizeLayout yet: ops, calendar, loadTypes, flow.types and fleet keys are dropped, schema stays 1', () => {
+test('later rows of the schema table are still dropped by normalizeLayout: shifts, load types, flow types, fleet keys, racks; the M1 content survives with schema 2', () => {
   const raw = plant();
-  raw.stations[0].ops = { trucks: { doors: 3, checkIn: 300, mode: 'rate' } };
+  raw.stations[0].ops = { trucks: { doors: 3, checkIn: 300, mode: 'rate', schedule: [{ at: 21600, pallets: 24, days: [0, 1], depart: 25000, mix: [] }], depart: 3600 }, mix: [{ type: 'fast', share: 1 }] };
   raw.stations[1].ops = { form: 'rack', rack: { levels: 5 }, putaway: 'nearest-free' };
-  raw.calendar = { startTod: 21600, startDay: 1, shifts: [{ id: 'early' }] };
+  raw.calendar = { startTod: 21600, startDay: 1, shifts: [{ id: 'early' }], profiles: [] };
   raw.loadTypes = [{ id: 'fast', name: 'Fast' }];
   raw.flows[0].types = ['fast'];
   raw.fleets[0].calendar = { staffing: [{ shift: 'early', count: 1 }] };
   raw.fleets[0].aisleMin = 2.8;
   raw.schema = 6;
   const n = L.normalizeLayout(raw);
-  assert.equal(n.schema, 1, 'stamped with what the normalized content needs');
+  assert.equal(n.schema, 2, 'stamped with what the normalized content needs: the trucks and the clock, nothing of rows 3 to 7');
   assert.deepEqual(L.checkInvariants(n), []);
-  assert.ok(!('calendar' in n) && !('loadTypes' in n));
-  for (const st of n.stations) assert.ok(!('ops' in st), st.name);
+  assert.deepEqual(n.calendar, { startTod: 21600, startDay: 1 });
+  assert.ok(!('loadTypes' in n));
+  assert.deepEqual(Object.keys(n.stations[0].ops), ['trucks'], 'ops.mix (M5) is gone');
+  assert.deepEqual(Object.keys(n.stations[0].ops.trucks), ['doors', 'checkIn', 'checkOut', 'mode', 'interArrival', 'pallets', 'schedule', 'jitter', 'noShow', 'maxDwell', 'staging']);
+  assert.deepEqual(n.stations[0].ops.trucks.schedule, [{ at: 21600, pallets: 24 }], 'days, depart and mix of a row are later rows');
+  assert.ok(!('ops' in n.stations[1]), 'a storage cannot carry ops yet (M3)');
   assert.ok(!('types' in n.flows[0]));
   assert.ok(!('calendar' in n.fleets[0]) && !('aisleMin' in n.fleets[0]));
-  assert.equal(JSON.stringify(n), JSON.stringify(L.normalizeLayout(plant())), 'the same as the plant without those keys');
   assert.equal(JSON.stringify(L.normalizeLayout(n)), JSON.stringify(n), 'idempotent');
+  delete raw.stations[0].ops;
+  delete raw.calendar;
+  assert.equal(JSON.stringify(L.normalizeLayout(raw)), JSON.stringify(L.normalizeLayout(plant())), 'without the M1 keys it is the legacy plant again, schema 1');
 });
 
-test('updateStation accepts an ops patch: nothing is stored yet, an existing block is removed, the stamp stays true', () => {
+test('updateStation accepts an ops patch: Goods in and Goods out store it, other types drop it, the stamp stays true', () => {
   const l = plant();
   const id = l.stations[0].id;
+  const storage = l.stations.find((s) => s.type === 'storage');
   const before = JSON.stringify(l);
+  assert.equal(L.updateStation(l, storage.id, { ops: { trucks: { doors: 2 } } }), true);
+  assert.equal(JSON.stringify(l), before, 'a Storage has no options: a legacy layout is unchanged by the patch');
   assert.equal(L.updateStation(l, id, { ops: { trucks: { doors: 2 } } }), true);
-  assert.equal(L.updateStation(l, id, { ops: null }), true);
-  assert.equal(JSON.stringify(l), before, 'a legacy layout is unchanged by ops patches');
-  l.stations[0].ops = { trucks: { doors: 2 } }; // a block that M0 cannot produce, put there by hand
+  assert.equal(l.stations[0].ops.trucks.doors, 2);
+  assert.equal(l.schema, 2);
   assert.equal(L.updateStation(l, id, { name: 'Renamed' }), true);
   assert.ok('ops' in l.stations[0], 'a patch without ops leaves the block alone');
-  assert.equal(L.updateStation(l, id, { ops: { trucks: { doors: 3 } } }), true);
-  assert.ok(!('ops' in l.stations[0]), 'the empty sanitizer removes it');
+  assert.equal(L.updateStation(l, id, { ops: null, name: 'Source 1' }), true);
+  assert.ok(!('ops' in l.stations[0]));
   assert.equal(l.schema, 1);
+  assert.equal(JSON.stringify(l), before, 'and the plant is the legacy plant again, byte for byte');
   assert.equal(L.updateStation(l, 'nope', { ops: {} }), false);
   assert.equal(L.updateStation(l, id, { ops: undefined, name: 'Again' }), true, 'an undefined ops is no patch');
 });
@@ -291,7 +310,7 @@ test('checkInvariants accepts exactly schemaNeeded and rejects an ops block that
   delete l.calendar;
   l.schema = 1;
   l.stations[0].ops = { trucks: { doors: 2 } };
-  assert.ok(L.checkInvariants(l).some((m) => /ops is not a sanitized/.test(m)), 'M0 cannot express any ops block');
+  assert.ok(L.checkInvariants(l).some((m) => /ops is not a sanitized/.test(m)), 'a truck block must hold every field');
   l.stations[0].ops = undefined;
   assert.deepEqual(L.checkInvariants(l), [], 'an ops key that is undefined is no block');
 });
@@ -387,14 +406,15 @@ function standInTrucks(raw) {
   return { trucks: { doors: clampInt(raw.trucks.doors, 1, 32, 1), checkIn: clampNumber(raw.trucks.checkIn, 0, 7200, 300) } };
 }
 
-/** Run `fn` with the stand-in registered for Goods in (`source`), and always unregister it. */
+/** Run `fn` with the stand-in registered for Goods in (`source`), and always put the real sanitizer back. */
 function withStandIn(fn) {
   return async () => {
+    const real = OPS_SANITIZERS.source;
     OPS_SANITIZERS.source = standInTrucks;
     try {
       await fn();
     } finally {
-      delete OPS_SANITIZERS.source;
+      OPS_SANITIZERS.source = real;
     }
   };
 }
@@ -425,7 +445,7 @@ test('wired: normalizeLayout keeps what sanitizeOps returns, after params, only 
   assert.equal(JSON.parse(file).schema, 2);
   const back = importProject(file);
   assert.equal(JSON.stringify(back.scenarios[0].layout), JSON.stringify(n));
-  assert.equal(back.warnings.length, 1, 'format 2 is above SCHEMA_MAX (1): the warning of A0.4');
+  assert.equal(back.warnings, undefined, 'format 2 is at SCHEMA_MAX (2) since M1: no warning');
   const shared = await decodeShare(await encodeShare(doc));
   assert.equal(JSON.stringify(shared.scenarios[0].layout), JSON.stringify(n));
 }));
@@ -480,5 +500,5 @@ test('wired: normalizeLayout appends the blocks of normalizeExtensions after `se
   } finally {
     entry.sanitize = original;
   }
-  assert.ok(!('calendar' in L.normalizeLayout({ ...plant(), calendar: { startTod: 5 } })), 'and the stub drops it again');
+  assert.deepEqual(L.normalizeLayout({ ...plant(), calendar: { startTod: 5 } }).calendar, { startTod: 5, startDay: 0 }, 'and the real sanitizer is back');
 });

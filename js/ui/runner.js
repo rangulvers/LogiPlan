@@ -33,6 +33,9 @@
 // (after the usual 250 ms). The pre-roll depends only on the layout and seed, never on how it was cut into slices (the engine steps
 // whole ticks), so the result is deterministic. Reset, the first play() of a plant, switching variants and loading another plant
 // stay COLD starts from an empty plant. Hidden tabs do not prime (frames stop there anyway); destroy() ends priming at once.
+// A DAY PLANT (a truck timetable, js/ui/day-plant.js) never restarts warm either: a pre-roll of 10 to 40 minutes ends at another time of day than the
+// plant on screen, so after an edit it starts again at the start time of its clock (sim.time 0) and there is no baseline, hence no impact card.
+// A plant with trucks in rate mode is stationary and restarts warm as before.
 //
 // The pre-roll is bounded in WALL-CLOCK time too (PRIME_MAX_MS per phase, counted from the frames that actually primed): a plant too
 // big to be pre-rolled in that time swaps in with what is done (the 'rebuild' event says warmedUp: false) instead of freezing the
@@ -88,6 +91,7 @@
 import { RUNTIME_KEYS } from '../model/defaults.js';
 import { layoutChangeKind } from '../model/layout.js';
 import { contentShift } from './editor/grow.js';
+import { isDayPlant } from './day-plant.js';
 
 /** Selectable speeds in simulated seconds per real second. */
 export const SPEEDS = Object.freeze([1, 2, 5, 10, 30, 60, 120, 300, 600, 1200]);
@@ -385,7 +389,8 @@ export function createRunner(options = {}) {
   // ---- warm restart ----
 
   /** Is a rebuild now to be a warm restart? Only edits to a plant that has already run; never a load or a variant switch. */
-  const warmWanted = () => Boolean(sim) && sim.time > 0 && !coldPending && store.getState().ui.warmRestart !== false;
+  const warmWanted = () => Boolean(sim) && sim.time > 0 && !coldPending && store.getState().ui.warmRestart !== false
+    && !isDayPlant(builtFrom) && !isDayPlant(store.getState().layout); // a day plant, before or after the edit, starts again at its clock
 
   /** Throw away the half-primed simulation (an edit made it stale, the runner is reset or destroyed). */
   function cancelPriming() {

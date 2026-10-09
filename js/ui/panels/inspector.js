@@ -25,6 +25,8 @@ import { numberField, selectField, textField, rangeField, segmentedField, steppe
 import { createGuidanceHeader, hiddenInProperties } from './nextsteps.js';
 import { createLoadsSections } from './jobs-view.js';
 import { describeServedBy, fleetJobsSummary } from './jobs-info.js';
+import { trucksSections } from './ops-trucks.js';
+import { createClockSection } from './plant-clock.js';
 
 const plural = (n, one, many = `${one}s`) => `${formatNumber(n)} ${n === 1 ? one : many}`;
 const quoted = (name) => `“${name}”`;
@@ -311,11 +313,16 @@ function paramNumber(env, key, opts) {
 function sourceSections(env) {
   const { initial, setParam, bind, memory } = env;
   const arrivals = distField({ label: 'Time between arrivals', hint: 'How often a delivery reaches this dock.', value: initial.params.interArrival, onChange: setParam('arrival pattern', 'interArrival') });
+  // with trucks on (ops-trucks.js) the arrivals come from the trucks: the legacy fields are hidden, a note says so, the output buffer is the staging space
+  const marked = (el, role) => { el.dataset.role = role; return el; };
+  const trucksNote = marked(hintLine('Trucks set the arrivals now. Change them under Trucks and doors; Remove trucks brings these fields back.'), 'trucks-note');
+  trucksNote.hidden = true;
   return [rememberedSection(memory, 'Deliveries', '',
-    bind(arrivals, (st) => st.params.interArrival),
-    paramNumber(env, 'batch', { label: 'Loads per arrival', unit: 'loads', min: 1, max: 100, what: 'loads per arrival', hint: 'Pallets or parts that arrive together.' }),
+    trucksNote,
+    marked(bind(arrivals, (st) => st.params.interArrival), 'legacy-arrivals'),
+    marked(paramNumber(env, 'batch', { label: 'Loads per arrival', unit: 'loads', min: 1, max: 100, what: 'loads per arrival', hint: 'Pallets or parts that arrive together.' }), 'legacy-arrivals'),
     paramNumber(env, 'startDelay', { label: 'Start delay', unit: 's', int: false, step: 'any', min: 0, max: 86400, what: 'start delay', hint: 'Quiet period at the start before the first delivery.' }),
-    paramNumber(env, 'outCap', { label: 'Output buffer slots per destination', unit: 'loads', min: 1, max: 1000, what: 'output buffer', hint: 'Loads that can wait for pickup for each destination. When it is full, new arrivals queue up in the yard.' }))];
+    marked(paramNumber(env, 'outCap', { label: 'Output buffer slots per destination', unit: 'loads', min: 1, max: 1000, what: 'output buffer', hint: 'Loads that can wait for pickup for each destination. When it is full, new arrivals queue up in the yard.' }), 'out-buffer'))];
 }
 
 function processSections(env) {
@@ -447,7 +454,7 @@ function stationView(ctx, initial, memory) {
       actionButton('Duplicate', 'copy', () => duplicateStations(ctx, [id]), 'btn btn--sm', 'Duplicate (Ctrl+D)'),
       actionButton('Delete', 'trash', () => deleteSelected(ctx, 'station', [id]), 'btn btn--sm btn--danger-ghost', 'Delete (Del)')),
     name.el, strip.el, docksLine(env));
-  const sections = SECTION_BUILDERS[initial.type](env).map((s) => s.el);
+  const sections = [...SECTION_BUILDERS[initial.type](env).map((s) => s.el), ...trucksSections(ctx, env)]; // trucks and dock doors: Goods in, Goods out
   // right under the header: where this station's loads go and where they come from (a note for depots, which take part in no flow)
   const loads = createLoadsSections(ctx, initial);
   syncs.push((st, state) => loads.update(st, state));
@@ -809,12 +816,14 @@ function plantView(ctx, memory) {
   const summary = summaryBlock();
   const planSize = planSizeBlock(ctx);
   const stations = stationsSection(ctx, memory);
+  const clock = createClockSection(ctx, memory); // only while the plant has a clock (a truck timetable)
 
   const el = flush(
     pad(h('div', { class: 'row' }, h('span', { class: 'eyebrow' }, 'Plant settings'), h('span', { class: 'spacer' }),
       actionButton('Fit view', 'fit', () => ctx.actions.fitView())), summary.el),
     stations.el,
     rememberedSection(memory, 'Plant', '', name.el, notes.el).el,
+    clock.el,
     rememberedSection(memory, 'Grid and scale', '', planSize.el, h('div', { class: 'field-grid' }, cols.el, rows.el), cell.el, handedness.el).el);
 
   return {
@@ -829,6 +838,7 @@ function plantView(ctx, memory) {
       summary.update(layout);
       planSize.update(layout);
       stations.update(layout);
+      clock.update(layout);
     },
   };
 }

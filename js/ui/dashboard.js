@@ -39,6 +39,7 @@ import { createLineChart, createSparkline, STATE_LABELS } from './charts.js';
 import { icon } from './icons.js';
 import { emptyState, kvList, segmentedField, SEVERITY, uid } from './panels/fields.js';
 import { createImpactCard } from './panels/impact.js';
+import { createDoorsSection } from './panels/doors-card.js';
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Constants
@@ -1236,13 +1237,14 @@ export function createDashboard(ctx) {
     buildFlows(sections.flows);
     buildTraffic(ctx, sections.traffic);
     const impact = createImpactCard(ctx); // "Effect of your change": at the top, only while there is something to compare
-    const el = h('div', { class: 'stack', style: { '--gap': 'var(--sp-4)' }, hidden: true }, impact.el, notice.el, kpis.el, Object.values(sections).map((s) => s.el));
+    const doors = createDoorsSection(ctx); // one card per Goods in / Goods out with trucks; hidden without (panels/doors-card.js)
+    const el = h('div', { class: 'stack', style: { '--gap': 'var(--sp-4)' }, hidden: true }, impact.el, notice.el, kpis.el, doors.el, Object.values(sections).map((s) => s.el));
     for (const section of Object.values(sections)) {
       // A section that was collapsed while the data moved on catches up as soon as it is opened.
       section.el.addEventListener('toggle', () => { if (section.el.open && lastModel) section.paint(lastModel); });
     }
     root.append(el);
-    content = { el, notice, kpis, sections, charts, impact };
+    content = { el, notice, kpis, sections, charts, impact, doors };
     return content;
   }
 
@@ -1311,6 +1313,7 @@ export function createDashboard(ctx) {
       paintReport(report, insights, dstate, runState);
     }
     content?.impact.update(report);
+    content?.doors.update(report, state);
     paintStore(state);
     stale = false;
   }
@@ -1335,6 +1338,7 @@ export function createDashboard(ctx) {
       content?.kpis.destroy();
       content?.charts.destroy();
       content?.impact.destroy();
+      content?.doors.destroy();
       root.remove();
     },
   };

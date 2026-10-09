@@ -335,6 +335,7 @@ function finishLoading(lg, vr, t) {
   vr.load = order.loads.slice();
   order.pickedAt = t;
   if (flow.from.type === 'storage') flow.from.produced += order.qty;
+  if (flow.from.trucks !== null) flow.from.trucks.pickedUp(order.loads, t); // a Goods in with trucks: unloading is emergent, each pickup takes a pallet off its truck
   lg.markDirty();
   lg.emit('orderPickedUp', { order, vehicle: vr, t });
   startLeg(lg, vr, 'toDrop', flow.to.id, t);

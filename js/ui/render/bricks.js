@@ -16,6 +16,7 @@ import { fitText, shortNameAlternatives } from './geometry.js';
 import { TAU, roundRectPath, fontOf, measure, fillPill } from './draw.js';
 import { drawStationIcon, drawStatusMark, drawBolt, drawBox } from './glyphs.js';
 import { drawVehicleIcon } from './vehicles.js';
+import { planOps, paintOps } from './ops.js';
 
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
@@ -185,6 +186,8 @@ function rowCovered(plan, g, y, r) {
  * rectangles (`blocks`) the studs must avoid; null items are absent.
  */
 export function planContent(ctx, fr, g, type, st, rt) {
+  const ops = planOps(ctx, fr, g, type, st, rt); // trucks and dock doors (render/ops.js): a band of door slots along the lower edge, null for every other brick
+  if (ops) g = ops.face; // the rest of the face above the band is laid out as always
   const pad = clamp(g.cell * 0.1, 3, 9);
   const fpx = clamp(g.cell * 0.27, 10, 19);
   const innerW = g.w - 2 * pad;
@@ -221,6 +224,7 @@ export function planContent(ctx, fr, g, type, st, rt) {
     plan.blocks.push({ x, y: top + (rowH - dot.d) / 2, w: dot.d, h: dot.d });
   }
   if (live) plan.blocks.push({ x: g.x + pad, y: plan.liveY, w: innerW, h: live.h });
+  if (ops) { plan.ops = ops; plan.blocks.push(ops.block); }
   return plan;
 }
 
@@ -230,6 +234,7 @@ function paintContent(ctx, fr, g, pal, type, st, rt, plan) {
   if (badge) drawYardBadge(ctx, fr, badge);
   if (dot) drawStateDot(ctx, fr, dot, rt);
   if (live) drawOverlays(ctx, fr, pal, rt, st, live, g.x + pad, plan.liveY, innerW);
+  if (plan.ops) paintOps(ctx, fr, g, pal, st, rt, plan.ops);
 }
 
 /** State dot plan (radius `r`, outer diameter `d` incl. bezel), or null without a runtime station or room. */

@@ -650,7 +650,7 @@ await withBrowser(async ({ browser, url, errors }) => {
     await page.getByRole('button', { name: 'Help' }).first().click();
     await dialog.waitFor();
     const tabs = dialog.locator('[role=tab]');
-    eq(await tabs.allInnerTexts(), ['Quick start', 'Tools & shortcuts', 'How vehicles find work', 'How the simulation works', 'Tips'], 'a first-class page of the Help');
+    eq(await tabs.allInnerTexts(), ['Quick start', 'Tools & shortcuts', 'How vehicles find work', 'Trucks and dock doors', 'How the simulation works', 'Tips'], 'a first-class page of the Help');
     await tabs.nth(2).click();
     const help = dialog.locator('[data-help=vehicles]');
     await help.waitFor();
@@ -669,7 +669,7 @@ await withBrowser(async ({ browser, url, errors }) => {
     // keyboard: arrows move between the pages
     await tabs.nth(2).focus();
     await page.keyboard.press('ArrowRight');
-    eq(await dialog.locator('[role=tab][aria-selected=true]').innerText(), 'How the simulation works');
+    eq(await dialog.locator('[role=tab][aria-selected=true]').innerText(), 'Trucks and dock doors'); // the page of the warehouse module follows "How vehicles find work"
     await page.keyboard.press('ArrowLeft');
     eq(await dialog.locator('[role=tab][aria-selected=true]').innerText(), 'How vehicles find work');
     await snap(page, 'help-1-vehicles-light');
@@ -678,7 +678,7 @@ await withBrowser(async ({ browser, url, errors }) => {
     // the other pages mention it too
     await tabs.nth(0).click();
     ok((await dialog.innerText()).includes('every free vehicle serves every flow'), 'the quick start says it as well');
-    await tabs.nth(4).click();
+    await tabs.nth(5).click();
     ok((await dialog.innerText()).includes('Adding a second Goods in?'), 'the tips page too');
     await closeDialogs(page);
     await context.close();
