@@ -105,6 +105,8 @@ await withBrowser(async ({ browser, url, errors }) => {
   const stationOf = async (page, type) => (await layoutOf(page)).stations.find((s) => s.type === type);
   const state = (page) => page.evaluate(() => { const s = window.__logiplan.store.getState(); return { label: s.lastCommit.label, canUndo: s.canUndo, selection: s.ui.selection }; });
   const step = (page, seconds) => page.evaluate(async (s) => { await window.__logiplan.runner.step(s); }, seconds);
+  /** The runner refreshes its report a few times a second, not on every step: wait until it covers everything that has been simulated. */
+  const fresh = (page) => page.waitForFunction(() => { const r = window.__logiplan.runner; const k = r.kpis(); return k && k.window.end >= r.time - 1; }, null, { timeout: 30000 });
   const toasts = (page) => page.evaluate(() => [...document.querySelectorAll('[data-region=toasts] > *')].map((t) => t.textContent));
   const overflow = (page) => page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
   const insidePanel = (page, selector) => page.evaluate((sel) => {
@@ -773,6 +775,7 @@ await withBrowser(async ({ browser, url, errors }) => {
 
     // the plant before the doors: what it delivers in four simulated hours
     await step(page, 4 * 3600);
+    await fresh(page);
     const legacy = await page.evaluate(() => { const k = window.__logiplan.runner.kpis(); return { perHour: k.throughput.perHour, ops: k.ops }; });
     eq(legacy.ops, undefined, 'a legacy report has no truck figures');
     ok(legacy.perHour > 15 && legacy.perHour < 25, `the Starter delivers about 20 pallets an hour (${legacy.perHour.toFixed(1)})`);
@@ -870,6 +873,7 @@ await withBrowser(async ({ browser, url, errors }) => {
     await page.evaluate(() => window.__logiplan.ctx.actions.clearSelection?.() || window.__logiplan.store.clearSelection());
     await page.locator('[data-role=run-day]').click();
     await page.waitForFunction(() => window.__logiplan.runner.sim && window.__logiplan.runner.time >= 86399 && !window.__logiplan.runner.playing, null, { timeout: 180000 });
+    await fresh(page);
     const day = await page.evaluate(() => { const r = window.__logiplan.runner; return { time: r.time, kpis: r.kpis() }; });
     ok(day.time >= 86399 && day.time < 86500, `one whole day (${Math.round(day.time)} s)`);
     eq(day.kpis.ops.trucks[src.id].trucks.arrived, 3, 'the timetable of three rows brought three trucks in that day');
@@ -890,7 +894,7 @@ await withBrowser(async ({ browser, url, errors }) => {
    * A plant whose truck figures can be worked out on paper. Goods in: a truck of 6 pallets every 20 minutes, the first one at time 0 (startDelay 0, no variation at
    * all: constant gap, constant pallets), 2 doors, 5 minutes of check-in and of check-out. Two forklifts carry the pallets to a Goods out, which is close.
    */
-  async function referencePlant() {
+  async function referencePlant({ doors = 2, gap = 1200 } = {}) {
     const layout = L.createLayout({ name: 'Reference', cols: 30, rows: 14, cellSize: 2 });
     L.paintRoadPath(layout, [[3, 9], [26, 9]]);
     const src = L.addStation(layout, { type: 'source', name: 'Goods receiving', x: 6, y: 6, w: 3, h: 3, params: { outCap: 6 } });
@@ -899,7 +903,7 @@ await withBrowser(async ({ browser, url, errors }) => {
     const park = L.addStation(layout, { type: 'depot', name: 'Parking', x: 3, y: 11, w: 3, h: 2, params: { slots: 4 } });
     L.paintRoadPath(layout, [[4, 9], [4, 10]]);
     L.addFleet(layout, 'forklift', { count: 2, home: park.id, length: 2 });
-    L.updateStation(layout, src.id, { ops: { trucks: { ...defaultTrucks(), doors: 2, checkIn: 300, checkOut: 300, mode: 'rate', interArrival: { kind: 'const', mean: 1200, spread: 0 }, pallets: { kind: 'const', mean: 6, spread: 0 } } } });
+    L.updateStation(layout, src.id, { ops: { trucks: { ...defaultTrucks(), doors, checkIn: 300, checkOut: 300, mode: 'rate', interArrival: { kind: 'const', mean: gap, spread: 0 }, pallets: { kind: 'const', mean: 6, spread: 0 } } } });
     layout.settings.warmup = 0;
     return { layout, src };
   }
@@ -909,6 +913,7 @@ await withBrowser(async ({ browser, url, errors }) => {
     const { context, page } = await open({ layout, select: [src.id] });
     const T = 10900; // 3 h and a bit: trucks come at 0, 1200, ..., 10800 s
     await step(page, T);
+    await fresh(page);
     await page.evaluate(() => window.__logiplan.ctx.actions.setRightTab('results'));
     await frames(page, 5);
     const sec = page.locator('details[data-section=doors]');
@@ -942,6 +947,47 @@ await withBrowser(async ({ browser, url, errors }) => {
     const text = await page.locator('[data-role=door-check-text]').innerText();
     ok(/At the busiest hour you need about 1 door busy at once \(3 trucks an hour, 19 minutes at a door each\)\. You have 2 doors, busy about 48 % of the time\./.test(text), text);
     ok(/The 90 s per pallet is an assumption\. In a run your vehicles decide how long a truck stays at its door/.test(await page.locator('[data-role=door-check-note]').innerText()), 'and says who sets the door time');
+    await context.close();
+  });
+
+  await run('reference-queue', async () => {
+    // One door and a truck every 10 minutes, but a truck holds the door for D = 600 s of paperwork + about 211 s of unloading = about 811 s: the gate queue grows by D - 600 s
+    // for every truck. Truck k (k = 0, 1, ...) arrives at 600 k and takes the door at D k, so it waits (D - 600) k seconds. After T = 10,900 s:
+    //   arrived  = trucks with 600 k <= T            -> k = 0..18 = 19
+    //   docked   = trucks with D k <= T              -> k = 0..13 = 14   (13 x 811 = 10,543; 14 x 811 = 11,354)
+    //   departed = trucks with D (k + 1) <= T        -> k = 0..12 = 13
+    //   queue now = 19 - 14 = 5 trucks; the longest wait of a truck that has docked: (D - 600) x 13; the mean over the 14 that have: (D - 600) x 6.5
+    //   doors busy: one door, never free: 100 %
+    const { layout, src } = await referencePlant({ doors: 1, gap: 600 });
+    const { context, page } = await open({ layout, select: [src.id] });
+    const T = 10900;
+    await step(page, T);
+    await fresh(page);
+    const entry = await page.evaluate((id) => window.__logiplan.runner.kpis().ops.trucks[id], src.id);
+    const D = entry.doorTime.mean;
+    ok(D > 805 && D < 820, `a truck holds the door for ${D.toFixed(1)} s (600 s of paperwork and about 211 s of work)`);
+    eq([entry.trucks.arrived, entry.trucks.docked, entry.trucks.departed], [19, 14, 13], '19 trucks came, 14 got a door, 13 left');
+    eq(entry.gateQueue.now, 5, 'five trucks wait at the gate');
+    ok(Math.abs(entry.gateWait.mean - (D - 600) * 6.5) < 0.02 * (D - 600) * 6.5, `mean wait at the gate ${(entry.gateWait.mean / 60).toFixed(1)} min against ${((D - 600) * 6.5 / 60).toFixed(1)} min worked out`);
+    ok(Math.abs(entry.gateWait.max - (D - 600) * 13) < 0.02 * (D - 600) * 13, `the longest wait ${(entry.gateWait.max / 60).toFixed(1)} min against ${((D - 600) * 13 / 60).toFixed(1)} min`);
+    ok(entry.doorUtilization > 0.995, `the one door is never free (${(entry.doorUtilization * 100).toFixed(1)} %)`);
+    await page.evaluate(() => window.__logiplan.ctx.actions.setRightTab('results'));
+    await frames(page, 5);
+    const sec = page.locator('details[data-section=doors]');
+    await sec.waitFor({ state: 'visible' });
+    if (!(await sec.evaluate((e) => e.open))) await sec.locator('summary').click();
+    await frames(page, 3);
+    const card = await doorsCard(page, src.id);
+    eq([card.metrics.served, card.metrics.queue], ['13', '5'], 'the card: 13 served, 5 at the gate');
+    ok(/^\d+(\.\d)? min$/.test(card.metrics.gateWait), `the gate wait on the card: ${card.metrics.gateWait}`);
+    ok(/100 %/.test(card.text), 'doors busy 100 %');
+    // the picture on the plan: the gate chip says the same (5 trucks, the longest has waited about 20 minutes: amber)
+    await page.evaluate(() => { const { ctx, store } = window.__logiplan; const s = store.getState().layout.stations.find((x) => x.type === 'source'); const cs = store.getState().layout.grid.cellSize; ctx.camera.zoomTo(40, ctx.canvas.clientWidth / 2, ctx.canvas.clientHeight / 2); ctx.camera.centerOn((s.x + 1.5) * cs, (s.y + 1.5) * cs); });
+    await frames(page, 4);
+    const gate = await page.evaluate(() => { const { runner, store } = window.__logiplan; const rt = runner.sim.logistics.stationById.get(store.getState().layout.stations.find((x) => x.type === 'source').id); return { queued: rt.trucks.gate.length, longest: runner.time - rt.trucks.gate[0].at }; });
+    eq(gate.queued, 5, 'the desk of the simulation holds five trucks at the gate');
+    ok(Math.abs(gate.longest - (10900 - 600 * 14)) < 5, `the oldest truck at the gate arrived at 8,400 s and has waited ${Math.round(gate.longest)} s`);
+    await shot(page, 'reference-queue-light-desktop');
     await context.close();
   });
 
