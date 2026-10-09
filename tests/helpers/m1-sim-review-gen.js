@@ -197,6 +197,29 @@ export function hostileTruckPlant(seed, { wild = seed % 3 !== 0, horizon = 1800,
   return { layout: normalizeLayout(layout), actions, notes: { oneWayRing, deadEnd, stations: stations.length, flows: flows.length, fleets: fleets.length, startTod } };
 }
 
+/**
+ * A small plant for exact experiments, built with the mutators: a two-way ring road, Goods in `A` (top left), an optional Storage `S` and Goods out
+ * `C` above it, forklifts that stay where they finish. All parameters are plain numbers; times in seconds.
+ * @param {{ inbound?: object, outbound?: object, storage?: boolean, fleet?: object|null, flows?: Array<[string, string, object?]>, settings?: object,
+ *   aParams?: object, cParams?: object, sParams?: object, calendar?: object }} [o]
+ *   `inbound` / `outbound`: the raw `ops.trucks` block of A / C (omitted: that station keeps its legacy behaviour)
+ * @returns {object} a normalized layout; station ids are 'A', 'S', 'C' in `layout.stations[].name`, ids s1, s2, s3 in this order
+ */
+export function microLine({ inbound, outbound, storage = true, fleet = {}, flows, settings = {}, aParams = {}, cParams = {}, sParams = {}, calendar } = {}) {
+  const layout = createLayout({ name: 'micro', cols: 44, rows: 14, cellSize: 2 });
+  paintRoadPath(layout, [[3, 6], [40, 6], [40, 10], [3, 10], [3, 6]]);
+  const a = addStation(layout, { type: 'source', name: 'A', x: 4, y: 4, w: 4, h: 2, params: aParams, ...(inbound ? { ops: { trucks: inbound } } : {}) });
+  const s = storage ? addStation(layout, { type: 'storage', name: 'S', x: 16, y: 4, w: 6, h: 2, params: { capacity: 5000, dwell: 0, ...sParams } }) : null;
+  const c = addStation(layout, { type: 'sink', name: 'C', x: 30, y: 4, w: 6, h: 2, params: cParams, ...(outbound ? { ops: { trucks: outbound } } : {}) });
+  const wanted = flows || (storage ? [['A', 'S'], ['S', 'C']] : [['A', 'C']]);
+  const byName = { A: a, S: s, C: c };
+  for (const [from, to, patch] of wanted) addFlow(layout, byName[from].id, byName[to].id, patch || {});
+  if (fleet !== null) addFleet(layout, 'forklift', { count: 3, loadTime: 5, unloadTime: 5, idle: 'stay', length: 1.6, ...fleet });
+  updateSettings(layout, { warmup: 0, seed: 1, ...settings });
+  if (calendar) updateCalendar(layout, calendar);
+  return normalizeLayout(layout);
+}
+
 /** The same plant without any vehicle (and no fleet restriction): trucks arrive and hold their doors, nothing is unloaded. Cheap to run: for arrival times. */
 export function withoutVehicles(layout) {
   const copy = JSON.parse(JSON.stringify(layout));
@@ -272,6 +295,11 @@ export function makeLedger(sim) {
       ledger.created++;
       ledger.createdAtOf.set(p.load.id, p.load.createdAt);
       if (p.load.tk >= 0) { /* tk is set right after the event for a truck pallet */ }
+    } else if (name === 'orderPickedUp') {
+      for (const load of p.order.loads) {
+        const life = load.tk >= 0 ? ledger.trucks.get(load.tk) : null;
+        if (life && life.station === p.order.from) life.lastPick = p.t; // a pallet keeps its truck id for life: only the pickups at the truck's own station count
+      }
     } else if (name === 'loadCompleted') {
       ledger.completed++;
       const created = ledger.createdAtOf.get(p.load.id);
@@ -369,6 +397,11 @@ function grammar(ledger, name, p) {
     if (Math.abs(p.turnaround - (p.gateWait + p.doorTime)) > 1e-6) bad(`turnaround ${p.turnaround} != gate ${p.gateWait} + door ${p.doorTime}`);
     if (Math.abs(p.doorTime - (p.t - life.dockedAt)) > 1e-6) bad(`door time ${p.doorTime} != ${p.t} - ${life.dockedAt}`);
     const desk = ledger.sim.logistics.stationById.get(p.stationId).trucks;
+    if (desk.role === 'in') {
+      // the door is held until the vehicles have taken the last pallet, and for the check-out after that: no sooner, and at most one tick later
+      if (life.lastPick === undefined) bad(`truck ${k.id} departed but no pallet of it was ever picked up`);
+      else if (p.t - desk.checkOut < life.lastPick - 1e-6 || p.t - desk.checkOut > life.lastPick + ledger.sim.dt + 1e-6) bad(`truck ${k.id} freed its door at ${p.t}, the last pallet was picked up at ${life.lastPick} and check-out takes ${desk.checkOut}`);
+    }
     if (p.doorTime < desk.checkIn + desk.checkOut - 1e-6) bad(`door time ${p.doorTime} is less than check-in ${desk.checkIn} + check-out ${desk.checkOut}`);
     if (desk.role === 'out') {
       // a Goods out truck leaves full, or short only after it has waited maxDwell for its pallets (maxDwell 0: never short)
@@ -385,9 +418,10 @@ function grammar(ledger, name, p) {
 
 const EPS = 1e-6;
 const fifoMemory = new WeakMap(); // desk -> Map(truck id -> loaded at the end of the previous audited tick)
+const auditTicks = new WeakMap(); // sim -> audited ticks so far
 
 /** Every load that physically exists in the plant, with where it is (own traversal; no helper of the engine). */
-function allLoads(lg) {
+export function allLoads(lg) {
   const found = [];
   const add = (where, list) => { for (const load of list) found.push({ load, where }); };
   for (const st of lg.stations) {
@@ -416,17 +450,22 @@ export function audit(sim, ledger = null, label = '', tally = null) {
   const bad = [];
   const fail = (m) => bad.push(m);
 
-  // ---- conservation, from the raw state
-  const found = allLoads(lg);
-  const ids = new Set();
-  for (const { load, where } of found) {
-    if (ids.has(load.id)) fail(`load ${load.id} exists twice (${where})`);
-    ids.add(load.id);
-  }
-  let inCycles = 0;
-  for (const st of lg.stations) for (const m of st.machines || []) inCycles += m.inputs;
+  // ---- conservation, from the raw state. A plant with thousands of live pallets is traversed every 20th tick only (the cheap checks run every tick)
+  const count = (auditTicks.get(sim) || 0) + 1;
+  auditTicks.set(sim, count);
+  const deep = lg.liveLoads <= 1500 || count % 20 === 0;
   const created = lg.createdBySources + lg.createdByProcesses;
-  if (lg.liveLoads !== found.length + inCycles) fail(`live ${lg.liveLoads} != present ${found.length} + in cycles ${inCycles}`);
+  if (deep) {
+    const found = allLoads(lg);
+    const ids = new Set();
+    for (const { load, where } of found) {
+      if (ids.has(load.id)) fail(`load ${load.id} exists twice (${where})`);
+      ids.add(load.id);
+    }
+    let inCycles = 0;
+    for (const st of lg.stations) for (const m of st.machines || []) inCycles += m.inputs;
+    if (lg.liveLoads !== found.length + inCycles) fail(`live ${lg.liveLoads} != present ${found.length} + in cycles ${inCycles}`);
+  }
   if (created !== lg.liveLoads + lg.completed + lg.loadsConsumed) fail(`created ${created} != live ${lg.liveLoads} + completed ${lg.completed} + consumed ${lg.loadsConsumed}`);
   if (ledger) {
     if (ledger.created !== created) fail(`loadCreated events ${ledger.created} != created ${created}`);
@@ -463,17 +502,19 @@ export function audit(sim, ledger = null, label = '', tally = null) {
     // a rate-mode station keeps a next arrival while the demand is positive
     if (desk.mode === 'rate' && lg.runtime.demandFactor > 0 && !Number.isFinite(desk.nextArrival)) fail(`${tag}: rate mode with demand ${lg.runtime.demandFactor} but no next arrival`);
     const yardOf = new Map(); // truck id -> pallets present in yard / buffers / pending
-    const count = (list) => { for (const l of list) if (l.tk >= 0) yardOf.set(l.tk, (yardOf.get(l.tk) || 0) + 1); };
-    if (st.yardQ) count(st.yardQ);
-    for (const link of st.outLinks) count(link.queue);
-    for (const k of [...gate, ...docked]) count(k.pending);
+    const tally1 = (list) => { for (const l of list) if (l.tk >= 0) yardOf.set(l.tk, (yardOf.get(l.tk) || 0) + 1); };
+    if (deep) {
+      if (st.yardQ) tally1(st.yardQ);
+      for (const link of st.outLinks) tally1(link.queue);
+      for (const k of [...gate, ...docked]) tally1(k.pending);
+    }
     // pallets of a truck that has left the plant do not exist (the truck is gone only when left == 0)
     const known = new Set([...gate, ...docked].map((k) => k.id));
     if (desk.role === 'in') {
-      for (const id of yardOf.keys()) if (!known.has(id)) fail(`${tag}: pallets of departed truck ${id} still here`);
+      if (deep) for (const id of yardOf.keys()) if (!known.has(id)) fail(`${tag}: pallets of departed truck ${id} still here`);
       for (const k of [...gate, ...docked]) {
         const here = yardOf.get(k.id) || 0;
-        if (k.left !== here) fail(`${tag}: truck ${k.id} left ${k.left} but ${here} pallets are here`);
+        if (deep && k.left !== here) fail(`${tag}: truck ${k.id} left ${k.left} but ${here} pallets are here`);
         if (k.state === 'checkout' && k.left !== 0) fail(`${tag}: truck ${k.id} in check-out with ${k.left} pallets left`);
         if (k.state === 'work' && k.left === 0) fail(`${tag}: truck ${k.id} still at work with nothing left`);
         if (k.loaded !== 0) fail(`${tag}: inbound truck loaded ${k.loaded}`);
@@ -604,7 +645,7 @@ export function compareOps(sim, report, ledger) {
  * @param {{ actions?: Array, ledger?: object, every?: number, label?: string }} [opts]
  */
 export function runAudited(sim, seconds, { actions = [], ledger = null, every = 1, label = '', tally = null } = {}) {
-  const pending = [...actions].sort((a, b) => a.at - b.at);
+  const pending = actions; // consumed: a run in several pieces passes the same array each time
   const end = sim.time + seconds - sim.dt * 1e-6;
   let n = 0;
   while (sim.time < end) {

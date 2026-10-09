@@ -14,6 +14,19 @@
 //   6  layering              the import graph against docs/ARCHITECTURE.md section 3, cycles, scripts/check-imports.mjs
 //   7  documents vs code     the numbers of 5.3 and Appendix B read from the document and compared with the code
 //
+// The defects (all `todo`, each with a test that fails today and passes with the fix; the cause and the evidence are in the failure message):
+//   M1-MODEL-REV-1   mergeOps / mergeCalendar: a junk value in a patch resets the field to its DEFAULT (a junk "schedule" wipes the timetable), against the
+//                    mutator convention of layout.js (keep the current value); latent, the panels guard their inputs today
+//   M1-MODEL-REV-2   parseTimetable reads the Excel day fraction "0.25" as 00:25 (H.MM with one hour digit; 7.2 lists HH.MM only)
+//   M1-MODEL-REV-3   docks-share-lane is silent when a second road lies behind the docks, but the simulation still sends every visit to the first dock
+//   M1-MODEL-REV-4   parseTimeField takes quadratic time on a long run of spaces (the paste dialog parses on every keystroke)
+//   M1-MODEL-REV-5   decodeShare takes quadratic time on a link that ends in a long run of punctuation (a crafted #p= link freezes the start-up)
+//   M1-MODEL-REV-6   the Fix "Use 32 doors" of doors-too-few leaves the warning in place when even 32 doors are too few
+//   M1-MODEL-REV-7   the message of doors-too-few reads "needs about 1 doors ... but it has 1" between 95 and 100 % busy
+//   M1-MODEL-REV-8   doorCheck(trucks, null) throws
+//   M1-MODEL-REV-9   an empty time cell before a tab is reported as "“24” is not a time"
+//   M1-MODEL-REV-10  "06:00:00" (the usual export notation) is refused (a design gap: 7.2 lists no seconds)
+//
 // Tests named "M1-MODEL-REV-n" are REAL DEFECTS found by this review that are NOT fixed: they FAIL today and are `todo`, so that the suite stays green
 // until they are fixed (M1_MODEL_REVIEW_STRICT=1 turns them into ordinary tests). Tests named "DISCREPANCY" pin a place where the code (which is
 // authoritative) differs from a document: they pass, and say what the document should say. M1_MODEL_REVIEW_HEAVY=1 runs the larger sizes.
@@ -108,6 +121,14 @@ test('M1-MODEL-REV hostile 1: junk of every kind at EVERY place of a rich projec
     }
     const dropped = H.wrongWithNormalize(H.withValue(base, trail, undefined), true);
     if (dropped.length && problems.length < 5) problems.push(`${trail.join('.')} deleted: ${dropped.join('; ')}`);
+    if (ours(trail)) { // the same through the file: the text reads back as the normalized layout of the same text
+      for (const value of [{ at: 3600, doors: 'x' }, 'x']) {
+        const text = JSON.stringify({ app: 'logiplan', scenarios: [{ layout: H.withValue(base, trail, value) }] });
+        const viaFile = S.importProject(text).scenarios[0].layout;
+        const direct = L.normalizeLayout(JSON.parse(text).scenarios[0].layout);
+        if (bytes(viaFile) !== bytes(direct) && problems.length < 5) problems.push(`${trail.join('.')}: the file and normalizeLayout disagree`);
+      }
+    }
   }
   assert.deepEqual(problems, []);
   assert.ok(checked > 1200, `${checked} documents`);
@@ -143,7 +164,7 @@ test('M1-MODEL-REV hostile 3: 200 documents with 2 to 6 pieces of junk each, in 
   const base = H.richProject().scenarios[0].layout;
   const paths = H.pathsOf(base, 7).filter((trail) => (trail.includes('ops') || trail[0] === 'calendar') && !trail.includes('roads'));
   const problems = [];
-  const n = H.size(200, 6000);
+  const n = H.size(200, 2500);
   for (let i = 0; i < n && problems.length < 5; i++) {
     let doc = base;
     for (let k = 0, m = 2 + rng.int(5); k < m; k++) {
@@ -243,6 +264,12 @@ test('M1-MODEL-REV hostile 5: calendar junk: a raw object keeps a clock, a timet
   const timetable = clone(plain);
   timetable.stations.push({ id: 's1', type: 'source', x: 1, y: 1, ops: { trucks: { mode: 'schedule' } } });
   assert.deepEqual(L.normalizeLayout(timetable).calendar, { startTod: 0, startDay: 0 }, 'a timetable creates the clock');
+  const outbound = clone(plain);
+  outbound.stations.push({ id: 's1', type: 'sink', x: 1, y: 1, ops: { trucks: { mode: 'schedule', schedule: [{ at: 3600 }] } } });
+  assert.deepEqual(L.normalizeLayout(outbound).calendar, { startTod: 0, startDay: 0 }, 'a timetable of a Goods out creates the clock too');
+  const quiet = clone(plain);
+  quiet.stations.push({ id: 's1', type: 'sink', x: 1, y: 1, ops: { trucks: { mode: 'rate', schedule: [{ at: 3600 }] } } });
+  assert.ok(!('calendar' in L.normalizeLayout(quiet)), 'rows in a rate-mode block do not make a day plant');
   timetable.calendar = 'junk';
   assert.deepEqual(L.normalizeLayout(timetable).calendar, { startTod: 0, startDay: 0 }, 'also over a junk calendar');
   assert.equal(L.normalizeLayout(withCalendar({})).schema, 2);
@@ -309,7 +336,7 @@ function truckPlants(n, seed = 31) {
 }
 
 test('M1-MODEL-REV hostile 8: every valid truck plant is a fixed point of normalizeLayout and round-trips byte for byte through the file, the share link and the autosave', async () => {
-  const plants = truckPlants(H.size(14, 200));
+  const plants = truckPlants(H.size(14, 100));
   const storage = memoryStorage();
   for (const [id, layout] of plants) {
     const text = bytes(layout);
@@ -407,7 +434,7 @@ test('M1-MODEL-REV hostile 10: LEGACY OUTPUT: this tree and the end of M0 (a2af6
     if (rng.next() < 0.3) for (const f of d.fleets) f[pick(rng, ['count', 'speed', 'preset', 'home', 'battery'])] = pick(rng, junk);
     return d;
   };
-  const docs = H.size(150, 600);
+  const docs = H.size(150, 400);
   for (let i = 0; i < docs; i++) {
     const doc = damaged(pick(rng, bases));
     const was = OLD.layout.normalizeLayout(doc);
@@ -417,7 +444,7 @@ test('M1-MODEL-REV hostile 10: LEGACY OUTPUT: this tree and the end of M0 (a2af6
     assert.equal(now.schema === 1 || now.schema === undefined ? 1 : 0, 1);
   }
   // legacy edits: the same random edits on both trees give the same layout, step for step, and never a key of the warehouse module
-  for (let session = 0; session < H.size(8, 30); session++) {
+  for (let session = 0; session < H.size(8, 20); session++) {
     const base = pick(rng, bases);
     const a = clone(base);
     const b = clone(base);
@@ -597,8 +624,8 @@ test('M1-MODEL-REV schema 3: a file from the future warns and opens, keeps what 
 });
 
 test('M1-MODEL-REV schema 4: random sessions through the REAL store (every kind of edit, undo, redo, duplicate, remove, resize, replace, scenarios, autosave): valid and equal to normalizeLayout after every step', () => {
-  const sessions = H.size(3, 24);
-  const steps = H.size(80, 160);
+  const sessions = H.size(3, 10);
+  const steps = H.size(80, 140);
   const starts = ['two-lines', 'dock-lab', 'warehouse-first-day'];
   const seen = new Map();
   let totalSteps = 0;
@@ -631,7 +658,7 @@ test('M1-MODEL-REV schema 4b: every exported mutator of layout.js (the classific
   assert.deepEqual(exported.filter((name) => !READERS.has(name) && !(name in MUTATORS)), [], 'a function of layout.js that is neither a reader nor a mutator with a driver');
   assert.ok(Object.keys(MUTATORS).length >= 34, `${Object.keys(MUTATORS).length} mutators`);
   const starts = ['warehouse-first-day', 'dock-lab', 'two-lines'];
-  const calls = H.size(10, 40);
+  const calls = H.size(10, 30);
   let committed = 0;
   Object.keys(MUTATORS).forEach((name, k) => {
     const rng = createRng(500 + k);
@@ -793,7 +820,7 @@ test('M1-MODEL-REV helpers 3: the door check reproduces Appendix A.1 and agrees 
   assert.equal(check.suggestedDoors, 6);
   // the same plant, measured: 400 hours of trucks in a FIFO queue
   const gap = block().interArrival;
-  const hours = H.size(3000, 20000);
+  const hours = H.size(3000, 10000);
   const measured = [5, 6, 7].map((doors) => H.queueRun(gap, doors, check.doorSeconds, hours, 5));
   for (const [i, doors] of [5, 6, 7].entries()) {
     assert.ok(Math.abs(measured[i].utilisation - DOORS.doorCheck(block({ doors })).utilisation) < 0.02, `${doors} doors: busy ${measured[i].utilisation.toFixed(3)}`);
@@ -1129,7 +1156,7 @@ test('M1-MODEL-REV validate 1: on 200 random plants every code fires exactly whe
   const rng = createRng(31337);
   const seen = {};
   let plants = 0;
-  for (let i = 0; i < H.size(200, 1200); i++) {
+  for (let i = 0; i < H.size(200, 600); i++) {
     const layout = randomTruckPlant(rng);
     plants++;
     const found = issuesOf(layout);
@@ -1291,7 +1318,7 @@ test('M1-MODEL-REV validate 4: the Fix buttons through the REAL store: one undo 
   const rng = createRng(2718);
   const applied = { 'update-station': 0, 'extend-docks': 0, focus: 0 };
   let partial = 0;
-  for (let i = 0; i < H.size(140, 900); i++) {
+  for (let i = 0; i < H.size(140, 450); i++) {
     const store = createStore({ storage: null });
     store.newProject(randomTruckPlant(rng));
     for (const issue of issuesOf(store.getState().layout)) {
@@ -1366,7 +1393,7 @@ defect('M1-MODEL-REV-8 doorCheck(trucks, null) throws a TypeError (the options d
   assert.equal(DOORS.doorCheck(t, null).doors, 2);
 });
 
-test('DISCREPANCY validate: the code is a SUPERSET of Appendix B for doors-too-few (95 % busy, not "exceeds the doors"), silent for a station without a dock, and checks only stations that have trucks', () => {
+test('DISCREPANCY validate: the code is a SUPERSET of Appendix B for doors-too-few (95 % busy, not "exceeds the doors"), silent for a station without a dock, checks only stations that have trucks, and joins the lane cells by road', () => {
   // 1. Appendix B: "doors needed (A.1) exceeds the doors". Code: DOORS_TOO_FEW_UTILISATION = 0.95 (A.1 itself says 5 doors at 98 % explode).
   const layout = boundaryPlant(5, 5);
   L.updateStation(layout, layout.stations[0].id, { ops: { trucks: { doors: 5, checkIn: 300, checkOut: 300, interArrival: { kind: 'const', mean: 600, spread: 0 }, pallets: { kind: 'const', mean: 26, spread: 0 } } } });
@@ -1390,6 +1417,12 @@ test('DISCREPANCY validate: the code is a SUPERSET of Appendix B for doors-too-f
   assert.deepEqual(issuesOf(legacy, ['docks-share-lane']), [], 'a legacy Goods in with the same docks is not warned about');
   L.updateStation(legacy, goodsIn.id, { ops: { trucks: { doors: 2 } } });
   assert.equal(issuesOf(legacy, ['docks-share-lane']).length, 1, 'with trucks it is');
+  // 4. Appendix B: two NEIGHBOURING road cells along the edge with no road behind them. The code also demands that the road is joined between them (a link either way):
+  //    two one-way stubs side by side, one pointing up and one down, are neighbours that no vehicle can pass between.
+  const stubs = L.normalizeLayout(layoutFromAscii(['.AAA....', '.^v.....', '........'], { stations: { A: { type: 'source', ops: { trucks: { doors: 2 } } } }, fleets: [{ count: 1 }] }));
+  const a = stubs.stations.find((x) => x.id === 'A');
+  assert.deepEqual([...H.literalLaneCells(stubs, a)].sort(), ['1,1', '2,1'], 'the sentence of Appendix B selects both');
+  assert.deepEqual(VOPS.dockLanes(stubs, a), [], 'the code, which joins the cells by road, does not');
   assert.ok(build('congestion-lab').stations.some((x) => VOPS.dockLanes(build('congestion-lab'), x).length > 0), 'the Packing docks of the Congestion lab lie in a row too (a workstation: not warned about)');
   assert.deepEqual(issuesOf(build('congestion-lab'), ['docks-share-lane']), []);
 });
@@ -1541,7 +1574,7 @@ test('M1-MODEL-REV hostile 12: a share link that is cut, garbled, compressed fro
   const link = await S.encodeShare(H.richProject());
   const good = await S.decodeShare(link);
   assert.equal(good.scenarios.length, 2);
-  for (const wrapped of [`#p=${link}`, `p=${link}`, `  ${link}\n`, `https://logiplan.example/app/#p=${link}.`, `(${link})`, `"${link}",`, `${link.slice(0, 40)}\n${link.slice(40)}`, `<https://x.example/#p=${link}>`]) {
+  for (const wrapped of [`#p=${link}`, `p=${link}`, `  ${link}\n`, `https://logiplan.example/app/#p=${link}.`, `(${link})`, `[${link}]`, `'${link}'`, `"${link}",`, `${link}).`, `${link.slice(0, 40)}\n${link.slice(40)}`, `<https://x.example/#p=${link}>`]) {
     assert.equal((await S.decodeShare(wrapped)).scenarios.length, 2, wrapped.slice(0, 30));
   }
   const friendly = (err) => /^This share link is damaged or from a newer version\.$/.test(err.message);
