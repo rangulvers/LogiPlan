@@ -8,8 +8,8 @@
 //                                                       busy moment hits both) and print the ratio of each to the first. Use it for
 //                                                       "before" (a pristine copy, e.g. git archive HEAD | tar -x -C DIR) against "after".
 //   --runs N       rounds per example (default 9); the figure is the BEST round (the least disturbed by other work on the machine)
-//   --hours H      simulated hours per round (default 4)
-//   --seed S       seed of the runs (default 4)
+//   --hours H      simulated hours per round (default 8, the default run length of a plant; a run of 1 hour of the Starter takes 60 ms of CPU, too short to resolve 2 %)
+//   --seed S       seed of the runs (default 1)
 //
 // What is timed: Simulation#advance(3600 * hours) of a freshly built Simulation, in CPU time of this process (process.cpuUsage, user +
 // system, all threads including the garbage collector), the way tests/sim.traffic.perf.test.js times. Wall clock is meaningless on a
@@ -24,7 +24,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { GOLDEN_DIR, PERF_FILE, ROOT, loadTree, writeGolden } from '../tests/helpers/golden.js';
 
 function parseArgs(argv) {
-  const opts = { runs: 9, hours: 4, seed: 1, roots: [], write: false, compare: false };
+  const opts = { runs: 9, hours: 8, seed: 1, roots: [], write: false, compare: false };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === '--write') opts.write = true;
@@ -65,7 +65,7 @@ async function measure(opts) {
   const ids = trees[0].tree.EXAMPLES.map((e) => e.id);
   const seconds = 3600 * opts.hours;
   // one untimed hour of each example per tree: the first run of fresh code is slower than all that follow
-  for (const t of trees) for (const ex of t.tree.EXAMPLES) timeOne(t.tree, ex, opts.seed, 600);
+  for (const t of trees) for (const ex of t.tree.EXAMPLES) timeOne(t.tree, ex, opts.seed, 3600);
   for (let round = 0; round < opts.runs; round++) {
     const order = round % 2 ? [...trees].reverse() : trees;
     for (const id of ids) {
@@ -81,11 +81,12 @@ async function measure(opts) {
     examples: Object.fromEntries(ids.map((id) => {
       const cpu = t.runs.get(id).map((r) => r.cpu);
       const wall = t.runs.get(id).map((r) => r.wall);
+      const perHour = (x) => Number((x / opts.hours).toFixed(5));
       return [id, {
-        cpuSecondsPerSimulatedHour: Math.min(...cpu) / opts.hours,
-        cpuSecondsMedian: median(cpu) / opts.hours,
-        cpuSecondsWorst: Math.max(...cpu) / opts.hours,
-        wallSecondsBest: Math.min(...wall) / opts.hours,
+        cpuSecondsPerSimulatedHour: perHour(Math.min(...cpu)),
+        cpuSecondsMedian: perHour(median(cpu)),
+        cpuSecondsWorst: perHour(Math.max(...cpu)),
+        wallSecondsBest: perHour(Math.min(...wall)),
         timesRealTime: Math.round(3600 / (Math.min(...cpu) / opts.hours)),
       }];
     })),
@@ -125,7 +126,7 @@ if (opts.write) {
     recordedAt: 'milestone M0, before any change of production code (the tree with the dock work merged)',
     node: process.version,
     machine: { cpus: os.cpus().length, model: os.cpus()[0].model.trim(), platform: `${os.platform()} ${os.release()}`, loadAverageAtStart: Number(load0.toFixed(2)) },
-    method: { runs: opts.runs, simulatedHoursPerRun: opts.hours, seed: opts.seed, timed: 'Simulation#advance on a freshly built simulation (warm-up window 600 s), after one untimed warm-up run per example' },
+    method: { runs: opts.runs, simulatedHoursPerRun: opts.hours, seed: opts.seed, timed: 'Simulation#advance(3600 * simulatedHoursPerRun) on a freshly built simulation (KPI warm-up 600 s), after one untimed run of 1 simulated hour per example; the figure is the best round, per simulated hour' },
     examples: results[0].examples,
   };
   writeGolden(PERF_FILE, `${JSON.stringify(record, null, 2)}\n`);
