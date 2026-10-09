@@ -128,7 +128,7 @@ export function openTimetableDialog(ctx, { stationId, text = '' }) {
   area.addEventListener('input', render);
 
   const body = h('div', { class: 'paste' },
-    h('p', { style: { margin: 0 } }, 'Copy two columns in your spreadsheet, the arrival time and the number of pallets, and paste them below. Tabs, semicolons and commas between the columns work, and so do German Excel times (06.00, 6:00 Uhr) and numbers (24,0).'),
+    h('p', { style: { margin: 0 } }, 'Copy two columns in your spreadsheet, the arrival time and the number of pallets, and paste them below. Tabs, semicolons and commas between the columns work, and so do German Excel times (06.00, 6:00 Uhr), English ones (6:00 AM) and numbers (24,0).'),
     h('div', { class: 'field' }, label, area),
     h('div', { class: 'row row--wrap' }, fromClipboard),
     summary, replaces, preview);

@@ -7,8 +7,11 @@
 //   Separator  a TAB if any data line has one, else a SEMICOLON if any has one, else a COMMA, but only when every data line has exactly one
 //              comma outside quotes and is not itself a decimal number ("24,0"; so "0600,24" is NOT split: it could be one number). With
 //              none of these every line is one column: a time and no pallets. Fields are trimmed; double quotes around a field are removed.
-//   Time       H:MM, HH:MM, HH.MM (two digits after the point), HHMM (exactly four digits), hours 0..23, minutes 0..59, with a trailing
-//              "h" or "Uhr" (any case, spaces allowed) ignored. Nothing else: no seconds, no "6 Uhr", no "6.5", no am/pm (a cut-line item).
+//   Time       H:MM, HH:MM, H:MM:00 and HH:MM:00 (seconds only when they are zero: database and warehouse-system exports write 06:00:00),
+//              HH.MM (two digits before and after the point), HHMM (exactly four digits), hours 0..23, minutes 0..59, with a trailing "h" or "Uhr" (any case,
+//              spaces allowed) ignored; H.MM (one digit before the point) only WITH that suffix ("6.30 Uhr"): a bare "0.25" is Excel's time as a fraction of a
+//              day (06:00), not 00:25, and is refused with a hint rather than guessed. 12-hour times of English Excel: "6:00 AM", "6:00:00 PM", "6 a.m. " forms
+//              with a colon, hours 1..12 ("12:00 AM" is midnight, "12:30 PM" is half past noon). Nothing else: no seconds other than zero, no "6 Uhr", no "6.5".
 //   Pallets    a whole number 1..200; "24,0", "24.0", "24,00" and "24.00" are accepted as 24; "24,5" and "1.000" are refused (never guessed);
 //              an empty or missing column means "draw the pallets from the distribution" (`pallets: null`).
 //   Header     the first non-empty line is skipped when it contains no digit ("Arrival;Pallets", "Ankunft<TAB>Paletten").
@@ -57,18 +60,55 @@ function detectSeparator(lines) {
   return commaPairs ? 'comma' : null;
 }
 
+const SUFFIX = /(?:uhr|h)$/i;
+const MERIDIEM = /([ap])\.?\s*m\.?$/i;
+
 /**
- * Seconds after midnight from a spreadsheet time ("6:00", "06:00", "06.00", "0600", "6:00 Uhr", "06:00h"), or null.
+ * Seconds after midnight from a spreadsheet time ("6:00", "06:00", "06:00:00", "06.00", "0600", "6:00 Uhr", "06:00h", "6.30 Uhr", "6:00 AM"), or null.
+ * (No pattern starts with optional white space: a field of many spaces must stay linear to parse, the dialog parses on every keystroke.)
  * @param {string} field
  * @returns {number|null}
  */
 export function parseTimeField(field) {
-  const s = String(field).trim().replace(/\s*(?:uhr|h)$/i, '').trim();
-  const m = /^(\d{1,2}):(\d{2})$/.exec(s) || /^(\d{1,2})\.(\d{2})$/.exec(s) || /^(\d{2})(\d{2})$/.exec(s);
-  if (!m) return null;
-  const hours = Number(m[1]);
-  const minutes = Number(m[2]);
-  return hours <= 23 && minutes <= 59 ? hours * 3600 + minutes * 60 : null;
+  let s = String(field).trim();
+  let meridiem = '';
+  const pm = MERIDIEM.exec(s);
+  if (pm) {
+    meridiem = pm[1].toLowerCase();
+    s = s.slice(0, pm.index).trim();
+  }
+  const suffix = !meridiem && SUFFIX.test(s);
+  if (suffix) s = s.replace(SUFFIX, '').trim();
+  let hours;
+  let minutes;
+  const colon = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(s);
+  if (colon) {
+    if (colon[3] !== undefined && colon[3] !== '00') return null;
+    hours = Number(colon[1]);
+    minutes = Number(colon[2]);
+  } else if (meridiem) {
+    return null;
+  } else {
+    const m = /^(\d{2})\.(\d{2})$/.exec(s) || (suffix ? /^(\d)\.(\d{2})$/.exec(s) : null) || /^(\d{2})(\d{2})$/.exec(s);
+    if (!m) return null;
+    hours = Number(m[1]);
+    minutes = Number(m[2]);
+  }
+  if (minutes > 59) return null;
+  if (meridiem) {
+    if (hours < 1 || hours > 12) return null;
+    hours = (hours % 12) + (meridiem === 'p' ? 12 : 0);
+  } else if (hours > 23) return null;
+  return hours * 3600 + minutes * 60;
+}
+
+/** A short hint for a time that was not read, when the text looks like a known spreadsheet notation, else ''. */
+export function timeHint(field) {
+  const s = String(field).trim();
+  if (/^\d{1,2}:\d{2}:\d{2}/.test(s)) return 'times are whole minutes, like 06:00';
+  if (/^\d*[.,]\d+$/.test(s) && Number(s.replace(',', '.')) < 1) return 'a number between 0 and 1 is Excel\u2019s time as a fraction of a day: format the column as hh:mm and copy it again';
+  if (/^\d[.,]\d{2}$/.test(s)) return 'write the hour with two digits (06.30) or with a colon (6:30)';
+  return '';
 }
 
 /**
@@ -144,7 +184,8 @@ export function parseTimetable(text) {
     if (at === null) {
       const comma = separator === null && fields[0].includes(',')
         ? ' (a comma between the columns only works when every row has exactly one; use a semicolon or a tab)' : '';
-      skip(entry, 'time', `${quoted(fields[0])} is not a time${comma}`);
+      const hint = comma || (timeHint(fields[0]) ? ` (${timeHint(fields[0])})` : '');
+      skip(entry, 'time', `${quoted(fields[0])} is not a time${hint}`);
       continue;
     }
     let pallets = null;

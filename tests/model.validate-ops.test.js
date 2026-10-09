@@ -73,13 +73,14 @@ test('A1.12 docks-share-lane fires on the Dock lab "row" variant (six docks in a
   assert.deepEqual(codesOf(legacy), []);
 });
 
-test('docks-share-lane: the precise rule on small plants (neighbours, joined by road, nothing behind them)', () => {
+test('docks-share-lane: the precise rule on small plants (neighbours joined by road; a second road behind them does not help)', () => {
   // 1. four docks in a row, nothing behind: one lane of four cells
   assert.deepEqual(lanesOf(plant(['.AAAA...', '.++++...', '........', '........', '........', '........', '........', '........'])), [['1,1', '2,1', '3,1', '4,1']]);
-  // 2. a road behind them (a parallel road): a vehicle can pass, no lane
-  assert.deepEqual(lanesOf(plant(['.AAAA...', '.++++...', '.++++...', '........', '........', '........', '........', '........'])), []);
-  // 3. a road behind only one of four docks: the pairs that have nothing behind them still form a lane
-  assert.deepEqual(lanesOf(plant(['.AAAA...', '.++++...', '...+....', '........', '........', '........', '........', '........'])), [['1,1', '2,1']], 'the far cell of the third dock is road: it neither joins the lane nor continues it');
+  // 2. a road behind them (a parallel road): STILL one lane. Appendix B said "and the cells on their far side are not road cells", but the simulation sends every
+  //    visit to the first dock there too (M1-MODEL-REV-3: 465 of 465 visits with nothing behind, 202 of 202 with a road joined at every cell, 372 of 372 at the ends)
+  assert.deepEqual(lanesOf(plant(['.AAAA...', '.++++...', '.++++...', '........', '........', '........', '........', '........'])), [['1,1', '2,1', '3,1', '4,1']]);
+  // 3. a road behind only one of four docks: the docks are neighbours joined by road all the same
+  assert.deepEqual(lanesOf(plant(['.AAAA...', '.++++...', '...+....', '........', '........', '........', '........', '........'])), [['1,1', '2,1', '3,1', '4,1']]);
   // 4. docks that are not neighbours (side roads): no lane
   assert.deepEqual(lanesOf(plant(['.AAAA...', '.+.+....', '.+.+....', '........', '........', '........', '........', '........'])), []);
   // 5. neighbours without a link between them (two one-way plates side by side facing away): not one road, no lane

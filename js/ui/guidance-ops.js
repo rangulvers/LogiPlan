@@ -112,7 +112,13 @@ export function opsFixDoneText(before, after, fix) {
     return `${count(added, 'road cell', 'road cells')} more touch${added === 1 ? 'es' : ''} ${name}. They lie in a row, so vehicles can only share the work if each dock gets its own side road.`;
   }
   const trucks = fix.patch && fix.patch.ops && fix.patch.ops.trucks;
-  if (trucks && Number.isFinite(trucks.doors)) return `${name} now has ${count(trucks.doors, 'door', 'doors')}.`;
+  if (trucks && Number.isFinite(trucks.doors)) {
+    const docks = docksOf(after, fix.stationId).length;
+    const more = docks > 0 && trucks.doors > docks
+      ? ` Only ${count(docks, 'road cell touches', 'road cells touch')} it, so a door beyond ${docks === 1 ? 'that dock' : 'those docks'} cannot be unloaded any faster: the Checks tab asks for a second dock, ideally on its own side road.`
+      : '';
+    return `${name} now has ${count(trucks.doors, 'door', 'doors')}.${more}`;
+  }
   if (trucks && Array.isArray(trucks.schedule) && trucks.schedule[0]) {
     const row = trucks.schedule[0];
     return `Added a row to the timetable of ${name}: ${formatTimeOfDay(row.at)}${Number.isFinite(row.pallets) ? `, ${count(row.pallets, 'pallet', 'pallets')}` : ''}.`;

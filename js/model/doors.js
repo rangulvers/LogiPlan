@@ -255,12 +255,14 @@ export function peakRowsPerHour(rows) {
  * @returns {{
  *   mode: 'rate'|'schedule', empty: boolean, doors: number, trucksPerHour: number, pallets: number, tPallet: number|null,
  *   basis: 'assumed'|'measured', checkIn: number, checkOut: number, doorSeconds: number, doorHours: number, needed: number,
- *   utilisation: number, tooFew: boolean, suggestedDoors: number, suggestedUtilisation: number,
+ *   utilisation: number, tooFew: boolean, suggestedDoors: number, suggestedUtilisation: number, suggestionEnough: boolean,
  *   parts: Record<string, string>, sentences: string[], text: string, action: null|{ label: string, doors: number }
  * }} `empty`: no truck ever arrives (an empty timetable, a demand factor of 0), `needed` is 0; `action`: the "Use N doors" button, or null
- *   when the doors are enough
+ *   when the doors are enough or when even the most doors a station can have (32) would still be busy more than DOORS_TOO_FEW_UTILISATION
+ *   (`suggestionEnough` is false then, and the text says so instead of offering a button that would leave the warning in place)
  */
-export function doorCheck(trucks, opts = {}) {
+export function doorCheck(trucks, opts) {
+  opts = isObj(opts) ? opts : {}; // null and junk mean "no options", like describeTrucks and the mutators of layout.js read them
   const t = isObj(trucks) ? trucks : defaultTrucks();
   const f = demandOf(opts);
   const doors = clamp(Math.round(finite(t.doors, TRUCK_DEFAULTS.doors)), DOORS_MIN, DOORS_MAX);
@@ -296,7 +298,10 @@ export function doorCheck(trucks, opts = {}) {
   const check = {
     mode: schedule ? 'schedule' : 'rate', empty, doors, trucksPerHour, pallets, tPallet, basis: useMeasured ? 'measured' : 'assumed',
     checkIn, checkOut, doorSeconds, doorHours, needed, utilisation, tooFew, suggestedDoors, suggestedUtilisation,
-    action: tooFew && suggestedDoors > doors ? { label: `Use ${suggestedDoors} doors`, doors: suggestedDoors } : null,
+    // the button only where it ends the warning: with more than 32 doors' worth of trucks even the most doors a station can have stay above the limit,
+    // and "Use 32 doors" would leave the check where it was
+    suggestionEnough: suggestedUtilisation <= DOORS_TOO_FEW_UTILISATION,
+    action: tooFew && suggestedDoors > doors && suggestedUtilisation <= DOORS_TOO_FEW_UTILISATION ? { label: `Use ${suggestedDoors} doors`, doors: suggestedDoors } : null,
   };
   return { ...check, ...doorCheckText(check) };
 }
@@ -332,7 +337,8 @@ export function doorCheckText(check) {
     sentences.push(`At the busiest hour you need about ${parts.need} ${parts.need === '1' ? 'door' : 'doors'} busy at once (${count(parts.trucks, 'truck', 'trucks')} an hour, ${count(parts.minutes, 'minute', 'minutes')} at a door each).`);
     if (check.tooFew) {
       sentences.push(`You have ${doorsHave}, so trucks will queue at the gate.`);
-      if (check.suggestedDoors > check.doors) sentences.push(`${count(parts.better, 'door', 'doors')} would be busy ${parts.util} % of the time.`);
+      if (check.suggestionEnough === false) sentences.push(`Even ${count(parts.better, 'door', 'doors')}, the most a station can have, would be busy ${parts.util} % of the time: fewer or smaller trucks, or a shorter time at the door, are the way out.`);
+      else if (check.suggestedDoors > check.doors) sentences.push(`${count(parts.better, 'door', 'doors')} would be busy ${parts.util} % of the time.`);
     } else {
       sentences.push(`You have ${doorsHave}, busy about ${parts.utilNow} % of the time.`);
     }
@@ -388,10 +394,14 @@ export function expansionTime(trucks, clock, dayIndex) {
  * Timetable mode, 6.2.6: the arrivals of one clock day, as simulation times, sorted (equal times keep the order of the rows).
  *
  * A row is a time of day `at`; on clock day `k` it falls at `t = k x 86400 + at - clock.startTod`. A row whose `t` is before the start of
- * the run (day 0, `at` earlier than `startTod`) is in the past and does not exist. Per row, in row order, the station's truck stream `rng`
- * is drawn in this order and only as far as the settings need it: (1) `noShow > 0`: `rng.next() < noShow` makes the row a no-show (it stays
- * in the list with `noShow: true`, at its nominal time, so that the run can count it then, and draws nothing more); (2) `jitter > 0`:
- * `t += rng.range(-jitter, +jitter)`, never before 0; (3) a row without `pallets` draws them with `drawPallets(rng, trucks.pallets)`.
+ * the run (day 0, `at` earlier than `startTod`) is in the past and does not exist. Every row that needs a random number gets a STREAM OF ITS
+ * OWN, `rng.fork(day:at:n)` (n counts rows with the same time), and always draws in the same order: (1) the no-show draw, `u < noShow` makes
+ * the row a no-show (it stays in the list with `noShow: true`, at its nominal time, and its pallets are not drawn); (2) the jitter draw,
+ * `t += (2u - 1) x jitter`, never before 0; (3) for a row without `pallets`, the draws of `drawPallets(stream, trucks.pallets)`. The first two
+ * draws are taken whether or not the settings use them, so changing only the no-show chance, the jitter or the KIND of the pallets
+ * distribution never moves any other truck: experiments that vary one of them compare the same trucks (common random numbers), and a row
+ * added to the timetable leaves the others where they were (a row is known by its time, not by its position). A row with no randomness
+ * (no no-show, no jitter, pallets given) draws nothing and forks nothing.
  * The pallets are NOT scaled by the demand slider here: it can move at any time, so the run applies `scalePallets` when the truck arrives.
  *
  * Call it once per clock day, in increasing order, at `expansionTime(...)`; a jittered truck may arrive before an earlier day's last one,
@@ -400,7 +410,7 @@ export function expansionTime(trucks, clock, dayIndex) {
  * @param {object} trucks a sanitized `ops.trucks` block (reads schedule, noShow, jitter, pallets)
  * @param {{ startTod: number }} clock from makeClock(layout.calendar)
  * @param {number} dayIndex the clock day, 0 = the day the run starts on
- * @param {{ next(): number, range(lo: number, hi: number): number }} rng
+ * @param {{ fork(label: string): { next(): number } }} rng the station's truck stream (only its seed matters: the forks do not advance it)
  * @returns {Array<{ at: number, pallets: number, noShow: boolean, row: number }>} `row`: index in the timetable
  */
 export function expandScheduleDay(trucks, clock, dayIndex, rng) {
@@ -409,17 +419,26 @@ export function expandScheduleDay(trucks, clock, dayIndex, rng) {
   const jitter = finite(trucks.jitter, 0);
   const base = dayIndex * SECONDS_PER_DAY - finite(clock && clock.startTod, 0);
   const due = [];
+  let sameAt = 0; // rows before this one with the same time of day (the timetable is sorted, so they are right before it)
   for (let i = 0; i < Math.min(rows.length, MAX_SCHEDULE_ROWS); i++) {
     const row = rows[i];
+    sameAt = i > 0 && rows[i - 1].at === row.at ? sameAt + 1 : 0;
     const nominal = base + row.at;
     if (nominal < 0) continue;
-    if (noShow > 0 && rng.next() < noShow) {
+    const open = typeof row.pallets !== 'number';
+    if (!open && !(noShow > 0) && !(jitter > 0)) {
+      due.push({ at: nominal, pallets: row.pallets, noShow: false, row: i });
+      continue;
+    }
+    const stream = rng.fork(`${dayIndex}:${row.at}:${sameAt}`);
+    const absent = stream.next();
+    const moved = stream.next();
+    if (noShow > 0 && absent < noShow) {
       due.push({ at: nominal, pallets: 0, noShow: true, row: i });
       continue;
     }
-    const at = jitter > 0 ? Math.max(0, nominal + rng.range(-jitter, jitter)) : nominal;
-    const pallets = typeof row.pallets === 'number' ? row.pallets : drawPallets(rng, trucks.pallets);
-    due.push({ at, pallets, noShow: false, row: i });
+    const at = jitter > 0 ? Math.max(0, nominal + (-jitter + 2 * jitter * moved)) : nominal;
+    due.push({ at, pallets: open ? drawPallets(stream, trucks.pallets) : row.pallets, noShow: false, row: i });
   }
   return due.sort((a, b) => a.at - b.at); // Array#sort is stable
 }

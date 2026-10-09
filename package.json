@@ -1,10 +1,11 @@
 {
   "name": "logiplan",
-  "version": "0.1.0",
+  "version": "0.6.0",
   "description": "Interactive factory layout & intralogistics simulator. Build a plant on a Lego-style baseplate, run vehicles and material flows, compare variants. Runs as a static GitHub Pages app.",
   "type": "module",
   "private": true,
   "license": "MIT",
+  "repository": { "type": "git", "url": "https://github.com/rangulvers/LogiPlan.git" },
   "engines": { "node": ">=20" },
   "scripts": {
     "start": "node scripts/serve.mjs",
@@ -14,6 +15,8 @@
     "test:heavy": "node scripts/test-tiers.mjs heavy",
     "test:timings": "node scripts/test-tiers.mjs timings",
     "check": "node scripts/check-imports.mjs",
+    "version:check": "node scripts/bump-version.mjs --check",
+    "version:bump": "node scripts/bump-version.mjs",
     "test:e2e": "node tests/e2e/run.mjs"
   }
 }

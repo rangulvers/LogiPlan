@@ -4,7 +4,7 @@
 // expected skipped rows [line, code]. Nothing is applied by the parser: rowsOf() is what the dialog writes after "Use N rows".
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parsePalletsField, parseTimeField, parseTimetable, rowsOf, summarizeTimetable } from '../js/ui/panels/timetable-paste.js';
+import { parsePalletsField, parseTimeField, parseTimetable, rowsOf, summarizeTimetable, timeHint } from '../js/ui/panels/timetable-paste.js';
 import { MAX_SCHEDULE_ROWS } from '../js/model/ops.js';
 import { sanitizeOps } from '../js/model/ops.js';
 
@@ -26,7 +26,12 @@ const TABLE = [
   ['H:MM', '6:00;1', [[h(6), 1]], []],
   ['HH:MM', '06:30;1', [[h(6, 30), 1]], []],
   ['HH.MM with a point (two digits after it)', '06.45;1', [[h(6, 45), 1]], []],
-  ['H.MM', '6.05;1', [[h(6, 5), 1]], []],
+  ['H.MM without a suffix is refused: 0.25 is Excel\u2019s 06:00 as a day fraction, not 00:25 (M1-MODEL-REV-2)', '6.05;1\n0.25;1\n0,3125;1', [], [[1, 'time'], [2, 'time'], [3, 'time']]],
+  ['H.MM is read with the suffix of a German time', '6.05 Uhr;1\n9.30h;2', [[h(6, 5), 1], [h(9, 30), 2]], []],
+  ['seconds that are zero (the export of a database or a warehouse system)', '06:00:00;1\n6:30:00;2\n14:05:00;3', [[h(6), 1], [h(6, 30), 2], [h(14, 5), 3]], []],
+  ['seconds that are not zero are refused, never dropped', '06:00:30;1\n6:00:01;2', [], [[1, 'time'], [2, 'time']]],
+  ['12-hour times of English Excel (UX-2)', '6:00 AM\t24\n7:30 am\t18\n1:00 PM\t26\n11:59 pm\t4\n12:00 AM\t5\n12:30 PM\t6\n6:00:00 PM\t7\n9 a.m.\t8', [[h(6), 24], [h(7, 30), 18], [h(13), 26], [h(23, 59), 4], [0, 5], [h(12, 30), 6], [h(18), 7]], [[8, 'time']], { separator: 'tab' }],
+  ['12-hour times need hours 1 to 12 and a colon time', '0:30 AM;1\n13:00 PM;1\n6:60 AM;1\n0600 PM;1', [], [[1, 'time'], [2, 'time'], [3, 'time'], [4, 'time']]],
   ['HHMM', '0600;1\n1430;2\n2359;3', [[h(6), 1], [h(14, 30), 2], [h(23, 59), 3]], []],
   ['a trailing Uhr', '6:00 Uhr;1\n07:15 UHR;2\n8.30 uhr;3', [[h(6), 1], [h(7, 15), 2], [h(8, 30), 3]], []],
   ['a trailing h', '6:00h;1\n7:00 h;2\n0830h;3', [[h(6), 1], [h(7), 2], [h(8, 30), 3]], []],
@@ -36,7 +41,7 @@ const TABLE = [
   // --- bad times ----------------------------------------------------------------------------------------------------------
   ['hours out of range', '24:00;1\n25:00;1\n99:99;1', [], [[1, 'time'], [2, 'time'], [3, 'time']]],
   ['minutes out of range (the example of 7.2: 25:70)', '12:60;1\n25:70;4', [], [[1, 'time'], [2, 'time']]],
-  ['not times at all', 'abc;1\n6;1\n6.5;1\n6:5;1\n06:0;1\n6:00:00;1\n6 Uhr;1\n2400;1\n9999;1\n600;1\n-6:00;1', [], [[1, 'time'], [2, 'time'], [3, 'time'], [4, 'time'], [5, 'time'], [6, 'time'], [7, 'time'], [8, 'time'], [9, 'time'], [10, 'time'], [11, 'time']]],
+  ['not times at all', 'abc;1\n6;1\n6.5;1\n6:5;1\n06:0;1\n6:00:30;1\n6 Uhr;1\n2400;1\n9999;1\n600;1\n-6:00;1', [], [[1, 'time'], [2, 'time'], [3, 'time'], [4, 'time'], [5, 'time'], [6, 'time'], [7, 'time'], [8, 'time'], [9, 'time'], [10, 'time'], [11, 'time']]],
   ['a missing time', ';24\n6:00;24', [[h(6), 24]], [[1, 'no-time']]],
   // --- pallets ------------------------------------------------------------------------------------------------------------
   ['a decimal comma that is a whole number (24,0 and 24,00)', '6:00;24,0\n7:00;18,00', [[h(6), 24], [h(7), 18]], []],
@@ -175,8 +180,8 @@ test('A1.11 nothing is applied by the parser: rowsOf gives the rows as the timet
 });
 
 test('A1.11 the field parsers on their own', () => {
-  for (const [text, seconds] of [['6:00', h(6)], ['06:00', h(6)], ['06.00', h(6)], ['0600', h(6)], ['6:00 Uhr', h(6)], ['06:00h', h(6)], ['23:59', h(23, 59)], ['0:05', 300]]) assert.equal(parseTimeField(text), seconds, text);
-  for (const text of ['', 'x', '24:00', '6:60', '6', '600', '6.5', '6:5', '12:30:00', '6:00 pm', '-1:00']) assert.equal(parseTimeField(text), null, text);
+  for (const [text, seconds] of [['6:00', h(6)], ['06:00', h(6)], ['06.00', h(6)], ['0600', h(6)], ['6:00 Uhr', h(6)], ['06:00h', h(6)], ['23:59', h(23, 59)], ['0:05', 300], ['12:30:00', h(12, 30)], ['6:00 pm', h(18)], ['6:00 AM', h(6)], ['12:00 a.m.', 0], ['12:00 P.M.', h(12)], ['6.30 Uhr', h(6, 30)]]) assert.equal(parseTimeField(text), seconds, text);
+  for (const text of ['', 'x', '24:00', '6:60', '6', '600', '6.5', '6:5', '12:30:01', '6:00 xm', '-1:00', '0.25', '6.30', '13:00 pm', '0:30 am', '6 am']) assert.equal(parseTimeField(text), null, text);
   for (const [text, value] of [['24', 24], ['24,0', 24], ['24.0', 24], ['24,00', 24], ['1', 1], ['200', 200], [' 12 ', 12], ['+7', 7]]) assert.deepEqual(parsePalletsField(text), { value }, text);
   assert.deepEqual(parsePalletsField('24,5'), { error: 'whole' });
   assert.deepEqual(parsePalletsField('1.000'), { error: 'whole' });
@@ -184,4 +189,27 @@ test('A1.11 the field parsers on their own', () => {
   assert.deepEqual(parsePalletsField('201'), { error: 'range' });
   assert.deepEqual(parsePalletsField('abc'), { error: 'number' });
   assert.deepEqual(parsePalletsField('-4'), { error: 'number' });
+});
+
+test('UX-2 / UX-21 / M1-MODEL-REV-10: a time that is not read says what to change, in the words of the spreadsheet that wrote it', () => {
+  const reason = (text) => parseTimetable(text).skipped[0].reason;
+  assert.match(reason('6:00:30;1'), /^“6:00:30” is not a time \(times are whole minutes, like 06:00\)$/);
+  assert.match(reason('0.25;24'), /“0\.25” is not a time \(a number between 0 and 1 is Excel’s time as a fraction of a day: format the column as hh:mm/);
+  assert.match(reason('0,3125;24'), /fraction of a day/);
+  assert.match(reason('6.30;24'), /write the hour with two digits \(06\.30\) or with a colon \(6:30\)/);
+  assert.equal(reason('abc;24'), '“abc” is not a time', 'no hint for what no spreadsheet writes');
+  assert.equal(reason('25:70;24'), '“25:70” is not a time');
+  assert.equal(timeHint('06:00'), '', 'a good time needs no hint');
+  assert.equal(parseTimetable('0.25;24').rows.length, 0, 'the day fraction is never guessed (it used to be read as 00:25)');
+});
+
+test('M1-MODEL-REV-4: the parser stays linear on a long run of spaces (the dialog parses on every keystroke)', () => {
+  for (const text of ['6:00' + ' '.repeat(40000) + 'x;24', ' '.repeat(40000) + '6:00;24', '6:00;' + ' '.repeat(40000) + 'x', 'a' + ' '.repeat(40000) + 'x;1', '6:00' + ' '.repeat(40000) + 'Uhr;1']) {
+    const t0 = process.cpuUsage();
+    parseTimetable(text);
+    const cpu = process.cpuUsage(t0);
+    const ms = (cpu.user + cpu.system) / 1000;
+    assert.ok(ms < 100, `40,000 spaces took ${ms.toFixed(0)} ms of CPU (quadratic parsing took 1.7 s)`);
+  }
+  assert.equal(parseTimeField('6:00' + ' '.repeat(5000) + 'Uhr'), h(6), 'and a long gap before Uhr is still read');
 });

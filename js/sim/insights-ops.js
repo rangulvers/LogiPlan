@@ -192,10 +192,13 @@ export function doorsBottleneck(ctx) {
     if (a.role === 'out' && a.shortShare >= OUTBOUND_SHORT_SHARE) continue; // the trucks wait for pallets: outbound-short says so
     if (a.role === 'in' && a.evidence && a.cause !== 'free') continue; // pallets are held back for a reason the older rules name (room downstream, no vehicle ...)
     const d = doorsFor(a, true);
+    // On a Goods out most of the door time can be the wait for pallets: trucks that arrive faster than the plant ships fill one after the other, and a second
+    // door only moves the wait from the gate to the door. The report cannot tell (it has no pallets-planned rate), so the advice says what to look at.
+    const supplyHint = a.role === 'out' ? ' If the trucks mostly wait for their pallets and not for check-in, more doors only move the wait from the gate to the door: look at what feeds it.' : '';
     out.push(candidate('doors-bottleneck', a.id, 'warning', a.util,
       `The doors of ${a.name} are the bottleneck: busy ${pct(a.util)} of the time while trucks wait ${formatDuration(a.wait)}.`,
       `${a.name} has ${count(a.doors, 'door', 'doors')}. A truck holds a door for ${a.t.doorTime.mean === null ? 'a long time' : formatDuration(a.t.doorTime.mean)} on average (check-in ${formatDuration(a.cfg.checkIn ?? 0)}, check-out ${formatDuration(a.cfg.checkOut ?? 0)} included), so the trucks arrive faster than the doors can serve them.`,
-      `Open another door: ${d.k} doors would be busy about ${pct(d.util)} of the time. Shorter check-in and check-out times help in the same way.`,
+      `Open another door: ${d.k} doors would be busy about ${pct(d.util)} of the time. Shorter check-in and check-out times help in the same way.${supplyHint}`,
       refsOf(a)));
   }
   return out;

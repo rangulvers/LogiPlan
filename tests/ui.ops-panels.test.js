@@ -8,8 +8,12 @@ import * as L from '../js/model/layout.js';
 import { defaultTrucks, trucksOf } from '../js/model/ops.js';
 import { convertToDoors, doorCheck } from '../js/model/doors.js';
 import {
-  doorCheckFor, doorCheckNote, doorFormula, measuredDoorSeconds, nextRow, rateSummary, scheduleWith, scheduleWithout, sectionAside, shippedLine, timetableSummary, toMinutes, toSeconds,
+  demandNote, doorCheckFor, doorCheckNote, doorFormula, dockNote, measuredDoorSeconds, nextRow, rateSummary, rowsFromRate, scheduleWith, scheduleWithout, sectionAside, seedText, shippedLine, timetableSummary, toMinutes, toSeconds,
 } from '../js/ui/panels/ops-trucks.js';
+import { whenSettled } from '../js/ui/panels/time-input.js';
+import { dayHintVisible } from '../js/ui/panels/day-hint.js';
+import { FIRST_TRUCK_GAP, firstTruckAfterStart } from '../js/ui/panels/plant-clock.js';
+import { opsFixDoneText } from '../js/ui/guidance-ops.js';
 import { DOOR_BUSY_SHARE, doorModel, doorModels, seriesValues, waitTone } from '../js/ui/panels/doors-card.js';
 import { previewLines, useLabel } from '../js/ui/panels/timetable-dialog.js';
 import { parseTimetable } from '../js/ui/panels/timetable-paste.js';
@@ -198,9 +202,10 @@ test('the paste dialog previews every line in order: read rows, skipped rows mar
 test('the clock of the plant settings: Run one day and Run one week set the whole span and no warm-up, reset, and run exactly that span', async () => {
   assert.deepEqual(runPatch(DAY_SECONDS), { duration: 86400, warmup: 0 });
   assert.deepEqual(runPatch(WEEK_SECONDS), { duration: 604800, warmup: 0 });
-  assert.equal(runCostText(DAY_SECONDS), 'roughly 10 to 40 seconds');
-  assert.equal(runCostText(WEEK_SECONDS), 'roughly 1 to 5 minutes');
-  assert.match(runText(DAY_SECONDS), /^Runs one day of the plant from the start of the clock, as fast as this computer can \(roughly 10 to 40 seconds for a plant of this size\), and then stops\./);
+  assert.equal(runCostText(DAY_SECONDS), 'roughly 2 to 10 seconds', 'measured: 2.4 s of wall time in the browser, 4.4 s of CPU on a busy machine');
+  assert.equal(runCostText(WEEK_SECONDS), 'roughly 15 to 60 seconds');
+  assert.match(runText(DAY_SECONDS), /^Runs one day of the plant from the start of the clock, as fast as this computer can \(roughly 2 to 10 seconds for a plant of this size\), and then stops\./);
+  assert.match(runText(DAY_SECONDS), /It also sets the run length of the plant to 24 h with no warm-up, which later runs, comparisons and sweeps use too/, 'UX-25: the toast says what it changed');
   assert.match(runText(WEEK_SECONDS), /one week/);
 
   const { layout } = busy();
@@ -291,4 +296,153 @@ test('the line under the door check says that the vehicles set the door time: an
   assert.match(doorCheckNote(doorCheck(trucks, { measuredDoorSeconds: 2520 })), /^Your vehicles set this door time: if it is long, look at the forklifts and AGVs before adding doors\.$/);
   assert.equal(doorCheckNote(doorCheck({ ...trucks, mode: 'schedule', schedule: [] }, {})), '', 'an empty timetable has no check');
   assert.equal(doorCheckNote(null), '');
+});
+
+// ---- the fixes of the UX review (UX-1, UX-5, UX-8, UX-9, UX-23) ----------------------------------------------------------------------------------------
+
+/** An input stand-in on Node's EventTarget that behaves like a native time input: `type()` fires `change` per finished segment, as Chromium does. */
+function timeInput() {
+  const el = new EventTarget();
+  el.focus = () => el.dispatchEvent(new Event('focus'));
+  el.blur = (related = null) => { const e = new Event('blur'); e.relatedTarget = related; el.dispatchEvent(e); };
+  el.change = () => el.dispatchEvent(new Event('change'));
+  el.press = (key) => { const e = new Event('keydown'); e.key = key; el.dispatchEvent(e); };
+  return el;
+}
+
+test('UX-1: a time field is settled when the planner is done with it, never per segment', () => {
+  const input = timeInput();
+  const settled = [];
+  const watch = whenSettled(input, (how, event) => settled.push([how, event.relatedTarget ?? null]));
+  input.focus();
+  input.change(); // the hour (09:00 on the way to 09:30)
+  input.change(); // the minutes
+  input.change(); // AM/PM
+  assert.deepEqual(settled, [], 'nothing while the planner is in the field');
+  assert.equal(watch.pending, true);
+  const next = {};
+  input.blur(next);
+  assert.deepEqual(settled, [['blur', next]], 'one edit when the focus leaves, with the control the focus goes to');
+  assert.equal(watch.pending, false);
+  input.blur();
+  assert.equal(settled.length, 1, 'a blur without an edit settles nothing');
+  // Enter ends an edit and the focus stays
+  input.focus();
+  input.change();
+  input.press('Enter');
+  assert.deepEqual(settled.map((x) => x[0]), ['blur', 'enter']);
+  input.press('Enter');
+  assert.equal(settled.length, 2, 'Enter without an edit settles nothing');
+  // a change without the focus (a script, autofill) is settled at once
+  input.blur();
+  input.change();
+  assert.deepEqual(settled.map((x) => x[0]), ['blur', 'enter', 'away']);
+  // cancel forgets an edit
+  input.focus();
+  input.change();
+  watch.cancel();
+  input.blur();
+  assert.equal(settled.length, 3);
+  // the focus can be told by the caller (tests, a custom control)
+  const other = timeInput();
+  const got = [];
+  whenSettled(other, (how) => got.push(how), { focused: () => true });
+  other.change();
+  assert.deepEqual(got, [], 'focused by the caller: waits');
+  other.blur();
+  assert.deepEqual(got, ['blur']);
+});
+
+test('UX-8: switching to a timetable keeps the trucks: the rate becomes the rows of one day', () => {
+  const rate = { ...defaultTrucks(), interArrival: { kind: 'normal', mean: 1020, spread: 0.2 }, pallets: { kind: 'const', mean: 24, spread: 0 } };
+  const rows = rowsFromRate(rate);
+  assert.equal(rows.length, 84, 'a truck every 17 minutes for 24 hours');
+  assert.deepEqual(rows[0], { at: 0, pallets: 24 });
+  assert.deepEqual(rows[1], { at: 1020, pallets: 24 });
+  assert.ok(rows.every((r, i) => i === 0 || r.at > rows[i - 1].at) && rows.at(-1).at < 86400, 'increasing, inside the day');
+  assert.equal(rows.length * 24, 2016, 'the pallets of a day: the same load as the rate (84 trucks x 24)');
+  assert.equal(timetableSummary({ ...rate, schedule: rows }), '84 trucks a day, 2,016 pallets, at most 4 in any hour');
+  assert.match(seedText(rate, rows), /^Your rate \(a truck about every 17 min with 24 pallets\) became 84 rows of the timetable, so the plant gets the same trucks\./);
+  // pallets that vary stay "drawn"; a rate closer than the table can hold gets more pallets per truck, the same pallets a day
+  assert.ok(rowsFromRate({ ...rate, pallets: { kind: 'exp', mean: 18, spread: 0 } }).every((r) => r.pallets === null));
+  assert.ok(rowsFromRate({ ...rate, pallets: { kind: 'normal', mean: 18, spread: 0.2 } }).every((r) => r.pallets === null));
+  assert.ok(rowsFromRate({ ...rate, pallets: { kind: 'normal', mean: 18, spread: 0 } }).every((r) => r.pallets === 18));
+  const dense = rowsFromRate({ ...rate, interArrival: { kind: 'const', mean: 60, spread: 0 } });
+  assert.ok(dense.length <= 500 && dense.length >= 499, `${dense.length} rows at the most`);
+  assert.equal(dense[0].pallets, 69, '24 pallets a minute x 172.8 s = 69 pallets per truck');
+  assert.ok(Math.abs(dense.length * dense[0].pallets - 1440 * 24) / (1440 * 24) < 0.01, 'within 1 % of the same pallets a day (1,440 trucks of 24 = 34,560)');
+  // odd rates
+  assert.deepEqual(rowsFromRate({ ...rate, interArrival: { kind: 'const', mean: 1e6, spread: 0 } }), [{ at: 0, pallets: 24 }], 'one truck for a rate slower than a day');
+  assert.deepEqual(rowsFromRate(null), []);
+  assert.deepEqual(rowsFromRate({ interArrival: { mean: 0 } }), []);
+  assert.deepEqual(rowsFromRate({ interArrival: { mean: NaN } }), []);
+  assert.ok(rowsFromRate({ interArrival: { mean: 600 }, pallets: null }).every((r) => r.pallets === 24), 'no pallets block: an average truck');
+});
+
+test('UX-23: where the demand slider enters the numbers of the section', () => {
+  assert.equal(demandNote(1), '');
+  assert.equal(demandNote(undefined), '');
+  assert.equal(demandNote(2), 'includes the demand setting of the plant, 2×');
+  assert.equal(demandNote(0.5, ' (', ')'), ' (includes the demand setting of the plant, 0.5×)');
+  const rate = { ...defaultTrucks(), interArrival: { kind: 'const', mean: 1020, spread: 0 }, pallets: { kind: 'const', mean: 24, spread: 0 } };
+  assert.doesNotMatch(rateSummary(rate, 1), /demand/);
+  assert.match(rateSummary(rate, 2), /^About 7\.1 trucks an hour of 24 pallets: 169\.4 pallets an hour, includes the demand setting of the plant, 2×\.$/);
+  const schedule = { ...defaultTrucks(), mode: 'schedule', schedule: [{ at: 21600, pallets: 24 }, { at: 25200, pallets: 24 }] };
+  assert.doesNotMatch(timetableSummary(schedule, 1), /demand/);
+  assert.match(timetableSummary(schedule, 2), /^2 trucks a day, 96 pallets, at most 1 in any hour \(includes the demand setting of the plant, 2×\)$/);
+  const check = doorCheck(rate);
+  assert.doesNotMatch(doorCheckNote(check, 1), /demand/);
+  assert.match(doorCheckNote(check, 2), /The check includes the demand setting of the plant, 2×\.$/);
+});
+
+test('UX-5: the door check and the toast of "Use N doors" say that a single dock cell limits the doors', () => {
+  assert.equal(dockNote(2, 2), '');
+  assert.equal(dockNote(1, 4), '');
+  assert.equal(dockNote(6, 0), '', 'a station with no dock at all is the business of another check');
+  assert.match(dockNote(6, 1), /^Only 1 road cell touches this station, so its vehicles reach one dock: doors beyond that only let more trucks check in or out while others are unloaded\. A second dock/);
+  assert.match(dockNote(6, 3), /^Only 3 road cells touch this station, so its vehicles reach 3 docks/);
+  const p = plant();
+  const before = p.layout;
+  const fix = { type: 'update-station', stationId: p.src.id, patch: { ops: { trucks: { doors: 6 } } }, label: 'Use 6 doors' };
+  const after = structuredClone(before);
+  L.updateStation(after, p.src.id, { ops: { trucks: { ...defaultTrucks(), doors: 6 } } });
+  const docks = L.docksOf(after, p.src.id).length;
+  assert.ok(docks >= 1 && docks < 6, `the plant has ${docks} dock cells`);
+  assert.match(opsFixDoneText(before, after, fix), new RegExp(`^Goods receiving now has 6 doors\\. Only ${docks === 1 ? '1 road cell touches' : `${docks} road cells touch`} it, so a door beyond (that dock|those docks) cannot be unloaded any faster`));
+  const enough = structuredClone(before);
+  L.updateStation(enough, p.src.id, { ops: { trucks: { ...defaultTrucks(), doors: 1 } } });
+  assert.equal(opsFixDoneText(before, enough, { ...fix, patch: { ops: { trucks: { doors: 1 } } } }), 'Goods receiving now has 1 door.', 'no note when the docks are enough');
+});
+
+test('UX-6: the hint of a day plant is shown after an edit, until it is dealt with', () => {
+  const dayPlant = busy().layout;
+  L.updateStation(dayPlant, dayPlant.stations[0].id, { ops: { trucks: { mode: 'schedule', schedule: [{ at: 21600, pallets: 24 }] } } });
+  const stationary = plant().layout;
+  assert.equal(dayHintVisible({ armed: true, layout: dayPlant, rightTab: 'results' }), true);
+  assert.equal(dayHintVisible({ armed: false, layout: dayPlant, rightTab: 'results' }), false, 'nobody edited');
+  assert.equal(dayHintVisible({ armed: true, layout: dayPlant, rightTab: 'experiments' }), false, 'the planner is where the hint leads');
+  assert.equal(dayHintVisible({ armed: true, layout: stationary, rightTab: 'results' }), false, 'a stationary plant has no day');
+  assert.equal(dayHintVisible({ armed: true, layout: null, rightTab: null }), false);
+});
+
+test('UX-9: a clock that starts long before the first truck says so', () => {
+  const p = plant();
+  L.updateStation(p.layout, p.src.id, { ops: { trucks: { ...defaultTrucks(), mode: 'schedule', schedule: [{ at: 21600, pallets: 24 }, { at: 25200, pallets: 12 }] } } });
+  assert.deepEqual(firstTruckAfterStart(p.layout), { at: 21600, wait: 21600 }, 'no clock yet: it starts at 00:00');
+  L.updateCalendar(p.layout, { startTod: 21000 });
+  assert.equal(firstTruckAfterStart(p.layout), null, 'ten minutes to the first truck: soon enough');
+  L.updateCalendar(p.layout, { startTod: 25000 });
+  assert.equal(firstTruckAfterStart(p.layout), null, 'the 07:00 truck comes in 200 s');
+  L.updateCalendar(p.layout, { startTod: 26000 });
+  assert.deepEqual(firstTruckAfterStart(p.layout), { at: 21600, wait: 21600 + 86400 - 26000 }, 'both rows are past: the first one of the next day');
+  L.updateCalendar(p.layout, { startTod: 21600 });
+  assert.equal(firstTruckAfterStart(p.layout), null);
+  assert.equal(FIRST_TRUCK_GAP, 1800);
+  const rate = plant();
+  L.updateStation(rate.layout, rate.src.id, { ops: { trucks: defaultTrucks() } });
+  assert.equal(firstTruckAfterStart(rate.layout), null, 'a rate has no first truck');
+  assert.equal(firstTruckAfterStart(null), null);
+  const empty = plant();
+  L.updateStation(empty.layout, empty.src.id, { ops: { trucks: { ...defaultTrucks(), mode: 'schedule', schedule: [] } } });
+  assert.equal(firstTruckAfterStart(empty.layout), null, 'an empty timetable');
 });

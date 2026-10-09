@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { keyCommand, isTypingTarget, dialogOpen } from '../js/ui/editor/keys.js';
+import { keyCommand, isTypingTarget, isOperatedControl, isSelectionEdit, dialogOpen } from '../js/ui/editor/keys.js';
 import {
   TOOL_NAMES, TOOL_KEYS, plannerName, obstacleName, nextObstacleKind, nextSpeedFactor, toolCursor, toolHint,
   newStationName, flowProblem, isStationTool, isStrokeTool,
@@ -64,6 +64,36 @@ test('isTypingTarget: inputs, textareas, selects and contenteditable', () => {
   assert.ok(!isTypingTarget({ tagName: 'BODY' }));
   assert.ok(!isTypingTarget(null));
   assert.ok(!isTypingTarget(undefined));
+});
+
+/** A stand-in for an element: `closest(selector)` answers from the element's own tag / role and those of its ancestors. */
+function el(tag, role = null, parent = null) {
+  const own = { tag, role, parent };
+  own.closest = (selector) => {
+    const wanted = selector.split(',').map((x) => x.trim());
+    for (let e = own; e; e = e.parent) {
+      if (wanted.includes(e.tag) || (e.tag === 'a' && wanted.includes('a[href]')) || (e.role && wanted.includes(`[role="${e.role}"]`))) return e;
+    }
+    return null;
+  };
+  return own;
+}
+
+test('isOperatedControl: a button, link, tab or switch owns Delete and the arrows; the plan, the body and plain text do not (UX-26)', () => {
+  for (const control of [el('button'), el('a'), el('summary'), el('div', 'button'), el('div', 'tab'), el('div', 'radio'), el('div', 'switch'), el('div', 'menuitem'), el('div', 'option')]) {
+    assert.ok(isOperatedControl(control), `${control.tag} ${control.role}`);
+  }
+  assert.ok(isOperatedControl(el('svg', null, el('button'))), 'an icon inside a button');
+  for (const other of [el('canvas'), el('body'), el('div'), el('span', null, el('div'))]) assert.ok(!isOperatedControl(other), other.tag);
+  for (const nothing of [null, undefined, 3, 'button', {}]) assert.ok(!isOperatedControl(nothing), String(nothing));
+});
+
+test('isSelectionEdit: Delete, Backspace and the arrows act on the selection; tools, undo and Escape do not', () => {
+  assert.ok(isSelectionEdit(key('Delete')));
+  assert.ok(isSelectionEdit(key('Backspace')));
+  assert.ok(isSelectionEdit(key('ArrowLeft')));
+  assert.ok(isSelectionEdit(key('ArrowDown', { shiftKey: true })));
+  for (const k of [key('r'), key('Escape'), key('z', { ctrlKey: true }), key('d', { ctrlKey: true }), key('a', { ctrlKey: true }), null]) assert.ok(!isSelectionEdit(k), JSON.stringify(k));
 });
 
 test('dialogOpen: true while a [role=dialog] exists', () => {

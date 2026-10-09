@@ -91,6 +91,8 @@ export const HEAVY_SHARDS = Object.freeze([
     'model.review.test.js', //           8.5
     'sim.logistics.review.test.js', //   6.8
     'sim.largegrid.test.js', //          6.2  320 x 320 cells, performance bound
+    'm1.sim.review.test.js', //         ~9    the adversarial review of the truck engine (M1): independent audit of 160 plants; fast tier before the fixes, moved here when the fixes added plants (about 15 CPU s beside other work, under 10 alone is not certain); its expensive checks are opt-in (M1_SIM_REVIEW_HEAVY=1)
+    'sim.trucks.insights.test.js', //   ~9    M1: the five insight rules on engineered plants, thresholds, 60 random plants; the lane and supply tests of the review fixes were added
   ),
 ]);
 export const SHARD_COUNT = HEAVY_SHARDS.length;

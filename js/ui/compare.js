@@ -40,6 +40,7 @@ import { METRICS, listSweepParameters as realListSweepParameters, runReplication
 import { bestWorst, createBarChart, createLineChart } from './charts.js';
 import { icon } from './icons.js';
 import { callout, numberField, segmentedField, selectField, stepperField } from './panels/fields.js';
+import { isDayPlant } from './day-plant.js';
 
 // =================================================================================================
 // Pure model
@@ -49,6 +50,8 @@ import { callout, numberField, segmentedField, selectField, stepperField } from 
 export const LIMITS = Object.freeze({ replications: [1, 10], hours: [0.1, 168], warmupMin: [0, 10080], sweepPoints: 25 });
 /** Relative differences below this are noise, not a better or worse variant. */
 export const NOISE = 0.01;
+/** A plant that follows a daily timetable is compared over runs of at least this many seconds (one whole day). */
+export const DAY_RUN = 86400;
 /** A sweep value is "enough" once it reaches this share of the best result. */
 export const ENOUGH = 0.95;
 
@@ -527,7 +530,9 @@ function createRunSettings(onChange) {
     min: LIMITS.replications[0], max: LIMITS.replications[1], value: 3, controlW: '128px', onChange,
   });
   const note = h('p', { class: 'cmp__line' });
-  const el = h('div', { class: 'cmp__block', 'data-cmp': 'settings' }, h('span', { class: 'eyebrow' }, 'Run settings'), h('div', { class: 'field-grid' }, hours.el, warmup.el), runs.el, note);
+  // a plant that follows a daily timetable is judged over whole days from the start of its clock (UX-7): a run of 8 hours from midnight measures the quiet night
+  const dayNote = h('p', { class: 'cmp__line', hidden: true, 'data-cmp': 'day-note' }, 'This plant follows a daily timetable, so runs cover whole days from the start of its clock (24 h or more). A run of a few hours would measure only the quiet night or the morning.');
+  const el = h('div', { class: 'cmp__block', 'data-cmp': 'settings' }, h('span', { class: 'eyebrow' }, 'Run settings'), dayNote, h('div', { class: 'field-grid' }, hours.el, warmup.el), runs.el, note);
 
   const get = () => ({ duration: Math.round(hours.get() * 3600), warmup: Math.round(warmup.get() * 60), replications: runs.get() });
   /** Message when the settings cannot be run, else null. */
@@ -545,10 +550,15 @@ function createRunSettings(onChange) {
     get,
     problem,
     describe,
-    /** Follow the plant's settings (seconds) for the fields the planner has not edited. */
-    sync(settings) {
-      if (!touched.hours) hours.set(round(settings.duration / 3600, 4));
-      if (!touched.warmup) warmup.set(round(settings.warmup / 60, 4));
+    /**
+     * Follow the plant's settings (seconds) for the fields the planner has not edited. A day plant (`dayPlant`) is run for whole days: at least 24 h, with no
+     * warm-up unless the plant has its own run of a day or more (the button "Run one day" sets exactly that).
+     */
+    sync(settings, dayPlant = false) {
+      const days = dayPlant && settings.duration < DAY_RUN;
+      if (!touched.hours) hours.set(round((days ? DAY_RUN : settings.duration) / 3600, 4));
+      if (!touched.warmup) warmup.set(round((days ? 0 : settings.warmup) / 60, 4));
+      dayNote.hidden = !dayPlant;
       describe();
     },
     setDisabled(disabled) { for (const c of [hours, warmup, runs]) c.setDisabled(disabled); },
@@ -1237,7 +1247,7 @@ export function createCompare(ctx, options = {}) {
   function refreshAll() {
     picker.sync(state.project.scenarios, state.project.activeId, problemsOf);
     sweepSetup.sync(state.layout);
-    settings.sync(state.layout.settings);
+    settings.sync(state.layout.settings, isDayPlant(state.layout));
     refreshRun();
     refreshResults();
   }

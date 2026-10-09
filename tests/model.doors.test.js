@@ -282,7 +282,19 @@ test('A1.6 doorCheck is total: junk blocks, the limits of the block, 32 doors, n
   }
   const huge = doorCheck(constant(60, 200, { doors: 32 }));
   assert.ok(huge.tooFew && huge.suggestedDoors === 32 && huge.action === null, 'with 32 doors no "Use N doors" can help');
-  assert.ok(!/would be busy/.test(huge.text));
+  assert.equal(huge.suggestionEnough, false);
+  assert.match(huge.text, /Even 32 doors, the most a station can have, would be busy \d+ % of the time/, 'and the text says so instead of offering doors');
+  assert.ok(!/(^|\. )\d+ doors would be busy/.test(huge.text));
+  // M1-MODEL-REV-6: a station that cannot be helped by doors gets no button, whatever its doors now (the button would leave the warning where it was)
+  const twenty = doorCheck(constant(60, 200, { doors: 20 }));
+  assert.ok(twenty.tooFew && twenty.action === null && twenty.suggestionEnough === false && /Even 32 doors/.test(twenty.text));
+  // ... and where 32 doors do end it (29 doors' worth of trucks: 91 % busy), the button is there
+  const border = doorCheck(constant(95, 24, { doors: 20 }));
+  assert.ok(border.needed > 28 && border.needed < 30, `${border.needed}`);
+  assert.deepEqual(border.action, { label: 'Use 32 doors', doors: 32 });
+  assert.equal(border.suggestionEnough, true);
+  // M1-MODEL-REV-8: null and junk options mean no options
+  for (const opts of [null, 'x', 5, [], undefined]) assert.equal(bytes(doorCheck(constant(900, 24, { doors: 3 }), opts)), bytes(doorCheck(constant(900, 24, { doors: 3 }))));
   assert.equal(doorCheck(constant(3600, 1, { doors: 3 })).suggestedDoors >= 1, true);
   assert.equal(doorCheck(constant(600, 24, { doors: 1, checkIn: 0, checkOut: 0 }), { tPallet: 90 }).suggestedDoors, Math.ceil(6 * 2160 / 3600 / 0.85 - 1e-9));
 });
@@ -334,10 +346,18 @@ test('formatTimeOfDay rounds down to the minute and wraps into the day', () => {
 // 6.2.6 and 5.3: the arrival process
 // ---------------------------------------------------------------------------------------------------------------------------
 
-/** A stream that counts its draws. */
-function countingRng(seed) {
+/** A stream that counts its draws and its forks; the streams it forks count into the same totals (a row with randomness takes a stream of its own). */
+function countingRng(seed, totals = { draws: 0, forks: 0 }) {
   const rng = createRng(seed);
-  const counted = { draws: 0, next: () => { counted.draws++; return rng.next(); }, range: (lo, hi) => { counted.draws++; return rng.range(lo, hi); }, gauss: () => { counted.draws += 2; return rng.gauss(); }, exp: (m) => { counted.draws++; return rng.exp(m); } };
+  const counted = {
+    get draws() { return totals.draws; },
+    get forks() { return totals.forks; },
+    next: () => { totals.draws++; return rng.next(); },
+    range: (lo, hi) => { totals.draws++; return rng.range(lo, hi); },
+    gauss: () => { totals.draws += 2; return rng.gauss(); },
+    exp: (m) => { totals.draws++; return rng.exp(m); },
+    fork: (label) => { totals.forks++; return countingRng(`${seed}/${label}`, totals); },
+  };
   return counted;
 }
 
@@ -349,7 +369,7 @@ test('6.2.6 expandScheduleDay: a row falls at day x 86400 + at - startTod; rows 
   const rng = countingRng(1);
   const day0 = expandScheduleDay(block, clock, 0, rng);
   assert.deepEqual(day0.map((d) => [d.at, d.pallets, d.noShow, d.row]), [[0, 24, false, 1], [0, 12, false, 2], [3600, 7, false, 3]], '03:00 is before the start at 06:00; the two trucks at 06:00 keep their order');
-  assert.equal(rng.draws, 0, 'no jitter, no no-show, pallets given: not a single draw');
+  assert.deepEqual([rng.draws, rng.forks], [0, 0], 'no jitter, no no-show, pallets given: not a single draw, not a single stream');
   const day1 = expandScheduleDay(block, clock, 1, rng);
   assert.deepEqual(day1.map((d) => d.at), [68400, 86400, 86400, 90000], 'day 1 begins at 18:00 of the run: 03:00 -> 19:00, 06:00 -> 24:00 (twice), 07:00 -> 25:00');
   assert.deepEqual(day1.map((d) => d.row), [0, 1, 2, 3]);
@@ -372,10 +392,10 @@ test('6.2.6 expandScheduleDay: a row without pallets draws them from the pallets
   assert.ok(new Set(drawn).size > 5);
   const rng = countingRng(3);
   expandScheduleDay(block, clock, 0, rng);
-  assert.equal(rng.draws, 40, 'one draw per row without pallets');
+  assert.equal(rng.forks, 40, 'a stream of its own for every row without pallets, none for the others');
 });
 
-test('6.2.6 expandScheduleDay: jitter moves a truck by at most +-jitter and never before time 0; a no-show stays in the list at its nominal time and draws nothing more', () => {
+test('6.2.6 expandScheduleDay: jitter moves a truck by at most +-jitter and never before time 0; a no-show stays in the list at its nominal time and draws no pallets', () => {
   const rows = Array.from({ length: 300 }, (_, i) => ({ at: 600 + i * 250, pallets: 10 }));
   const clock = makeClock({ startTod: 0, startDay: 0 });
   const block = trucks({ mode: 'schedule', jitter: 900, noShow: 0.2, schedule: rows });
@@ -394,7 +414,8 @@ test('6.2.6 expandScheduleDay: jitter moves a truck by at most +-jitter and neve
   }
   assert.ok(moved > shows.length * 0.9);
   assert.ok(due.every((d, i) => i === 0 || due[i - 1].at <= d.at), 'sorted by time');
-  assert.equal(rng.draws, 300 + shows.length, 'a no-show draw per row, a jitter draw per truck that comes, no pallets draw');
+  assert.equal(rng.forks, 300, 'a stream per row');
+  assert.equal(rng.draws, 600, 'two draws per row, taken whether the row turns out to be a no-show or not (so that no setting moves another row), no pallets draw');
   const early = expandScheduleDay(trucks({ mode: 'schedule', jitter: 7200, schedule: [{ at: 0, pallets: 1 }, { at: 100, pallets: 1 }] }), clock, 0, createRng(2));
   assert.ok(early.every((d) => d.at >= 0), 'never before 0');
   assert.ok(early.some((d) => d.at === 0) || early.length === 2);
@@ -412,6 +433,55 @@ test('6.2.6 the draws of one station do not depend on another: the stream is the
   expandScheduleDay(block, clock, 0, withOther.fork('trucks:b')); // another station expands its day first
   const second = expandScheduleDay(block, clock, 0, withOther.fork('trucks:a'));
   assert.equal(bytes(first), bytes(second));
+});
+
+test('6.2.6 common random numbers: every row has a stream of its own, so changing one setting moves no other truck (M1-SIM-REV-4)', () => {
+  const rows = Array.from({ length: 40 }, (_, i) => ({ at: 3600 + i * 700, pallets: i % 2 ? null : 10 }));
+  const clock = makeClock({ startTod: 0, startDay: 0 });
+  const day = (over, list = rows) => expandScheduleDay(trucks({ mode: 'schedule', schedule: list, jitter: 200, noShow: 0.2, pallets: { kind: 'uniform', mean: 12, spread: 0.5 }, ...over }), clock, 0, createRng(77).fork('trucks'));
+  const byRow = (due) => new Map(due.map((d) => [d.row, d]));
+  const reference = byRow(day({}));
+  // the kind of the pallets distribution: not a single appointment moves, and the same trucks fail to come
+  const other = byRow(day({ pallets: { kind: 'exp', mean: 12, spread: 0 } }));
+  for (const [row, d] of reference) {
+    assert.equal(other.get(row).at, d.at, `row ${row}: the arrival time does not depend on the pallets distribution`);
+    assert.equal(other.get(row).noShow, d.noShow);
+    if (typeof rows[row].pallets === 'number') assert.equal(other.get(row).pallets, d.pallets);
+  }
+  assert.ok([...reference.values()].some((d) => d.noShow) && [...reference.values()].some((d) => !d.noShow), 'the test has both kinds of rows');
+  // the no-show chance: a truck that comes in both runs comes at the same time with the same pallets
+  const fewer = byRow(day({ noShow: 0.05 }));
+  const more = byRow(day({ noShow: 0.4 }));
+  let both = 0;
+  for (const [row, d] of more) {
+    if (d.noShow || fewer.get(row).noShow) continue;
+    both++;
+    assert.deepEqual(fewer.get(row), d, `row ${row}: the same truck`);
+  }
+  assert.ok(both > 5);
+  // the jitter: the same trucks fail to come, and the pallets of the open rows stay
+  const jittery = byRow(day({ jitter: 600 }));
+  for (const [row, d] of reference) {
+    assert.equal(jittery.get(row).noShow, d.noShow);
+    assert.equal(jittery.get(row).pallets, d.pallets);
+  }
+  // a row added to the timetable (it is known by its time, not by its place in the list) leaves the others where they were
+  const added = byRow(day({}, [...rows, { at: 7000, pallets: null }].sort((a, b) => a.at - b.at)));
+  const sorted = [...rows, { at: 7000, pallets: null }].sort((a, b) => a.at - b.at);
+  for (const [row, d] of reference) {
+    const place = sorted.findIndex((r) => r.at === rows[row].at);
+    assert.equal(added.get(place).at, d.at);
+    assert.equal(added.get(place).pallets, d.pallets);
+    assert.equal(added.get(place).noShow, d.noShow);
+  }
+  // rows with the same time are not copies of each other, and a day does not depend on the days before it
+  const twins = day({ jitter: 600, noShow: 0 }, [{ at: 5000, pallets: 5 }, { at: 5000, pallets: 5 }, { at: 5000, pallets: 5 }]);
+  assert.equal(new Set(twins.map((d) => d.at)).size, 3);
+  const fresh = expandScheduleDay(trucks({ mode: 'schedule', schedule: rows, jitter: 200, noShow: 0.2 }), clock, 3, createRng(77).fork('trucks'));
+  const after = createRng(77).fork('trucks');
+  expandScheduleDay(trucks({ mode: 'schedule', schedule: rows, jitter: 200, noShow: 0.2 }), clock, 0, after);
+  assert.equal(bytes(expandScheduleDay(trucks({ mode: 'schedule', schedule: rows, jitter: 200, noShow: 0.2 }), clock, 3, after)), bytes(fresh));
+  assert.notEqual(bytes(fresh), bytes(expandScheduleDay(trucks({ mode: 'schedule', schedule: rows, jitter: 200, noShow: 0.2 }), clock, 4, createRng(77).fork('trucks'))), 'each day draws its own');
 });
 
 test('5.3 the demand slider in the process: scalePallets, truckGap and drawPallets', () => {

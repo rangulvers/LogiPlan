@@ -14,6 +14,8 @@ import {
   FLEET_PICKUP_WAIT, generateInsights,
 } from '../js/sim/insights.js';
 import * as ops from '../js/sim/insights-ops.js';
+import * as L from '../js/model/layout.js';
+import { validateLayout } from '../js/model/validate.js';
 import { createWorld } from './helpers/logistics-invariants.js';
 import { attachStats, fuzzPlant, microPlant } from './helpers/trucks-gen.js';
 
@@ -277,4 +279,56 @@ test('a warning of these rules keeps the "good" insight away', () => {
   const warned = run(PLANTS.overloadedDoor()).insights;
   assert.ok(warned.some((i) => i.id === 'doors-bottleneck:A' && i.severity === 'warning'));
   assert.ok(!warned.some((i) => i.severity === 'good'));
+});
+
+test('the older `supply` rule leaves a Goods in with trucks alone (a truck fills the yard by design) and still speaks for a source without trucks (M1-SIM-REV-3)', () => {
+  const { report, layout } = run(PLANTS.balanced());
+  const piled = (r, id) => { Object.assign(r.stations[id], { blocked: 0.6, yardNow: 30, yardMax: 40 }); return r; };
+  const withTrucks = piled(structuredClone(report), 'A');
+  assert.equal(find(generateInsights(withTrucks, layout), 'supply', 'A'), undefined, 'a pile in the yard of a truck station is the truck being unloaded');
+  const without = piled(structuredClone(report), 'A');
+  delete without.ops;
+  assert.ok(find(generateInsights(without, layout), 'supply', 'A'), 'the same numbers on a report without trucks speak: the rule is unchanged for a legacy plant');
+  // a Goods out is not a source; and a source WITHOUT trucks in a plant that has a truck station elsewhere is still judged
+  const other = piled(structuredClone(report), 'A');
+  other.ops.trucks.A.role = 'out';
+  assert.ok(find(generateInsights(other, layout), 'supply', 'A'), 'only a station that receives trucks is left to the truck rules');
+});
+
+test('doors-bottleneck on a Goods out whose trucks mostly wait for pallets says that more doors move the wait, and the rule on a Goods in does not', () => {
+  // 51 pallets an hour for trucks of 24 every 25 minutes (57.6 an hour): the trucks fill one after the other, a second door only moves the wait
+  const out = run(microPlant({
+    storage: true, aParams: { interArrival: dist('const', 3600 / 51, 0), batch: 1 },
+    outbound: { doors: 1, checkIn: 300, checkOut: 300, interArrival: CONST(1500), pallets: CONST(24), maxDwell: 14400, staging: 4 }, fleet: { count: 4 }, settings: { warmup: 1800 },
+  }), 8);
+  const bottleneck = find(out.insights, 'doors-bottleneck', 'C');
+  assert.ok(bottleneck, 'the rule follows Appendix B and speaks (85 % busy, 5 minutes at the gate)');
+  assert.match(bottleneck.suggestion, /^Open another door: 2 doors would be busy about \d+ % of the time\./);
+  assert.match(bottleneck.suggestion, /more doors only move the wait from the gate to the door/);
+  const inbound = find(run(PLANTS.overloadedDoor()).insights, 'doors-bottleneck', 'A');
+  assert.ok(inbound);
+  assert.doesNotMatch(inbound.suggestion, /move the wait/);
+});
+
+test('docks in a row say "one lane" in the insight and in the plan check alike, also when a second road lies behind them (M1-MODEL-REV-3)', () => {
+  const plant = (behind) => {
+    const l = L.createLayout({ name: 'Dock lab', cols: 40, rows: 24, cellSize: 2 });
+    L.paintRoadPath(l, [[4, 10], [30, 10], [30, 18], [4, 18], [4, 10]]);
+    if (behind) { for (let x = 4; x <= 30; x++) L.paintRoadPath(l, [[x, 10], [x, 11]]); L.paintRoadPath(l, [[4, 11], [30, 11]]); }
+    const src = L.addStation(l, { type: 'source', name: 'Goods in', x: 10, y: 8, w: 6, h: 2, ops: { trucks: { doors: 6, checkIn: 60, checkOut: 60, interArrival: CONST(168), pallets: CONST(12) } } });
+    const sink = L.addStation(l, { type: 'sink', name: 'Goods out', x: 31, y: 13, w: 3, h: 2 });
+    const park = L.addStation(l, { type: 'depot', name: 'Park', x: 8, y: 19, w: 3, h: 2, params: { slots: 8 } });
+    L.paintRoadPath(l, [[9, 18], [9, 19]]);
+    L.addFlow(l, src.id, sink.id);
+    L.addFleet(l, 'forklift', { name: 'FL', count: 8, home: park.id, capacity: 1 });
+    return { layout: L.normalizeLayout(l), id: src.id };
+  };
+  for (const behind of [false, true]) {
+    const { layout, id } = plant(behind);
+    assert.ok(validateLayout(layout).some((i) => i.id === `docks-share-lane:${id}`), `the plan check warns (road behind: ${behind})`);
+    const { insights } = run(layout, 3);
+    const unbalanced = find(insights, 'docks-unbalanced', id);
+    assert.ok(unbalanced, `the docks are unbalanced (road behind: ${behind})`);
+    assert.match(unbalanced.detail, /the docks lie one behind the other on one lane/, `road behind: ${behind}`);
+  }
 });

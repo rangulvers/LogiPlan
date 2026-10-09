@@ -4,8 +4,9 @@
 // STATE OF THIS FILE (milestone M1): `ops.trucks` is implemented for Goods in ('source') and Goods out ('sink'): doors, check-in and
 // check-out, rate mode or timetable, jitter, no-shows, the longest wait of an outbound truck and its staging (5.3). The other station types
 // have no sanitizer, so for them
-//   sanitizeOps(type, raw) -> undefined   "this station has no options": normalizeLayout leaves `ops` off the station, which is
+//   sanitizeOps(type, raw, current?) -> undefined   "this station has no options": normalizeLayout leaves `ops` off the station, which is
 //                                         exactly what keeps a legacy layout, its file and its share link byte-identical
+//                                         (`current`, the block before a merge, only makes a junk field of a patch keep its value)
 //   mergeOps(type, current, patch)        the `ops` block that updateStation(layout, id, { ops: patch }) stores (see below)
 // M3 registers `form`/`rack`/`block`/`putaway`, M5 `mix`/`accepts`/`outType`, M6 `pick`; each adds its entries to OPS_KEYS.
 //
@@ -152,13 +153,18 @@ export function timeOfDay(v) {
 // ops.trucks (M1): Goods in and Goods out
 // ---------------------------------------------------------------------------------------------------------
 
-/** A time distribution for a truck field: kind from DIST_KINDS, mean clamped into [meanMin, meanMax], spread into 0..1; junk takes `base`. */
-function sanitizeTruckDist(raw, base, [meanMin, meanMax]) {
+/**
+ * A time distribution for a truck field: kind from DIST_KINDS, mean clamped into [meanMin, meanMax], spread into 0..1. A field that is absent
+ * takes `base` (the default); a field that is present but junk takes `keep` (the value the station has now, when the call is a merge, else `base`).
+ */
+function sanitizeTruckDist(raw, base, [meanMin, meanMax], keep = base) {
+  if (raw !== undefined && !isObj(raw)) return { kind: keep.kind, mean: keep.mean, spread: keep.spread }; // present but not even an object
   const kind = own(raw, 'kind');
+  const present = (key) => own(raw, key) !== undefined;
   return {
-    kind: DIST_KINDS.includes(kind) ? kind : base.kind,
-    mean: clampNumber(own(raw, 'mean'), meanMin, meanMax, base.mean),
-    spread: clampNumber(own(raw, 'spread'), 0, 1, base.spread),
+    kind: DIST_KINDS.includes(kind) ? kind : present('kind') ? keep.kind : base.kind,
+    mean: clampNumber(own(raw, 'mean'), meanMin, meanMax, present('mean') ? keep.mean : base.mean),
+    spread: clampNumber(own(raw, 'spread'), 0, 1, present('spread') ? keep.spread : base.spread),
   };
 }
 
@@ -184,33 +190,42 @@ function sanitizeSchedule(raw) {
 }
 
 /**
- * A complete, clamped `ops.trucks` block (5.3); every junk field takes its default. Keys come in the order of the document.
+ * A complete, clamped `ops.trucks` block (5.3); every field that is absent or junk takes its default. Keys come in the order of the document.
+ *
+ * `current` (the block the station has now) is given by a merge (mergeOps) and changes one thing: a field that is PRESENT in `raw` but junk keeps
+ * the current value instead of falling back to the default, as `mergeParams` does for `params` (the convention at the top of layout.js: an editor
+ * that commits NaN or '' while the user clears a field must not wipe the setting, and a junk `schedule` must not wipe the timetable). A field that
+ * is absent (a `null` in a patch removes the key) takes the default, and a file, which has no current block, takes defaults for all junk.
  * @param {unknown} raw
+ * @param {unknown} [current] a block of this station, already sanitized or not (it is sanitized here)
  * @returns {object}
  */
-function sanitizeTrucks(raw) {
+function sanitizeTrucks(raw, current) {
   const d = TRUCK_DEFAULTS;
   const r = TRUCK_RANGES;
+  const cur = isObj(current) ? sanitizeTrucks(current) : null;
+  const keep = (key) => (cur !== null && own(raw, key) !== undefined ? cur[key] : d[key]);
   const mode = own(raw, 'mode');
+  const schedule = own(raw, 'schedule');
   return {
-    doors: clampInt(own(raw, 'doors'), ...r.doors, d.doors),
-    checkIn: clampInt(own(raw, 'checkIn'), ...r.checkIn, d.checkIn),
-    checkOut: clampInt(own(raw, 'checkOut'), ...r.checkOut, d.checkOut),
-    mode: TRUCK_MODES.includes(mode) ? mode : d.mode,
-    interArrival: sanitizeTruckDist(own(raw, 'interArrival'), d.interArrival, r.interArrivalMean),
-    pallets: sanitizeTruckDist(own(raw, 'pallets'), d.pallets, r.palletsMean),
-    schedule: sanitizeSchedule(own(raw, 'schedule')),
-    jitter: clampInt(own(raw, 'jitter'), ...r.jitter, d.jitter),
-    noShow: Math.round(clampNumber(own(raw, 'noShow'), ...r.noShow, d.noShow) * 1e4) / 1e4,
-    maxDwell: clampInt(own(raw, 'maxDwell'), ...r.maxDwell, d.maxDwell),
-    staging: clampInt(own(raw, 'staging'), ...r.staging, d.staging),
+    doors: clampInt(own(raw, 'doors'), ...r.doors, keep('doors')),
+    checkIn: clampInt(own(raw, 'checkIn'), ...r.checkIn, keep('checkIn')),
+    checkOut: clampInt(own(raw, 'checkOut'), ...r.checkOut, keep('checkOut')),
+    mode: TRUCK_MODES.includes(mode) ? mode : keep('mode'),
+    interArrival: sanitizeTruckDist(own(raw, 'interArrival'), d.interArrival, r.interArrivalMean, keep('interArrival')),
+    pallets: sanitizeTruckDist(own(raw, 'pallets'), d.pallets, r.palletsMean, keep('pallets')),
+    schedule: Array.isArray(schedule) || cur === null || schedule === undefined ? sanitizeSchedule(schedule) : cur.schedule.map((row) => ({ ...row })),
+    jitter: clampInt(own(raw, 'jitter'), ...r.jitter, keep('jitter')),
+    noShow: Math.round(clampNumber(own(raw, 'noShow'), ...r.noShow, keep('noShow')) * 1e4) / 1e4,
+    maxDwell: clampInt(own(raw, 'maxDwell'), ...r.maxDwell, keep('maxDwell')),
+    staging: clampInt(own(raw, 'staging'), ...r.staging, keep('staging')),
   };
 }
 
 /** The sanitizer of the `ops` block of Goods in and Goods out: `{ trucks }` when the raw block holds a truck block, else nothing. */
-function sanitizeTruckOps(raw) {
+function sanitizeTruckOps(raw, current) {
   const trucks = own(raw, 'trucks');
-  return isObj(trucks) ? { trucks: sanitizeTrucks(trucks) } : undefined;
+  return isObj(trucks) ? { trucks: sanitizeTrucks(trucks, own(current, 'trucks')) } : undefined;
 }
 
 /**
@@ -224,10 +239,12 @@ export function trucksOf(station) {
 }
 
 /**
- * The sanitizer of a whole `ops` block, per station type: (raw) => block | undefined. M1 registers 'source' and 'sink' (trucks), M3
- * 'storage' (form, rack, block, putaway), M5 and M6 the rest. A type without an entry cannot carry options. An object that milestones
- * add to, not a switch, so that a test can register a stand-in and prove that every caller goes through sanitizeOps / mergeOps.
- * @type {Record<string, (raw: unknown) => (object|undefined)>}
+ * The sanitizer of a whole `ops` block, per station type: (raw, current?) => block | undefined. `current` is the block the station has now and is
+ * given only by a merge (mergeOps): a field that is present in `raw` but junk keeps the current value there, where a file (no `current`) takes the
+ * default. A sanitizer may ignore it. M1 registers 'source' and 'sink' (trucks), M3 'storage' (form, rack, block, putaway), M5 and M6 the rest. A
+ * type without an entry cannot carry options. An object that milestones add to, not a switch, so that a test can register a stand-in and prove that
+ * every caller goes through sanitizeOps / mergeOps.
+ * @type {Record<string, (raw: unknown, current?: unknown) => (object|undefined)>}
  */
 export const OPS_SANITIZERS = Object.create(null);
 for (const type of TRUCK_TYPES) OPS_SANITIZERS[type] = sanitizeTruckOps;
@@ -237,11 +254,12 @@ for (const type of TRUCK_TYPES) OPS_SANITIZERS[type] = sanitizeTruckOps;
  * OPS_SANITIZERS (Workstation, Storage, Parking: M1 knows no options for them) drops whatever it is given.
  * @param {string} type station type ('source' | 'process' | 'storage' | 'sink' | 'depot')
  * @param {unknown} raw whatever a file or a patch holds
+ * @param {unknown} [current] the block of the station before a merge (see OPS_SANITIZERS); a file has none
  * @returns {object|undefined}
  */
-export function sanitizeOps(type, raw) {
+export function sanitizeOps(type, raw, current) {
   const sanitize = OPS_SANITIZERS[type];
-  return typeof sanitize === 'function' ? sanitize(raw) : undefined;
+  return typeof sanitize === 'function' ? sanitize(raw, current) : undefined;
 }
 
 /** `patch` merged into `base`, as a new object: plain objects merge key by key at every depth, arrays and scalars replace, `null` removes a key. */
@@ -262,7 +280,9 @@ function mergeDeep(base, patch) {
  * object that exists on both sides merges key by key (a patch of `{ trucks: { doors: 3 } }` changes the doors and keeps the other truck
  * fields, a patch of `{ trucks: { interArrival: { mean: 2400 } } }` changes the mean and keeps the kind and the spread, which is what a
  * field of the panel or a sweep sends), arrays and scalars replace, a `null` value switches that key off, and `patch === null` removes the
- * whole block. A patch that is not an object changes nothing.
+ * whole block. A patch that is not an object changes nothing. A value in the patch that is present but junk (NaN, '', 'many', a text where a
+ * list belongs) keeps the CURRENT value of that field, like `mergeParams`: an editor that commits NaN while the user clears a field must not reset
+ * the setting to its default, and a junk `schedule` must not wipe the timetable.
  * @param {string} type
  * @param {object|undefined} current
  * @param {unknown} patch
@@ -271,5 +291,5 @@ function mergeDeep(base, patch) {
 export function mergeOps(type, current, patch) {
   if (patch === null) return undefined;
   const base = isObj(current) ? current : {};
-  return sanitizeOps(type, isObj(patch) ? mergeDeep(base, patch) : { ...base });
+  return sanitizeOps(type, isObj(patch) ? mergeDeep(base, patch) : { ...base }, base);
 }

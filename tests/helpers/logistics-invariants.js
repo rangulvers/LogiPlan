@@ -296,8 +296,15 @@ function checkDepots(lg, fail) {
   }
 }
 
+/** The time of the last audit of a Logistics, and the trucks already seen in check-out (the timing of the door is only judged when the audit ran on the tick before). */
+const lastAudit = new WeakMap();
+const seenInCheckout = new WeakSet();
+
 /** The invariants of trucks and doors (docs/WAREHOUSE-DESIGN.md 6.3.5); silent for a plant without trucks. */
 function checkTrucks(lg, fail) {
+  const prev = lastAudit.get(lg);
+  const consecutive = prev !== undefined && Math.abs(lg.time - prev - (lg.now - lg.time)) < 1e-6; // the audit also ran on the tick before this one
+  lastAudit.set(lg, lg.time);
   for (const st of lg.stations) {
     const tr = st.trucks;
     if (!(tr instanceof TruckDesk)) continue; // a hand-made stand-in (tests/sim.seams.test.js holds loads on a fake `{ gate, docked, staged }`) has no desk to audit
@@ -330,6 +337,21 @@ function checkTrucks(lg, fail) {
     for (const k of tr.gate) {
       if (k.state !== 'gate' || k.door !== -1) fail(`${tag}: gate truck ${k.id} is ${k.state} with door ${k.door}`);
     }
+    // the door is held until the check-out after the last pickup (Goods in) / the last pallet or the end of the wait (Goods out) is over: a truck in check-out
+    // began it on the tick it is first seen in (when the audit runs on every tick), took exactly `checkOut` for it, and began it only when it was done
+    for (const k of tr.docked) {
+      if (k.state !== 'checkout') continue;
+      const begin = k.freeAt - tr.checkOut;
+      if (!seenInCheckout.has(k)) {
+        seenInCheckout.add(k);
+        if (consecutive && Math.abs(begin - lg.time) > 1e-6) fail(`${tag}: truck ${k.id} began its check-out at ${begin} (door free at ${k.freeAt} after ${tr.checkOut} s) but was first seen in it at ${lg.time}`);
+      }
+      if (tr.role === 'in' && k.left !== 0) fail(`${tag}: truck ${k.id} is in check-out with ${k.left} pallets not picked up`);
+      if (tr.role === 'out' && !(k.loaded >= k.plan || k.closing)) fail(`${tag}: truck ${k.id} is in check-out although it is neither full (${k.loaded}/${k.plan}) nor closing`);
+    }
+    for (const k of tr.docked) {
+      if (tr.role === 'in' && k.state === 'work' && k.left === 0) fail(`${tag}: truck ${k.id} has no pallet left to pick up but holds its door without starting check-out`);
+    }
     for (const k of tr.docked) {
       if (!['checkin', 'work', 'checkout'].includes(k.state)) fail(`${tag}: docked truck ${k.id} is ${k.state}`);
       if (k.door < 0 || k.door >= tr.doors || doors.has(k.door)) fail(`${tag}: truck ${k.id} uses door ${k.door} (${tr.doors} doors, used: ${[...doors]})`);
@@ -358,7 +380,17 @@ function checkTrucks(lg, fail) {
     } else {
       if (tr.staged.length > tr.stagingCap) fail(`${tag}: ${tr.staged.length} pallets staged > staging space ${tr.stagingCap}`);
       for (const l of tr.staged) if (l.claimed) fail(`${tag}: staged pallet ${l.id} is claimed`);
-      if (!(tr.room(st) >= 0)) fail(`${tag}: room ${tr.room(st)}`);
+      // the reservation invariant: the places promised to orders on their way (inboundTotal) exist - free staging space plus the room of every truck at work, a
+      // closing one included (it stops counting in room() but keeps its place until the pallets on their way have arrived) - and room() is what is left of them
+      let places = tr.stagingCap - tr.staged.length;
+      let roomOpen = places;
+      for (const k of tr.docked) {
+        if (k.state !== 'work') continue;
+        places += k.plan - k.loaded;
+        if (!k.closing) roomOpen += k.plan - k.loaded;
+      }
+      if (st.inboundTotal > places) fail(`${tag}: ${st.inboundTotal} places promised to orders on their way, but only ${places} exist (staging space ${tr.stagingCap - tr.staged.length} free plus the room of the trucks at work)`);
+      if (tr.room(st) !== Math.max(0, roomOpen - st.inboundTotal)) fail(`${tag}: room ${tr.room(st)} is not the free staging space plus the room of the trucks at work that are not closing (${roomOpen}) less the places promised (${st.inboundTotal})`);
       for (const k of tr.docked) if (k.state === 'checkin' && k.loaded > 0) fail(`${tag}: truck ${k.id} loaded ${k.loaded} pallets during check-in`);
     }
   }

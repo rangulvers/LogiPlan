@@ -221,6 +221,13 @@ await withBrowser(async ({ browser, url, errors }) => {
     eq((await trucks()).mode, 'schedule');
     ok(!!(await layoutOf(page)).calendar, 'the first timetable creates the clock');
     ok(await page.locator('[data-role=timetable]').isVisible(), 'the table');
+    // the trucks of the rate became the rows (UX-8): the switch keeps the load of the plant; clearing them starts an empty table
+    const seeded = (await trucks()).schedule;
+    ok(seeded.length > 10 && seeded[0].at === 0 && seeded.every((r) => r.pallets === 24), `the rate became ${seeded.length} rows from 00:00`);
+    ok(/became \d+ rows of the timetable/.test((await toasts(page)).join(' ')), 'and the toast says so');
+    await page.locator('[data-role=clear-rows]').click();
+    await frames(page, 2);
+    eq((await trucks()).schedule, [], 'Remove all rows empties the table');
     ok(/No rows yet/.test(await page.locator('[data-role=timetable]').innerText()));
     const t = (await toasts(page)).join(' ');
     ok(/This plant follows a daily timetable\. After an edit the simulation starts again at 00:00 instead of continuing, so the figures always describe a whole day\./.test(t), `the cold restart is explained once: ${t}`);
@@ -695,7 +702,7 @@ await withBrowser(async ({ browser, url, errors }) => {
     eq(await page.locator('[role=dialog] [role=tab][aria-selected=true]').innerText(), 'Trucks and dock doors');
     await frames(page, 3);
     const text = await page.locator('[role=dialog]').innerText();
-    for (const phrase of ['What a door is', 'Why a row of docks blocks', 'How to read the gate queue', 'The door check', 'Gate 5 trucks, 38 min', 'Timetables, clock and cold restart']) ok(text.includes(phrase), `the page says: ${phrase}`);
+    for (const phrase of ['What a door is', 'Why a row of docks blocks', 'How to read the gate queue', 'The door check', 'Gate 5 trucks, 38 min', 'Timetables, clock and starting again']) ok(text.includes(phrase), `the page says: ${phrase}`);
     ok(await page.locator('[role=dialog] svg[role=img]').count() >= 1, 'with its diagram');
     await page.locator('[data-help=trucks] svg[role=img]').first().scrollIntoViewIfNeeded();
     await frames(page, 3);

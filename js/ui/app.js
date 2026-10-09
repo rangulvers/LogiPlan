@@ -59,7 +59,9 @@ import { createFlowsPanel } from './panels/flows.js';
 import { createSimulatePanel } from './panels/simulate.js';
 import { createChecksPanel } from './panels/checks.js';
 import { createGuideChip } from './panels/nextsteps.js';
+import { createVersionChip } from './about.js';
 import { createImpactHint } from './panels/impact.js';
+import { createDayHint } from './panels/day-hint.js';
 import { createDashboard } from './dashboard.js';
 import { createCompare } from './compare.js';
 import { clockChip, clockStart, coldRestartText, isDayPlant, shouldShowColdRestartToast } from './day-plant.js';
@@ -987,6 +989,7 @@ function appMenus({ ctx, store }) {
     { label: 'Examples', icon: 'folder', run: () => dialogs.openWelcome() },
     { label: 'Share', icon: 'share', run: actions.shareLink },
     { label: 'Help', icon: 'help', kbd: '?', run: () => dialogs.openHelp() },
+    { label: 'About and what is new', icon: 'info', run: () => dialogs.openAbout() },
     { separator: true },
     { heading: 'Export' }, ...exportItems(),
     { separator: true },
@@ -1415,11 +1418,13 @@ function createChrome(region, core, signal) {
   const emptyHint = createEmptyHint(region.empty, ctx);
   const guideChip = createGuideChip(ctx); // "2 steps to finish" over the plan, bottom-left
   region.stage.append(guideChip.el);
+  region.statusbar.append(createVersionChip(ctx, { signal }).el); // "v0.6.0" at the right end of the status line; opens the About dialog (js/ui/about.js)
   const topBar = createTopBar(region.topbar, { ctx, store, drawer, themeControl });
   const host = createPanelHost({ ctx, tabbar: region.tabbar, body: region.panels, onSelect: (id) => { store.setUi({ rightTab: id }); } });
   parts.host = host;
   const impactHint = createImpactHint(ctx); // "Before → after" under the simulation bar while an edit is being compared
-  region.floating.append(h('div', { class: 'simcol' }, simBar.el, impactHint.el), overlayBar.el);
+  const dayHint = createDayHint(ctx); // "Time of day matters. Compare whole days." in its place for a plant that follows a timetable
+  region.floating.append(h('div', { class: 'simcol' }, simBar.el, impactHint.el, dayHint.el), overlayBar.el);
   region.zoom.append(createZoomBar({ zoomBy: cameraControl.zoomBy, fit: cameraControl.fit }));
   createPanelResizer({ handle: region.resize, app: region.app, signal });
   installShortcuts({ ctx, editor, drawer, signal });
@@ -1435,7 +1440,7 @@ function createChrome(region, core, signal) {
     update(state) {
       analysis.whileUpdating(() => {
         try {
-          for (const part of [palette, toolOptions, overlayBar, emptyHint, topBar, status, guideChip, impactHint]) part.update(state);
+          for (const part of [palette, toolOptions, overlayBar, emptyHint, topBar, status, guideChip, impactHint, dayHint]) part.update(state);
           simBar.sync();
           updateBadge();
         } catch (err) {
@@ -1496,9 +1501,9 @@ function startUpdateLoop(core, chrome) {
       } else if (sim && reason === 'structural' && sim.time < clockBeforeRebuild) {
         const layout = store.getState().layout;
         const again = isDayPlant(layout) // a day plant starts again at its clock; the first time the toast explains why (copy 7 of 7.6)
-          ? (shouldShowColdRestartToast() ? coldRestartText(layout) : `The simulation starts again at ${clockStart(layout)}.`)
+          ? (shouldShowColdRestartToast() ? coldRestartText(layout) : `The simulation starts again at ${clockStart(layout)}, because time of day matters.`)
           : 'Simulation reset to an empty plant at 0:00.';
-        ctx.toast(`${label ? `Plant changed: ${label}. ` : ''}${again}`);
+        ctx.toast(`${label ? `Plant changed: ${label}. ` : ''}${again}`, isDayPlant(layout) ? { action: { label: 'Compare whole days', onClick: () => ctx.actions.setRightTab('experiments') } } : undefined);
       }
       clockBeforeRebuild = 0;
       refresh();

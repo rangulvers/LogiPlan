@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { planContent } from '../js/ui/render/bricks.js';
 import {
-  DOOR, GATE_AMBER_SECONDS, GATE_RED_SECONDS, SLOT_MIN_CELL_PX, chooseBand, createReading, describeDoors, doorStateOf, gateTexts, gateTone, paintOps, planOps, readDoors, shareFractions,
+  DOOR, GATE_AMBER_SECONDS, GATE_RED_SECONDS, SLOT_MIN_CELL_PX, chooseBand, createReading, describeDoors, doorStateOf, gateTexts, gateTone, paintOps, pickChipText, planOps, readDoors, shareFractions,
 } from '../js/ui/render/ops.js';
 import { getTheme } from '../js/ui/theme.js';
 import { defaultTrucks } from '../js/model/ops.js';
@@ -250,4 +250,48 @@ test('describeDoors: the words of the picture, for the inspector and for a scree
   assert.equal(describeDoors(rd, true), '1 working, 3 free. 1 truck at the gate, the longest has waited 10 s. 3 pallets staged.');
   readDoors({ ...out, trucks: { ...out.trucks, staged: [] } }, trucks, 1000, true, rd);
   assert.match(describeDoors(rd, true), /^1 waiting for pallets, 3 free\./);
+});
+
+test('UX-3: a brick without room for the band keeps its face and shows the gate chip and the doors on its lower edge, at every zoom down to the swatch', () => {
+  const trucks = { ...defaultTrucks(), doors: 2 };
+  const queue = (waitSeconds, count = 4) => ({ state: 'normal', trucks: { gate: Array.from({ length: count }, (_, i) => ({ id: i, at: 1000 - waitSeconds - i })), docked: [{ id: 99, state: 'work', door: 0 }], staged: [] } });
+  for (const type of ['source', 'sink']) {
+    for (const zoom of [3.5, 4, 5, 6, 7, 8]) { // 7 to 16 px cells: a 2-cell-high brick cannot take the band
+      const g = geometry(4, 2, zoom);
+      const fr = frame(zoom, { sim: { time: 1000 } });
+      const ctx = fakeContext();
+      const st = station(type, trucks);
+      const plan = planContent(ctx, fr, g, type, st, queue(4620));
+      if (!plan) continue; // below 14 x 12 px planContent is not called at all (the flat swatch)
+      assert.ok(plan.ops, `${type} @${zoom}: there is a plan with trucks`);
+      assert.equal(plan.ops.mode, 'edge', `${type} @${zoom}: the compact mode`);
+      assert.equal(plan.ops.face.h, g.h, 'the face is whole: the name and the dot keep their room');
+      paintOps(ctx, fr, g, palette, st, queue(4620), plan.ops);
+      assert.ok(ctx.texts.some((t) => /^! (Gate )?4/.test(t) || /^! 4/.test(t)), `${type} @${zoom}: a queue of 4 trucks and 77 min is shown (red, with the mark): ${ctx.texts.join(' | ')}`);
+      const quiet = fakeContext();
+      paintOps(quiet, fr, g, palette, st, { state: 'normal', trucks: { gate: [], docked: [], staged: [] } }, plan.ops);
+      assert.ok(quiet.texts.some((t) => /door/.test(t) || t === '2'), `${type} @${zoom}: without a queue the count of doors: ${quiet.texts.join(' | ')}`);
+      assert.ok(!quiet.texts.some((t) => /Gate/.test(t)), 'and no chip');
+    }
+  }
+  const g = geometry(4, 2, 6);
+  const fr = frame(6, { sim: { time: 1000 } });
+  const amber = fakeContext();
+  const st = station('source', trucks);
+  const plan = planContent(amber, fr, g, 'source', st, queue(1200, 2));
+  paintOps(amber, fr, g, palette, st, queue(1200, 2), plan.ops);
+  assert.ok(amber.texts.some((t) => /^(Gate )?2/.test(t) && !t.startsWith('!')), `amber has no "!": ${amber.texts.join(' | ')}`);
+  // odd runtimes never throw in the compact mode either
+  for (const runtime of [null, {}, { trucks: {} }, { trucks: { gate: 'x', docked: 7, staged: NaN } }, { trucks: { gate: [null, {}], docked: [null, { state: 5 }] } }]) {
+    const c = fakeContext();
+    const p = planContent(c, fr, g, 'source', st, runtime);
+    assert.doesNotThrow(() => paintOps(c, fr, g, palette, st, runtime, p.ops), JSON.stringify(runtime));
+  }
+});
+
+test('pickChipText: the longest text that fits, else the shortest', () => {
+  assert.equal(pickChipText([120, 90, 60, 20], 100), 1);
+  assert.equal(pickChipText([120, 90, 60, 20], 200), 0);
+  assert.equal(pickChipText([120, 90, 60, 20], 10), 3, 'nothing fits: the shortest');
+  assert.equal(pickChipText([], 10), 0);
 });

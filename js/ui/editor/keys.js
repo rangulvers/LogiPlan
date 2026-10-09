@@ -11,6 +11,20 @@ export function isTypingTarget(target) {
   return TYPING_TAGS.has(target.tagName) || target.isContentEditable === true;
 }
 
+const OPERATED_CONTROLS = 'button, a[href], summary, [role="button"], [role="tab"], [role="radio"], [role="switch"], [role="checkbox"], [role="menuitem"], [role="menuitemradio"], [role="option"]';
+
+/**
+ * Is the target a control the planner is operating with the keyboard (a button, a link, a tab, a switch ...)? Delete, Backspace and the arrow keys then
+ * belong to that control and never to the selection on the plan: Tab to "Delete row 3" of a timetable and press Delete must not delete the station.
+ * (Typing places are `isTypingTarget`; the tool letters and Ctrl shortcuts keep working from a button, as they always did.)
+ */
+export function isOperatedControl(target) {
+  return !!target && typeof target === 'object' && typeof target.closest === 'function' && target.closest(OPERATED_CONTROLS) !== null;
+}
+
+/** The keys that act on the SELECTION of the plan without a modifier: they are ignored while a control of the page has the focus (isOperatedControl). */
+export const isSelectionEdit = (command) => !!command && (command.cmd === 'delete' || command.cmd === 'nudge');
+
 /** Is a modal dialog open? Shortcuts are ignored behind it. */
 export const dialogOpen = (doc) => !!doc && doc.querySelector('[role="dialog"]') !== null;
 

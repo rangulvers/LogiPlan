@@ -209,7 +209,7 @@ export class StationRT {
       case 'process': return `${this.inCount}/${this.inLinks.length * this.params.inCap}`;
       case 'storage': return `${this.outCount}/${this.capacity}`;
       case 'depot': return `${this.parked.length + this.charging.length}/${this.slots}`;
-      case 'sink': return this.trucks === null ? '' : `${this.trucks.staged.length}/${this.trucks.stagingCap}`;
+      case 'sink': return this.trucks === null || this.trucks.stagingCap === 0 ? '' : `${this.trucks.staged.length}/${this.trucks.stagingCap}`; // no staging space: no "0/0"
       default: return '';
     }
   }
@@ -275,6 +275,23 @@ export function flowCapacity(flow) {
     case 'sink': return flow.to.trucks === null ? Infinity : flow.to.trucks.capacity();
     default: return Infinity;
   }
+}
+
+/**
+ * The most that a MINIMUM BATCH of `flow` may ask for right now (Infinity for a flow between stations without trucks, which is every flow of a
+ * legacy plant). A batch minimum waits for more loads; a truck station cannot always provide them, and a minimum that can never be met would
+ * hold a truck at its door for good (docs/ARCHITECTURE.md 5.7):
+ *  * Goods in with trucks: only the pallets that are still on their way here can join the batch, unless another truck can still dock and come in
+ *    time (TruckDesk.supply). `age` is how long the oldest ready pallet of the flow has waited.
+ *  * Goods out with trucks: the room of a truck at work only shrinks while it waits, so a batch is never asked to be bigger than what fits now.
+ * `space` is what `flowSpace(flow)` answered.
+ */
+export function batchCeiling(flow, space, age) {
+  const from = flow.from.trucks;
+  const to = flow.to.trucks;
+  if (from === null && to === null) return Infinity;
+  const supply = from === null ? Infinity : from.supply(flow.from, flow, age);
+  return Math.min(supply, to === null ? Infinity : space);
 }
 
 export function reserveInbound(flow, qty) {

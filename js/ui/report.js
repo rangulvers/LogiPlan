@@ -32,6 +32,8 @@ import { summarizeReport } from '../sim/experiments.js';
 import { niceTicks } from './charts.js';
 import { buildComparison, buildSweep, formatParamValue, getLastResults, headline, resultStaleness, sweepSeries } from './compare.js';
 import { clockRow, doorCheckRow, doorResultRows, withTrucks } from './report-ops.js';
+import { BUILD } from '../build-info.js';
+import { buildSummary } from '../version.js';
 
 // =================================================================================================
 // Safe markup
@@ -601,12 +603,12 @@ function checksSection(ctx) {
 /**
  * The report as a complete HTML document.
  * @param {object} ctx shared context (store, runner, renderer, issues)
- * @param {{ includeComparison?: boolean, results?: { compare: object|null, sweep: object|null }, now?: Date }} [opts]
+ * @param {{ includeComparison?: boolean, results?: { compare: object|null, sweep: object|null }, now?: Date, build?: object }} [opts]
  *   `includeComparison` (default true) adds the latest comparison / sweep from the Experiments tab when there is one; `results`
- *   replaces getLastResults() as the source (same shape)
+ *   replaces getLastResults() as the source (same shape); `build` is the identity named in the footer (default: js/build-info.js)
  * @returns {string}
  */
-export function exportReportHtml(ctx, { includeComparison = true, results = null, now = new Date() } = {}) {
+export function exportReportHtml(ctx, { includeComparison = true, results = null, now = new Date(), build = BUILD } = {}) {
   const state = ctx.store.getState();
   const layout = state.layout;
   const scenarios = state.project.scenarios;
@@ -621,7 +623,7 @@ ${insightsSection(ctx)}
 ${comparisonSection(ctx, includeComparison ? (results || getLastResults()) : null)}
 ${assumptionsSection(layout)}
 ${checksSection(ctx)}
-<footer><span>Generated with LogiPlan</span><span>${longDate(now)}, ${shortTime(now)}</span></footer>`;
+<footer><span>Generated with LogiPlan ${buildSummary(build)}</span><span>${longDate(now)}, ${shortTime(now)}</span></footer>`;
   return `<!doctype html>\n${html`<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light">
 <title>${title}</title><style>${raw(CSS)}</style></head><body>${body}</body></html>`}`;
 }

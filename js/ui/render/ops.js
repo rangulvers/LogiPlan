@@ -14,6 +14,9 @@
 //                (SLOT_MIN_CELL_PX); below that only the count of doors (the flat swatch of a brick below 5 px has no content at all).
 //   Gate chip    "Gate 5 trucks, 38 min": the trucks waiting at the gate and the longest wait; neutral below 15 min, amber from 15 min (GATE_AMBER_SECONDS),
 //                red from 45 min (GATE_RED_SECONDS, with a "!" mark); shortened to fit ("Gate 5, 38 min", "5, 38 min", "5").
+//   Edge chip    a brick too small for the band (a 2-cell-high Goods in below 16.5 px per cell, the zoom of a normal laptop window fitting a whole plant): no band is
+//                reserved, the face keeps its name; the gate chip (and the count of doors) sits on the LOWER EDGE of the brick, a third over the face, so a queue of
+//                trucks is never invisible (compactChip). Only the flat swatch of a brick below 14 x 12 px has nothing.
 //   Staged       Goods out, from a cell of 24 px: a row of small pallet squares above the slots, filled for a staged pallet, an outline for free staging
 //                space (doors x staging, at most MAX_STAGED).
 //   Dock shares  from a cell of 24 px, with the Docks overlay: a thin bar next to the notch of every dock cell of the brick, as long as the visits of that
@@ -226,8 +229,28 @@ function planOf(st) {
   return p;
 }
 
+/** The compact plan of a brick with no room for the band: the face stays whole, the chip sits on the lower edge (paintEdge). */
+function planEdge(g, trucks, outbound, st) {
+  const p = planOf(st);
+  p.mode = 'edge';
+  p.n = Math.round(trucks.doors) || 0;
+  p.outbound = outbound;
+  p.trucks = trucks;
+  p.bandX = g.x;
+  p.bandW = g.w;
+  p.bandY = g.y + g.h;
+  p.bandH = 0;
+  p.stagedH = 0;
+  Object.assign(p.face, g);
+  p.block.x = -1e9; // nothing on the face to keep the studs away from (they are not drawn at this size)
+  p.block.y = g.y;
+  p.block.w = 0;
+  p.block.h = 0;
+  return p;
+}
+
 /**
- * The band of door slots of a brick, or null (no trucks, a placement ghost, a face too small for a band). Called by planContent; see the header.
+ * The band of door slots of a brick, or null (no trucks, a placement ghost). Called by planContent; see the header.
  * @param {object} g brick geometry (bricks.js brickGeometry)
  * @param {object|null} st layout station, null for a ghost
  */
@@ -239,7 +262,7 @@ export function planOps(ctx, fr, g, type, st, rt) {
   const outbound = type === 'sink';
   const room = g.h - 2 * Math.min(pad, 3);
   const bandH = Math.min(clamp(g.cell * 0.4, 11, 30), room - 18);
-  if (!(bandH >= 9)) return null;
+  if (!(bandH >= 9)) return planEdge(g, trucks, outbound, st);
   const stagedH = outbound && trucks.staging > 0 && g.cell >= STAGED_MIN_CELL_PX && room >= bandH + 18 + 12 ? Math.min(clamp(g.cell * 0.2, 6, 11), room - bandH - 18) : 0;
   const reserve = bandH + (stagedH > 0 ? stagedH + 3 : 0) + Math.min(pad, 3) + 2;
   const p = planOf(st);
@@ -437,6 +460,10 @@ export function paintOps(ctx, fr, g, pal, st, rt, plan) {
   const outbound = p.outbound;
   const sim = fr.sim;
   const rd = readDoors(rt, p.trucks, sim && finite(sim.time) ? sim.time : 0, outbound, reading);
+  if (p.mode === 'edge') {
+    paintEdge(ctx, fr, g, pal, p, rd);
+    return;
+  }
   const hasChip = measureChip(ctx, fr, p, rd);
   const bandRight = p.bandX + p.bandW;
   const choice = p.mode === 'slots' && rd.doors > 0
@@ -472,6 +499,62 @@ export function paintOps(ctx, fr, g, pal, st, rt, plan) {
   paintDockShares(ctx, fr, st, p);
 }
 const NO_WIDTHS = Object.freeze([]);
+
+/**
+ * Which texts of the edge chip fit: the longest of `widths` (longest first) that is at most `room` wide, else the shortest one. Pure, tested.
+ * @returns {number} an index into the texts
+ */
+export function pickChipText(widths, room) {
+  for (let i = 0; i < widths.length; i++) if (widths[i] <= room) return i;
+  return Math.max(0, widths.length - 1);
+}
+
+/**
+ * A brick without room for the band: the number of doors and, when trucks wait at the gate, the chip, on the lower edge of the brick (a third over its face, the rest
+ * below it). Red carries a "!" in front of the text, amber and red are also told by the minutes in it, so the colour never carries the message alone.
+ */
+function paintEdge(ctx, fr, g, pal, p, rd) {
+  const fpx = clamp(g.cell * 0.72, 8, 10);
+  const h2 = Math.round(fpx * 1.35);
+  const y = g.y + g.h - Math.round(h2 * 0.35); // a third over the face, two thirds below its edge: the name tile (centred in the face) stays readable
+  const overhang = 6;
+  const hasChip = rd.gate > 0;
+  ctx.font = fontOf(fr.theme, 700, fpx);
+  ctx.textBaseline = 'middle';
+  ctx.textAlign = 'left';
+  let chipW = 0;
+  let chipX = 0;
+  if (hasChip) {
+    const texts = textsOf(p, rd.gate, rd.wait);
+    const tone = gateTone(rd.wait);
+    const mark = tone === 'red' ? '! ' : '';
+    for (let i = 0; i < texts.length; i++) p.widths[i] = measure(ctx, mark + texts[i]) + 6;
+    const pick = pickChipText(p.widths, g.w + 2 * overhang);
+    p.chipText = mark + texts[pick];
+    chipW = p.widths[pick];
+    chipX = g.x + g.w - chipW + overhang * 0.5;
+    const fill = tone === 'red' ? RED : tone === 'amber' ? STATUS_COLORS.starved : fr.theme.tile;
+    const ink = tone === 'red' ? RED_INK : tone === 'amber' ? STATUS_INK : fr.theme.tileInk;
+    fillPill(ctx, chipX - 1, y - 1, chipW + 2, h2 + 2, '#ffffff');
+    fillPill(ctx, chipX, y, chipW, h2, fill);
+    ctx.fillStyle = ink;
+    ctx.fillText(p.chipText, chipX + 3, y + h2 / 2 + 0.5);
+  }
+  const label = `${rd.doors} ${rd.doors === 1 ? 'door' : 'doors'}`;
+  const labelW = measure(ctx, label) + 8;
+  const left = g.x - overhang * 0.5;
+  const room = hasChip ? chipX - left - 3 : g.w + 2 * overhang;
+  const text = labelW <= room ? label : String(rd.doors);
+  const w = labelW <= room ? labelW : measure(ctx, text) + 8;
+  if (w <= room) {
+    const x = hasChip ? left : g.x + (g.w - w) / 2;
+    fillPill(ctx, x - 1, y - 1, w + 2, h2 + 2, '#ffffff');
+    fillPill(ctx, x, y, w, h2, pal.track);
+    ctx.fillStyle = pal.ink;
+    ctx.textAlign = 'center';
+    ctx.fillText(text, x + w / 2, y + h2 / 2 + 0.5);
+  }
+}
 
 // ---------------------------------------------------------------------------------------------------------
 // Dock share bars

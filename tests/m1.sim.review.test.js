@@ -9,8 +9,8 @@
 //  * the neutrality claim "legacy plants run bit for bit as before" is checked against the real old tree (commit a2af6d8, git archive), not against a
 //    recorded number.
 //
-// Known defects are tests marked { todo: 'M1-SIM-REV-n ...' }: they FAIL today, the suite stays green, and the fixer flips them (delete the todo, or run
-// with M1_SIM_REVIEW_STRICT=1 to see them as ordinary tests). Switches (environment): M1_SIM_REVIEW_HEAVY=1 runs the expensive versions (160 random plants,
+// The defects this review found (M1-SIM-REV-1, 1b, 2, 3, 4) were todo tests while they were open; the fixer fixed them (docs/ARCHITECTURE.md 5.7) and they
+// are ordinary regression tests now (M1_SIM_REVIEW_STRICT is no longer needed and has no effect). Switches (environment): M1_SIM_REVIEW_HEAVY=1 runs the expensive versions (160 random plants,
 // 3 examples x 4 seeds x 8 h against the old tree, 72 h of memory, allocation per tick in child processes); without it the file takes about 8 s of CPU.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -30,12 +30,11 @@ import {
 } from './helpers/m1-sim-review-gen.js';
 
 const HEAVY = process.env.M1_SIM_REVIEW_HEAVY === '1';
-const STRICT = process.env.M1_SIM_REVIEW_STRICT === '1';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const OLD_REV = process.env.M1_SIM_REVIEW_OLD_REV || 'a2af6d8'; // the end of milestone M0: the last commit before the trucks
 
-/** A known defect: a todo test (it runs; while it fails the suite stays green). */
-const defect = (id, name, fn) => test(`${id}: ${name}`, STRICT ? {} : { todo: `${id}: a defect found by the M1 simulation review` }, fn);
+/** A defect this review found and the fixer fixed: an ordinary regression test. */
+const defect = (id, name, fn) => test(`${id}: ${name}`, fn);
 const heavy = (name, fn) => test(name, HEAVY ? {} : { skip: 'expensive: set M1_SIM_REVIEW_HEAVY=1' }, fn);
 
 const K = (mean) => ({ kind: 'const', mean, spread: 0 });
@@ -203,7 +202,7 @@ const MUTANTS = [
 ];
 /** For each mutant the plants (seeds) that expose it quickly: calibrated, cheapest first. */
 const MUTANT_SEEDS = {
-  fifoLoading: [12], doorCount: [1], gateLifo: [1], pickedUp: [1], roomIgnoresInbound: [6], roomCountsCheckIn: [2], closingLeavesEarly: [24], shortNotCounted: [2],
+  fifoLoading: [12], doorCount: [1], gateLifo: [1], pickedUp: [1], roomIgnoresInbound: [6], roomCountsCheckIn: [2], closingLeavesEarly: [24], shortNotCounted: [22], // [2] before M1-SIM-REV-2 was fixed: the short departures of seed 2 were the starvation by the minimum batch
   doorReuse: [1], palletLost: [1], checkInShort: [6], closesTooEarly: [2], createdAtDock: [12], doorFreedEarly: [9], doorFreedLate: [6],
 };
 
@@ -774,7 +773,7 @@ test('M1-SIM-REV 7.1 ARCHITECTURE 5.7 against the code: the events, their payloa
   assert.deepEqual(insightsOps.OPS_INSIGHT_RULES.map((f) => f.name), ['gateQueueLong', 'doorsBottleneck', 'unloadLimitedByVehicles', 'doorsIdle', 'outboundShort']);
 });
 
-// ---- known defects (todo until fixed) ----------------------------------------------------------------------------------------------------------
+// ---- the defects of this review, fixed: regression tests ----------------------------------------------------------------------------------------------------------
 
 defect('M1-SIM-REV-1', 'the last pallets of a truck are held back by the minimum batch of the flow: with one door the door is blocked for good (Goods in)', () => {
   // Trucks of 6 pallets, a flow whose batch is 4 (a tugger train that waits to be full), one door. After the first batch of 4 the 2 pallets left
