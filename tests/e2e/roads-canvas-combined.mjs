@@ -195,10 +195,6 @@ await withBrowser(async ({ browser, url, errors }) => {
     return c ? [r.left + c.chip.x, r.top + c.chip.y] : null;
   }, side);
 
-  async function drawMode(page, name) {
-    await page.getByRole('group', { name: 'Draw mode' }).getByRole('button', { name }).click();
-    await frames(page, 2);
-  }
 
   const run = async (name, fn) => {
     if (only && only !== name) return;
