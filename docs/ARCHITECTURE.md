@@ -63,7 +63,7 @@ util  ←  model  ←  sim  ←  store?  ←  ui  ←  main
 * **The pure model modules of optional features** (the warehouse module, docs/WAREHOUSE-DESIGN.md): `model/schema.js`, `ops.js`, `calendar.js`, `extensions.js` and, in later
   milestones, `rack.js`, `loadtypes.js`. They are pure functions of plain JSON (sanitizers, `schemaNeeded`, timeline and rack mathematics), import only `util`, `defaults.js` and each other
   (`schema.js` → `defaults.js`; `ops.js` → `util`; `calendar.js` → `ops.js`; `extensions.js` → `calendar.js`) and **never `layout.js`**, which imports them. `sim` may therefore import them too (the simulation
-  and the UI derive capacity, clocks and geometry from the same code) without pulling in the mutators. `model/validate-ops.js` is the one validation module the other direction: `validate.js` calls it.
+  and the UI derive capacity, clocks and geometry from the same code) without pulling in the mutators. The one model module that may import `layout.js` is `model/validate-ops.js` (the plan checks of the warehouse module), which `validate.js` calls.
   The sim-side runtime of a feature lives in its own file (`sim/logistics/trucks.js`, `staffing.js`, `racks.js`, … and `sim/stats-ops.js`, `insights-ops.js`), created only for stations that use it.
 * `store` imports `model` (+ `util`). It never imports `sim` or `ui`.
 * `ui` may import everything below it; `ui` modules never import `main.js`. `sim` never imports `ui` or `store`.
