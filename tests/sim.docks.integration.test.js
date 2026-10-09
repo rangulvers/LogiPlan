@@ -442,7 +442,9 @@ test('the dock book is cheap: the Two-lines example runs within a few percent of
   const layout = EXAMPLES.find((e) => e.id === 'two-lines').build();
   // CPU time of this process (user + system), not wall-clock time: in CI this file runs beside other test processes, and a neighbour that
   // takes the core for a moment would stretch one of the two ~300 ms runs by 20 % and fail a comparison that has nothing to do with the code
-  // (x1.24 was seen once under load). The best of six runs of each is compared.
+  // (x1.24 was seen under load, on the CI runner after a merge, although the best of six runs of each was compared: a noisy neighbour lasts
+  // for seconds, longer than one block of twelve runs). So the order of the two variants alternates, and a block that exceeds the bound is
+  // measured again, up to three blocks in all: a real slowdown of the evaluation shows in every block, a passing neighbour in one.
   const time = (legacy) => {
     const sim = new Simulation(layout);
     if (legacy) sim.logistics.docks.enabled = false;
@@ -451,12 +453,26 @@ test('the dock book is cheap: the Two-lines example runs within a few percent of
     const used = process.cpuUsage(t0);
     return (used.user + used.system) / 1000;
   };
+  const block = () => {
+    const on = [];
+    const off = [];
+    for (let i = 0; i < 6; i++) {
+      if (i % 2 === 0) { on.push(time(false)); off.push(time(true)); } else { off.push(time(true)); on.push(time(false)); }
+    }
+    const best = { on: Math.min(...on), off: Math.min(...off) };
+    return { ...best, ratio: best.on / best.off };
+  };
   time(false); // warm up the JIT
-  const on = [];
-  const off = [];
-  for (let i = 0; i < 6; i++) { on.push(time(false)); off.push(time(true)); }
-  const ratio = Math.min(...on) / Math.min(...off);
-  // 'off' still keeps the books (reservations, statistics): what is compared is the evaluation. The bound is loose for a busy machine;
-  // the measured overhead against the code without any dock book is in the report of the change.
-  assert.ok(ratio < 1.15, `with the dock evaluation ${Math.min(...on).toFixed(0)} ms of CPU, without ${Math.min(...off).toFixed(0)} ms (x${ratio.toFixed(3)})`);
+  const blocks = [];
+  for (let attempt = 0; attempt < 3; attempt++) {
+    blocks.push(block());
+    // 'off' still keeps the books (reservations, statistics): what is compared is the evaluation. The bound is loose for a busy machine;
+    // the measured overhead against the code without any dock book is in the report of the change.
+    if (blocks[attempt].ratio < 1.15) break;
+  }
+  const last = blocks[blocks.length - 1];
+  assert.ok(
+    last.ratio < 1.15,
+    `with the dock evaluation ${last.on.toFixed(0)} ms of CPU, without ${last.off.toFixed(0)} ms (x${last.ratio.toFixed(3)}); blocks: ${blocks.map((b) => 'x' + b.ratio.toFixed(3)).join(', ')}`,
+  );
 });
