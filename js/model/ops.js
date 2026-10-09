@@ -69,11 +69,25 @@ export function sanitizeOps(type, raw) {
   return typeof sanitize === 'function' ? sanitize(raw) : undefined;
 }
 
+/** `patch` merged into `base`, as a new object: plain objects merge key by key at every depth, arrays and scalars replace, `null` removes a key. */
+function mergeDeep(base, patch) {
+  const merged = { ...base };
+  for (const key of Object.keys(patch)) {
+    const value = patch[key];
+    if (value === undefined || key === '__proto__') continue;
+    if (value === null) delete merged[key];
+    else merged[key] = isObj(value) && Object.hasOwn(merged, key) && isObj(merged[key]) ? mergeDeep(merged[key], value) : value;
+  }
+  return merged;
+}
+
 /**
  * The `ops` block that results from merging `patch` into `current` (a sanitized block or undefined), sanitized again; undefined when
- * the station then has no options. Merged like `params`: the keys of the patch replace those of the block, an object that exists on
- * both sides merges one level deeper (a patch of `{ trucks: { doors: 3 } }` changes the doors and keeps the other truck fields), a
- * `null` value switches that key off, and `patch === null` removes the whole block. A patch that is not an object changes nothing.
+ * the station then has no options. Merged like `params`, but at every depth: the keys of the patch replace those of the block, a plain
+ * object that exists on both sides merges key by key (a patch of `{ trucks: { doors: 3 } }` changes the doors and keeps the other truck
+ * fields, a patch of `{ trucks: { interArrival: { mean: 2400 } } }` changes the mean and keeps the kind and the spread, which is what a
+ * field of the panel or a sweep sends), arrays and scalars replace, a `null` value switches that key off, and `patch === null` removes the
+ * whole block. A patch that is not an object changes nothing.
  * @param {string} type
  * @param {object|undefined} current
  * @param {unknown} patch
@@ -82,13 +96,5 @@ export function sanitizeOps(type, raw) {
 export function mergeOps(type, current, patch) {
   if (patch === null) return undefined;
   const base = isObj(current) ? current : {};
-  const merged = { ...base };
-  if (isObj(patch)) {
-    for (const key of Object.keys(patch)) {
-      if (patch[key] === undefined || key === '__proto__') continue;
-      if (patch[key] === null) delete merged[key];
-      else merged[key] = isObj(base[key]) && isObj(patch[key]) ? { ...base[key], ...patch[key] } : patch[key];
-    }
-  }
-  return sanitizeOps(type, merged);
+  return sanitizeOps(type, isObj(patch) ? mergeDeep(base, patch) : { ...base });
 }

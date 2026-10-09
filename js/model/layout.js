@@ -38,7 +38,7 @@ import { nextId } from '../util/ids.js';
 import { clamp } from '../util/format.js';
 import { sanitizeOps, mergeOps } from './ops.js';
 import { schemaNeeded, migrate } from './schema.js';
-import { normalizeExtensions } from './extensions.js';
+import { normalizeExtensions, reconcileLayout } from './extensions.js';
 
 // ---------------------------------------------------------------------------------------------------------
 // Field specifications (shared by the sanitizers and by checkInvariants)
@@ -979,7 +979,7 @@ export function updateStation(layout, id, patch) {
     const ops = mergeOps(s.type, s.ops, patch.ops);
     if (ops === undefined) delete s.ops;
     else s.ops = ops;
-    layout.schema = schemaNeeded(layout); // a mutator that adds or removes a persisted extension key keeps the stamp true (checkInvariants)
+    reconcileLayout(layout); // a mutator that adds or removes persisted extension content re-derives the stamp and the implied blocks (extensions.js)
   }
   return true;
 }
@@ -991,6 +991,7 @@ export function removeStation(layout, id) {
   layout.stations.splice(i, 1);
   layout.flows = layout.flows.filter((f) => f.from !== id && f.to !== id);
   for (const fleet of layout.fleets) if (fleet.home === id) fleet.home = null;
+  reconcileLayout(layout); // the station may have been the last one that needed a newer schema (also reached through resizeGrid)
   return true;
 }
 
@@ -1078,6 +1079,7 @@ export function removeFlow(layout, id) {
   const i = layout.flows.findIndex((f) => f.id === id);
   if (i < 0) return false;
   layout.flows.splice(i, 1);
+  reconcileLayout(layout);
   return true;
 }
 
@@ -1132,6 +1134,7 @@ export function removeFleet(layout, id) {
   if (i < 0) return false;
   layout.fleets.splice(i, 1);
   for (const flow of layout.flows) if (flow.fleetId === id) flow.fleetId = null;
+  reconcileLayout(layout);
   return true;
 }
 

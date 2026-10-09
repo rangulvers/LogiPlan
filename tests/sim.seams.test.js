@@ -6,9 +6,13 @@
 // Behaviour is not tested here (the golden tests do that); these tests pin the SHAPES and prove that each seam is really wired.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync, readdirSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { Simulation } from '../js/sim/engine.js';
 import { Stats } from '../js/sim/stats.js';
 import { EXTENSION_RULES } from '../js/sim/insights.js';
+import { bufferSize } from '../js/ui/render/jobs.js';
 import { flowCapacity, flowSpace } from '../js/sim/logistics/stations.js';
 import { EXAMPLES } from '../js/model/examples.js';
 import { validateLayout } from '../js/model/validate.js';
@@ -99,6 +103,44 @@ test('the capacity of a storage is read through st.capacity in all six places of
   injectLoads(w.lg, 'f2', 4);
   assert.equal(st.state, 'full', 'state: full at 7 loads although params.capacity is 40');
   assert.equal(flowSpace(intoStorage), 0);
+});
+
+test('the seventh reader: the jobs overlay sizes a storage buffer through st.capacity too (render/jobs.js bufferSize)', () => {
+  const layout = layoutFromAscii(['A...S...D', '+++++++++'], {
+    stations: { A: { type: 'source', params: { interArrival: OFF } }, S: { type: 'storage', params: { capacity: 40 } }, D: 'sink' },
+    flows: [['A', 'S'], ['S', 'D']], fleets: [{ count: 1, capacity: 10 }],
+  });
+  const st = createWorld(layout, { dt: 0.5 }).lg.stationById.get('S');
+  assert.equal(bufferSize(st), 40, 'a real runtime station: the same number as params.capacity');
+  Object.defineProperty(st, 'capacity', { get: () => 7 });
+  assert.equal(bufferSize(st), 7, 'and when the station answers something else, the overlay follows it');
+});
+
+test('ledger of the reads of a storage capacity: the runtime asks the station, the layout-level readers are the ones M3 has to route through a helper', () => {
+  // A new `params.capacity` read anywhere in js/ fails this test, so that it is decided on the spot: ask the station (st.capacity) at run time,
+  // and at layout level use the helper M3 adds next to the rack mathematics (the readers below are the ones it replaces). The patterns are
+  // `params.capacity`, `params?.capacity` and `paramsOf(x).capacity`; report.js reads the same value through a local `p` (js/ui/report.js, stationParams).
+  const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'js');
+  const pattern = /params\??\.capacity|paramsOf\([^)]*\)\.capacity/g;
+  const found = {};
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const file = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(file);
+      else if (entry.name.endsWith('.js')) {
+        const n = (readFileSync(file, 'utf8').match(pattern) || []).length;
+        if (n) found[path.relative(root, file)] = n;
+      }
+    }
+  };
+  walk(root);
+  assert.deepEqual(found, {
+    'model/validate.js': 5, // layout level: the buffer between two stations, the smallest limit on a flow, storage-small (M3: helper)
+    'sim/experiments.js': 1, // layout level: the sweep of a storage capacity (M3: helper; a sweep of a rack changes its geometry, not this number)
+    'sim/insights.js': 1, // layout level: the storage-filling rules read the definition (M3: helper)
+    'sim/logistics/stations.js': 2, // the accessor `get capacity()` itself (one in its comment)
+    'ui/render/jobs.js': 1, // the fallback for a plain stand-in that has no `capacity` (bufferSize)
+  });
 });
 
 test('the dispatcher limits the smallest worthwhile batch by st.capacity of the origin (dispatcher.js line 79)', () => {

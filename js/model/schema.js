@@ -9,7 +9,8 @@
 //   SCHEMA_MAX                    the highest row this build implements, i.e. can read without telling the planner that the file is
 //                                 from a newer version. Raise it in the milestone that adds the row (M1: 2, M2: 3, M3: 4, ...).
 //   schemaNeeded(layout)          the highest row whose keys the layout uses (at least 1). normalizeLayout stamps it, checkInvariants
-//                                 demands exactly it, exportProject stamps the project with the highest of its scenarios.
+//                                 demands exactly it, exportProject stamps the project with the highest of its scenarios. The mutators
+//                                 of layout.js that add or remove extension content keep the stamp true with reconcileLayout (extensions.js).
 //   migrate(raw)                  reserved: runs before sanitizing. Everything in M1 to M6 is additive, so it is the identity. A future
 //                                 rename gets one numbered step here and one fixture.
 //

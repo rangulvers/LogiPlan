@@ -82,7 +82,7 @@ node scripts/perf-baseline.mjs        # CPU seconds per simulated hour of the th
 node scripts/rebaseline-golden.mjs    # re-record the golden fixtures (tests/fixtures/golden): a pull request that does must say why the legacy results changed
 ```
 
-The golden tests (`tests/sim.golden.*.test.js`) pin the KPI reports of the example plants bit for bit, so a change that was meant to leave existing plants alone cannot change them unnoticed.
+The golden tests (`tests/sim.golden.*.test.js`) pin the KPI reports of the example plants and of some dock-dense scratch plants bit for bit, so a change that was meant to leave existing plants alone cannot change them unnoticed.
 
 The browser tests need Playwright, which is deliberately **not** a dependency of the app:
 `npm i --no-save playwright && npx playwright install chromium`.

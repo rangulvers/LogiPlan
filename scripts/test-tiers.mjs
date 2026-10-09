@@ -71,6 +71,7 @@ export const HEAVY_SHARDS = Object.freeze([
     'sim.traffic.fuzz2.test.js', //      8.7
     'sim.traffic.fuzz7.test.js', //      7.6
     'sim.traffic.fuzz6.test.js', //      7.1
+    'm0.review.test.js', //             ~10  the adversarial review of milestone M0 (warehouse seams): digests of the pre-M0 tree, hostile documents, stand-in sanitizers; its expensive checks are opt-in (M0_REVIEW_HEAVY=1)
   ),
   whole(
     'sim.integration.test.js', //       27.4  examples end to end, performance bound

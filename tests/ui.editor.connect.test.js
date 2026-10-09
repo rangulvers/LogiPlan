@@ -782,6 +782,17 @@ test('waitingLoads: a storage load whose dwell time is not over yet is not ready
   assert.equal(bufferSize({ type: 'source', outLinks: [{ cap: 6 }, { cap: 6 }] }), 12, 'per outgoing flow, summed');
 });
 
+test('jobs overlay: the size of a storage buffer is asked from the station (st.capacity), params only answer for a plain stand-in', () => {
+  const real = { type: 'storage', params: { capacity: 10 }, outLinks: [] };
+  Object.defineProperty(real, 'capacity', { get: () => 77 }); // what a rack answers (M3): derived, not params.capacity
+  assert.equal(bufferSize(real), 77);
+  assert.equal(waitingIsHigh({ ...real, capacity: 77, outLinks: [{ queue: Array.from({ length: 62 }, () => ({ readyAt: 0 })), claimed: 0, cap: Infinity }] }, 62), true, '62 of 77 is 80 %');
+  assert.equal(bufferSize({ type: 'storage', capacity: 0, params: { capacity: 10 }, outLinks: [] }), 0, 'an accessor that answers 0 means none');
+  assert.equal(bufferSize({ type: 'storage', params: { capacity: 10 }, outLinks: [] }), 10, 'a stand-in with params only');
+  assert.equal(bufferSize({ type: 'storage', params: {}, outLinks: [] }), 0);
+  assert.equal(bufferSize({ type: 'storage', capacity: undefined, params: { capacity: 4 }, outLinks: [] }), 4, 'undefined is "ask params" (a source or a process answers undefined)');
+});
+
 // ---- the drawing code against a recording context -------------------------------------------------------------------------
 
 /** A canvas context that records the calls the jobs overlay makes and measures text as 6 px per character. */
