@@ -521,6 +521,7 @@ They never contradict the older rules: an unused fleet is not also oversized or 
 hardly works, and an unconnected goods-in is not also "delivering more than the plant takes".
 **Docks:** `dock-bottleneck` (a station whose docks are *in service* ≥ 60 % of the time on average (loading, unloading, pulling out - not an idle vehicle that merely stands there) while vehicles queued ≥ 8 s per visit for them: "Vehicles queue at X: its only dock is busy 87 % of the time and vehicles waited 4 min. Add a second dock - any road cell touching the
 station - or a bypass bay."; silent for docks that are balanced and idle), `dock-idle-vehicles` (the same queue, but the docks are in service < 60 % of the time and idle vehicles that stay on the road stand on them ≥ 25 % of it: "Set the fleet to Park in depot") and `docks-unbalanced` (one dock takes ≥ 75 % of ≥ 20 visits while another gets ≤ 15 % and vehicles wait ≥ 5 s per visit - only said with the reason `stations[].dockSkew.reason`: a trap, docks lined up on one lane, a detour).
+**Trucks and dock doors** (milestone M1) add `report.ops` (only for a plant with trucks) and five rules through `EXTENSION_RULES` (`gate-queue-long`, `doors-bottleneck`, `unload-limited-by-vehicles`, `doors-idle`, `outbound-short`, in `insights-ops.js`, 5.7); the older `supply` rule skips a Goods in with trucks and `docks-unbalanced` says "one lane" for a row of docks of such a plant.
 Messages are plain language for a factory planner and quote the numbers.
 
 ### 5.5 `js/sim/engine.js` — `Simulation` (owner: engine agent, wave 2)
