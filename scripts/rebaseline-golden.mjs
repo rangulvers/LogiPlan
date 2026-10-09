@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-// Re-record the golden fixtures (tests/fixtures/golden/*): the KPI reports of the three example plants, the legacy layouts and their
-// share links. See tests/helpers/golden.js for what is recorded and docs/WAREHOUSE-DESIGN.md 10.1 for the rule.
+// Re-record the golden fixtures (tests/fixtures/golden/*): the KPI reports of the three example plants, of the dock-lab plants and of
+// the frozen dock-dense plants, the legacy layouts and their share links. The layout.dockplant-<seed>.json files are INPUTS of the dock-dense
+// plants: they are read, never rewritten. See tests/helpers/golden.js for what is recorded and docs/WAREHOUSE-DESIGN.md 10.1 for the rule.
 //
 //   node scripts/rebaseline-golden.mjs            record the fixtures from the tree this script lives in, and list what changed
 //   node scripts/rebaseline-golden.mjs --check    record nothing; list what WOULD change and exit 1 if anything would

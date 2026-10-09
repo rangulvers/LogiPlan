@@ -915,6 +915,12 @@ const RULES = [
   noOutput, fleetsWithoutJobs, unusedFleets, idleVehicles, unconnectedSources, neverUsedStations, dockBottlenecks, dockIdleVehicles, docksUnbalanced,
 ];
 
+/**
+ * Rules of optional extensions (the warehouse module, docs/WAREHOUSE-DESIGN.md 6.9), run after RULES, each (ctx) => candidate[] like the
+ * rules above. Empty until M1: a rule has to look for its own section of the report (`ctx.report.ops`) and return [] when it is absent.
+ */
+export const EXTENSION_RULES = [];
+
 function notEnoughData(report) {
   const seconds = report && report.window && Number.isFinite(report.window.duration) ? report.window.duration : 0;
   const warming = Boolean(report && report.window && report.window.warmingUp);
@@ -944,6 +950,7 @@ export function generateInsights(report, layout) {
   if (!window || window.warmingUp || !(window.duration >= MIN_DATA_SECONDS)) return [notEnoughData(report)];
   const ctx = buildContext(report, layout);
   const found = RULES.flatMap((rule) => rule(ctx));
+  for (const rule of EXTENSION_RULES) found.push(...rule(ctx));
   if (!found.some((c) => c.insight.severity === 'critical' || c.insight.severity === 'warning')) found.push(goodNews(ctx));
   found.sort((a, b) =>
     SEVERITY_RANK[a.insight.severity] - SEVERITY_RANK[b.insight.severity]

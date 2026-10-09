@@ -10,6 +10,14 @@
 //                            examples never let the dock choice decide anything in their first hour (switching the dock book off
 //                            changes no byte of their fixtures), so without these two the safety net is blind to docks/dispatching
 //                            of Goods in with several dock cells, the code the warehouse milestones touch most
+//   layout.dockplant-<seed>.json + kpis.dockplant-<seed>.json   (added after the M0 review) five FROZEN dock-dense plants (comb, ring, lined-up docks, trap
+//                            spurs, depot, breakdowns; seeds 13, 22, 30, 44 and 52 of tests/helpers/docks-review-gen.js dockPlant) and their KPI texts after
+//                            600 simulated seconds. The layout files are INPUTS: JSON.stringify(dockPlant(seed)) as the tree before M0 (commit eccdca8)
+//                            made it, never regenerated, so the net does not move when a generator or the layout API does. They exist because the two
+//                            plants above feel only a few of the dock-choice constants (the review changed twelve of them by 25 to 100 % and the three
+//                            examples plus the two dock-lab plants noticed four); these five notice all twelve, also when each is changed by only 4 to 30 %
+//                            (24 deliberate changes in a scratch copy, none slipped; a scan of 60 seeds picked the plants by greedy cover, seed 30 alone
+//                            notices 10 of the 12)
 //   perf-baseline.json       CPU seconds per simulated hour (scripts/perf-baseline.mjs); numbers for people, no test reads them
 //
 // Rule: any change in a recorded KPI text is a bug unless the pull request says why and re-records the fixtures with
@@ -33,9 +41,15 @@ export const DOCK_SEED = 3;
 export const DOCK_SECONDS = 3 * 3600;
 export const DOCK_VARIANTS = Object.freeze(['row', 'bays']);
 
+/** The frozen dock-dense plants (see the header) and the simulated seconds they run; their own settings (seed, dt, warm-up 0) apply. */
+export const DOCKPLANT_SEEDS = Object.freeze([13, 22, 30, 44, 52]);
+export const DOCKPLANT_SECONDS = 600;
+
 export const kpisFile = (id, seed) => `kpis.${id}.seed${seed}.json`;
 export const dockKpisFile = (variant) => kpisFile(`docks-${variant}`, DOCK_SEED);
 export const layoutFile = (id) => `layout.${id}.json`;
+export const dockPlantLayoutFile = (seed) => layoutFile(`dockplant-${seed}`);
+export const dockPlantKpisFile = (seed) => `kpis.dockplant-${seed}.json`;
 export const shareFile = (id) => `share.${id}.txt`;
 export const PERF_FILE = 'perf-baseline.json';
 
@@ -94,6 +108,13 @@ export function dockKpisText(Simulation, L, variant) {
   return JSON.stringify(sim.kpis());
 }
 
+/** KPI report text of a frozen dock-dense plant: `layoutText` is the content of its layout fixture. */
+export function dockPlantKpisText(Simulation, layoutText) {
+  const sim = new Simulation(JSON.parse(layoutText));
+  sim.advance(DOCKPLANT_SECONDS);
+  return JSON.stringify(sim.kpis());
+}
+
 /** The project a share link of an example holds (the shape of the store's project, one scenario). */
 export function goldenProject(example) {
   return { name: example.name, scenarios: [{ id: 'sc1', name: 'A', layout: example.build() }], activeId: 'sc1' };
@@ -108,6 +129,7 @@ export async function captureGolden(tree) {
     files[shareFile(example.id)] = `${await tree.serialize.shareUrl(SHARE_BASE, goldenProject(example))}\n`;
   }
   for (const variant of DOCK_VARIANTS) files[dockKpisFile(variant)] = dockKpisText(tree.Simulation, tree.layout, variant);
+  for (const seed of DOCKPLANT_SEEDS) files[dockPlantKpisFile(seed)] = dockPlantKpisText(tree.Simulation, readGolden(dockPlantLayoutFile(seed))); // the layouts are inputs
   return files;
 }
 

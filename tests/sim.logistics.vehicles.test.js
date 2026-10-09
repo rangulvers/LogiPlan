@@ -536,10 +536,11 @@ test('events: every event carries the documented payload', () => {
   for (const n of ['loadCreated', 'loadCompleted', 'orderAssigned', 'orderPickedUp', 'orderDelivered', 'machineDown', 'machineUp', 'vehicleDown', 'vehicleUp', 'vehicleDead']) assert.ok(names.has(n), `${n} was emitted`);
   for (const e of w.events) assert.ok(Number.isFinite(e.payload.t), `${e.name} has a time`);
   const [created] = w.named('loadCreated');
-  assert.deepEqual(Object.keys(created.load).sort(), ['claimed', 'createdAt', 'id', 'origin', 'readyAt']);
+  // the last four keys of a load (ty, tk, at, slot) and of an order (pickAt, dropAt, pickExtra, dropExtra) are the fixed shapes of the warehouse module (docs/WAREHOUSE-DESIGN.md 5.4, M0): present, inert
+  assert.deepEqual(Object.keys(created.load).sort(), ['at', 'claimed', 'createdAt', 'id', 'origin', 'readyAt', 'slot', 'tk', 'ty']);
   assert.equal(created.station.id, created.stationId);
   const [assigned] = w.named('orderAssigned');
-  assert.deepEqual(Object.keys(assigned.order).sort(), ['createdAt', 'deliveredAt', 'flowId', 'from', 'id', 'loads', 'pickedAt', 'qty', 'readySince', 'to', 'vehicleId']);
+  assert.deepEqual(Object.keys(assigned.order).sort(), ['createdAt', 'deliveredAt', 'dropAt', 'dropExtra', 'flowId', 'from', 'id', 'loads', 'pickAt', 'pickExtra', 'pickedAt', 'qty', 'readySince', 'to', 'vehicleId']);
   assert.equal(JSON.stringify(assigned.order.loads.length), '1', 'orders can be serialised (the FlowRT link is not enumerable)');
   assert.equal(assigned.order.flow, w.lg.flowById.get(assigned.order.flowId));
   assert.equal(assigned.vehicle.id, assigned.order.vehicleId);

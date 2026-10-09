@@ -76,7 +76,7 @@ function collectDemand(lg, t, maxCapacity, round) {
       // the smallest worthwhile batch, unless the oldest load has waited long enough
       minBatch: expired
         ? 1
-        : Math.max(1, Math.min(c.batchMin, batchMax, flowCapacity(flow), flow.outLink.cap, flow.from.params.capacity ?? Infinity)),
+        : Math.max(1, Math.min(c.batchMin, batchMax, flowCapacity(flow), flow.outLink.cap, flow.from.capacity ?? Infinity)),
     });
   }
   return out;

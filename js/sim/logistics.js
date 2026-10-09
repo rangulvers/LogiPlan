@@ -119,6 +119,9 @@ export class Logistics {
     this.activeOrders = new Map();
     /** Deadlock reports received through handleDeadlock. */
     this.deadlocks = 0;
+    /** Seams of the warehouse module (docs/WAREHOUSE-DESIGN.md 5.4), present but inert: the optional extension object, null unless a layout uses an extension, and the clock of a plant with `layout.calendar`. */
+    this.ext = null;
+    this.clock = null;
 
     this.buildStations(layout);
     this.buildFlows(layout);
@@ -250,7 +253,8 @@ export class Logistics {
 
   /** A new load: made by a source (kind 'source') or as workstation output (kind 'process'). */
   createLoad(station, createdAt, readyAt, kind) {
-    const load = { id: ++this.loadSeq, createdAt, origin: station.id, readyAt, claimed: false };
+    // ty: type index, tk: truck id, at: aisle index, slot: slot id - fixed here so the shape never changes, nothing reads them yet (5.4)
+    const load = { id: ++this.loadSeq, createdAt, origin: station.id, readyAt, claimed: false, ty: 0, tk: -1, at: -1, slot: -1 };
     this.liveLoads++;
     if (kind === 'source') this.createdBySources++;
     else this.createdByProcesses++;
@@ -284,6 +288,7 @@ export class Logistics {
       readySince: loads[0].readyAt,
       pickedAt: null,
       deliveredAt: null,
+      pickAt: -1, dropAt: -1, pickExtra: 0, dropExtra: 0, // aisle hints and extra service seconds there; inert until M3 (5.4)
     };
     Object.defineProperty(order, 'flow', { value: flow });
     this.activeOrders.set(order.id, order);

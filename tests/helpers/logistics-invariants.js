@@ -20,6 +20,11 @@
 //   Depots         parked + charging + reserved slots <= slots; charging + reserved chargers <= chargers; reservations equal
 //                  the vehicles driving there; list membership matches vehicle state.
 //   Machines       blocked <=> holding outputs; idle holds nothing; busy has a positive cycle time.
+//   Trucks         optional (docs/WAREHOUSE-DESIGN.md 6.3, milestone M1): a station with `st.trucks` (null for every legacy station) may hold loads
+//                  that already exist but are not in a queue yet: `pending` of each truck in `st.trucks.gate` and `st.trucks.docked` (created
+//                  at the arrival, released to the yard after check-in) and `st.trucks.staged` (pallets waiting at a Goods out). They count as
+//                  live loads and as physically present, so the conservation law created = live + retired keeps its meaning.
+//                  The invariants of 6.3.5 (docked <= doors open, FIFO gate, loaded <= plan ...) are added with the trucks themselves.
 
 import { buildGraph } from '../../js/sim/graph.js';
 import { createRng } from '../../js/util/rng.js';
@@ -111,6 +116,10 @@ export function physicalLoads(lg) {
     for (const link of st.outLinks) add(`${st.id}.out.${link.flow.id}`, link.queue);
     for (const link of st.inLinks) add(`${st.id}.in.${link.flow.id}`, link.queue);
     for (const m of st.machines || []) add(`${st.id}.holding`, m.holding);
+    if (st.trucks) { // optional: only stations with trucks have the field set
+      for (const tk of [...(st.trucks.gate || []), ...(st.trucks.docked || [])]) add(`${st.id}.truck.${tk.id}`, tk.pending || []);
+      if (Array.isArray(st.trucks.staged)) add(`${st.id}.staged`, st.trucks.staged);
+    }
   }
   for (const vr of lg.vehicles) add(`${vr.id}.load`, vr.load);
   return found;

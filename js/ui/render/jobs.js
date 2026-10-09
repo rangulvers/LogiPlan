@@ -137,7 +137,10 @@ export function waitingLoads(rt, now) {
 
 /** Size of the output buffer of `rt` in loads (Infinity when it has no limit that is visible here, 0 for none). */
 export function bufferSize(rt) {
-  if (rt.type === 'storage') return rt.params && rt.params.capacity > 0 ? rt.params.capacity : 0;
+  if (rt.type === 'storage') {
+    const capacity = rt.capacity ?? (rt.params && rt.params.capacity); // the station answers (st.capacity: a rack's is derived); a plain stand-in only has params
+    return capacity > 0 ? capacity : 0;
+  }
   let cap = 0;
   const links = rt.outLinks || [];
   for (let i = 0; i < links.length; i++) cap += links[i].cap;

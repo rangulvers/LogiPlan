@@ -41,13 +41,14 @@ js/
   main.js                   bootstrap: build store, sim runner, UI; handle #share links
   util/    grid.js rng.js ids.js format.js dom.js                      (done)
   model/   defaults.js (done) layout.js validate.js serialize.js examples.js
+           schema.js ops.js calendar.js extensions.js validate-ops.js        (the seams of optional features, see 3.1)
   sim/     graph.js traffic.js logistics.js stats.js insights.js engine.js experiments.js
   store/   store.js
   ui/      theme.js icons.js camera.js renderer.js editor.js runner.js app.js
            dialogs.js dashboard.js charts.js compare.js report.js
            panels/ inspector.js fleet.js flows.js simulate.js checks.js
-tests/     *.test.js, helpers/ (ascii.js …), e2e/ (Playwright, run by hand: npm run test:e2e)
-scripts/   serve.mjs (dev server), check-imports.mjs, test-tiers.mjs (fast / heavy test tiers for CI)
+tests/     *.test.js, helpers/ (ascii.js, golden.js …), fixtures/golden/ (the safety net: recorded KPI reports, legacy layouts, share links), e2e/ (Playwright, run by hand: npm run test:e2e)
+scripts/   serve.mjs (dev server), check-imports.mjs, test-tiers.mjs (fast / heavy test tiers for CI), rebaseline-golden.mjs (re-records tests/fixtures/golden), perf-baseline.mjs (CPU seconds per simulated hour)
 docs/      ARCHITECTURE.md (this file)
 .github/workflows/          ci.yml (PR: check, fast and heavy shards in parallel), pages.yml (fast gate, then deploy to GitHub Pages; heavy shards beside it),
                             e2e.yml (browser tests, on demand and weekly)
@@ -59,10 +60,36 @@ docs/      ARCHITECTURE.md (this file)
 util  ←  model  ←  sim  ←  store?  ←  ui  ←  main
 ```
 * `model` imports only `util`. `sim` imports `util` + `model/defaults.js` (+ `model/layout.js` for `normalizeLayout`).
+* **The pure model modules of optional features** (the warehouse module, docs/WAREHOUSE-DESIGN.md): `model/schema.js`, `ops.js`, `calendar.js`, `extensions.js` and, in later
+  milestones, `rack.js`, `loadtypes.js`. They are pure functions of plain JSON (sanitizers, `schemaNeeded`, timeline and rack mathematics), import only `util`, `defaults.js` and each other
+  (`schema.js` → `defaults.js`; `ops.js` → `util`; `calendar.js` → `ops.js`; `extensions.js` → `calendar.js`, `schema.js`) and **never `layout.js`**, which imports them. `sim` may therefore import them too (the simulation
+  and the UI derive capacity, clocks and geometry from the same code) without pulling in the mutators. The one model module that may import `layout.js` is `model/validate-ops.js` (the plan checks of the warehouse module), which `validate.js` calls.
+  The sim-side runtime of a feature lives in its own file (`sim/logistics/trucks.js`, `staffing.js`, `racks.js`, … and `sim/stats-ops.js`, `insights-ops.js`), created only for stations that use it.
 * `store` imports `model` (+ `util`). It never imports `sim` or `ui`.
 * `ui` may import everything below it; `ui` modules never import `main.js`. `sim` never imports `ui` or `store`.
 * Layout objects are **plain JSON** (structured-cloneable). Consumers treat a layout as an immutable snapshot; the store
   replaces `state.layout` with a new object on every commit, so caches keyed on object identity (WeakMap) are valid.
+
+### 3.1 Extension seams (milestone M0 of the warehouse module)
+An optional feature (trucks and dock doors, shifts, racks, load types …) is added **beside** the core, never into it: absent means today, a plant that does not use a feature behaves bit for bit as before
+(guarded by the golden tests, `tests/sim.golden.*.test.js`, and by `scripts/perf-baseline.mjs`). M0 put the seams in once, in the hot files, so that later milestones add files, not edits. Every seam is inert until a feature fills it.
+* **Data.** A feature's keys live in `station.ops` (after `params`), `layout.calendar` / `layout.loadTypes` (after `settings`), `fleet.calendar`, … : **sparse** (a key exists only when it differs from "feature off", an empty block is removed), **appended**
+  (so legacy files and share links stay byte-identical) and **owned** by one pure module with `sanitize*` / `merge*` functions that drop unknown keys, clamp numbers and never throw. Registries a milestone adds to:
+  `OPS_SANITIZERS` in `ops.js` (per station type: raw → block or `undefined`), `EXTENSION_BLOCKS` in `extensions.js` (top-level blocks, called by `normalizeLayout` through `normalizeExtensions`), `OPS_KEYS` / `CALENDAR_KEYS` (the documented keys, which drive the
+  round-trip tests). `updateStation(layout, id, { ops })` merges through `mergeOps` (plain objects merge key by key at every depth, so a patch of only `interArrival.mean` keeps the kind and the spread; arrays and scalars replace; `null` removes), `duplicateStation` copies `ops`, `checkInvariants` demands that an `ops` block is a fixed point of its sanitizer.
+* **Schema.** `layout.schema` is the **lowest version that can express the layout** (`schemaNeeded` in `schema.js`; legacy = 1 and stays 1). `normalizeLayout` stamps it, `checkInvariants` demands exactly it, and the store rolls back an edit that breaks it, so **a mutator that adds or removes persisted extension content must end with
+  `reconcileLayout(layout)`** (`extensions.js`: it re-derives, in place and only where something changed, the optional blocks that other content implies, as `normalizeLayout` does, and the stamp; later `pruneRefs`). `updateStation` (for `ops`), `removeStation` (so also `resizeGrid`), `removeFleet` and `removeFlow` do;
+  the calendar mutators of M2, `applyFleetPatch`/`applyFlowPatch` for the fleet and flow keys of M2, M3 and M5, and `addStation` once it accepts `ops` have to. This is enforced, not remembered: `tests/model.reconcile.test.js` fails on any exported function of `layout.js` that is not classified (reader or mutator),
+  and drives every mutator at random through the real store with stand-in sanitizers, checking after each edit that the layout is valid and agrees with `normalizeLayout` on stamp, calendar and `ops`. `exportProject` stamps the project with the highest schema of its layouts, `importProject` warns when a file is above
+  `SCHEMA_MAX` (the highest row this build implements: raise it in the milestone that adds the row). `migrate(raw)` is the reserved identity hook that runs before sanitizing. `SCHEMA_VERSION` (defaults.js) stays the base schema.
+* **Simulation.** Fixed shapes, present but unread: loads carry `ty, tk, at, slot` (-1 / 0 = none), orders `pickAt, dropAt, pickExtra, dropExtra`, every `StationRT` has `trucks, rack, cal` (null) and **one** accessor `st.capacity` (= `params.capacity` for a storage, `undefined` otherwise;
+  M3 derives it for racks) that `state`, `fill`, `fillLabel`, `flowSpace`, `flowCapacity`, the dispatcher's batch limit and the jobs overlay (`render/jobs.js bufferSize`, which falls back to `params.capacity` for a plain stand-in) read. The readers at LAYOUT level (they see a layout station, not a `StationRT`) are
+  `model/validate.js` (the buffer between two stations, the smallest limit on a flow, `storage-small`), `ui/report.js` (`stationParams`), `sim/insights.js` and `sim/experiments.js` (the capacity sweep); M3 routes them through one pure helper next to the rack mathematics. A ledger test (`tests/sim.seams.test.js`) fails when a new `params.capacity` read appears. `Logistics.ext` is `null` unless a layout uses a feature, and `Logistics.clock` is `null` without `layout.calendar`.
+* **KPIs.** `Stats` has five call sites for an extension: `_build` creates `stats.ext = logistics.ext.stats(stats)` (once, with typed arrays) when `logistics.ext` exists, and `reset`, `sample`, `onEvent` and `report` call `ext.reset()`, `ext.sample(dt)`, `ext.onEvent(name, payload)` and
+  `ext.report(report)`, which adds `report.ops`. Without an extension that is one pointer test per call and the report has no `ops` key.
+* **Checks and findings.** `validateLayout` calls `validateOps(ctx, add)` (`model/validate-ops.js`, list `OPS_CHECKS`) after its own checks; `generateInsights` runs `EXTENSION_RULES` (insights.js) after its own rules. Both lists are empty until M1.
+* **Test helpers.** `tests/helpers/logistics-invariants.js` counts the loads that trucks hold (`st.trucks.gate[].pending`, `docked[].pending`, `staged`) as live and present; `tests/helpers/golden.js` and `tests/fixtures/golden/` hold the safety net
+  (`node scripts/rebaseline-golden.mjs` re-records it, and a pull request that does so must say why).
 
 ---
 
@@ -72,7 +99,7 @@ util  ←  model  ←  sim  ←  store?  ←  ui  ←  main
 
 ```js
 {
-  schema: 1,
+  schema: 1,                                          // the lowest version that can express the layout (3.1); every legacy plant is 1
   name: 'Untitled plant', notes: '',
   grid: { cols: 48, rows: 32, cellSize: 2 },        // cellSize = metres per cell edge (0.5…10)
   roads: { 'cx,cy': { out: 0b1111, limit?: 0.1..1 } },
@@ -80,6 +107,7 @@ util  ←  model  ←  sim  ←  store?  ←  ui  ←  main
   labels:    [{ id, x, y, text, size? }],            // x,y in cells (may be fractional)
   stations:  [Station], flows: [Flow], fleets: [Fleet],
   settings:  Settings,
+  // optional, sparse, appended after `settings` and absent on a legacy plant (3.1): calendar, loadTypes
 }
 ```
 
@@ -95,7 +123,7 @@ cell Q adds link P→Q (and Q→P for two-way). A lone cell with no links is leg
 
 ### 4.2 Stations (bricks)
 ```js
-{ id: 's1', type: 'source'|'process'|'storage'|'sink'|'depot', name, x, y, w, h /*cells*/, params: {…} }
+{ id: 's1', type: 'source'|'process'|'storage'|'sink'|'depot', name, x, y, w, h /*cells*/, params: {…}, ops?: {…} /* warehouse options, sparse, after params (3.1) */ }
 ```
 Params per type (defaults in `defaultStationParams`):
 | type | params |
@@ -138,8 +166,9 @@ blocks its lane!), `home` (depot id), `idle` ('park' | 'stay'). Vehicle ids: `"<
 Pure functions; mutators edit the layout passed in **in place** (the store passes them a cloned draft) and keep the invariants of §4.1–4.3.
 ```js
 createLayout({ name?, cols?, rows?, cellSize? }) → Layout                     // = emptyLayout + overrides
-normalizeLayout(raw) → Layout            // tolerant import: migrate by `schema`, fill defaults, clamp numbers, drop dangling refs,
-                                         // repair road links/overlaps, dedupe ids, never throws on junk (throws only if raw isn't an object)
+normalizeLayout(raw) → Layout            // tolerant import: migrate(), fill defaults, clamp numbers, drop dangling refs,
+                                         // repair road links/overlaps, dedupe ids, never throws on junk (throws only if raw isn't an object);
+                                         // stations keep `ops` through sanitizeOps, optional blocks come from normalizeExtensions, `schema` = schemaNeeded(layout)
 cloneLayout(layout) → Layout             // structuredClone
 layoutChangeKind(prev, next) → 'none' | 'cosmetic' | 'runtime' | 'structural'
                                          // 'none' deep-equal; 'cosmetic' iff only name, notes, labels, obstacles, settings.duration differ (sim keeps running);
@@ -167,13 +196,13 @@ flipRoadDirection(layout, cx, cy, dir) → boolean     // toggle one-way/two-way
 // entity mutators (return the created/updated object, or null if rejected)
 addStation(layout, { type, x, y, w?, h?, name?, params? }) → Station|null     // rejects overlaps/out-of-bounds; unique id ("s1"…); name "Source 2" style unique
 moveStation(layout, id, x, y) → boolean       resizeStation(layout, id, rect) → boolean       // reject if blocked; roads under the new rect are NOT silently deleted: reject
-updateStation(layout, id, patch) → boolean    // shallow merge; `params` merged one level deep; clamps/validates
-removeStation(layout, id) → boolean           // cascades: removes its flows, clears fleet.home refs
-duplicateStation(layout, id, { dx = 1, dy = 1 }) → Station|null
+updateStation(layout, id, patch) → boolean    // shallow merge; `params` merged one level deep; clamps/validates; `ops` merged key by key at every depth by ops.js (`null` removes; reconcileLayout re-derives layout.schema and the implied blocks)
+removeStation(layout, id) → boolean           // cascades: removes its flows, clears fleet.home refs; reconcileLayout (stamp, implied blocks)
+duplicateStation(layout, id, { dx = 1, dy = 1 }) → Station|null          // copies params and ops
 addFlow(layout, from, to, patch?) → Flow|null // validates §4.3 rules; null on duplicate/invalid
-updateFlow(layout, id, patch) → boolean       removeFlow(layout, id) → boolean
+updateFlow(layout, id, patch) → boolean       removeFlow(layout, id) → boolean  // reconcileLayout
 addFleet(layout, preset = 'agv', patch?) → Fleet                 updateFleet(layout, id, patch) → boolean (battery merged)
-removeFleet(layout, id) → boolean              // clears flow.fleetId refs     duplicateFleet(layout, id) → Fleet|null
+removeFleet(layout, id) → boolean              // clears flow.fleetId refs; reconcileLayout     duplicateFleet(layout, id) → Fleet|null
 addObstacle(layout, { x, y, w, h, kind }) → Obstacle|null   updateObstacle / removeObstacle(layout, id)   // obstacles may not cover roads/stations
 addLabel(layout, { x, y, text, size? }) → Label     updateLabel / removeLabel(layout, id)
 resizeGrid(layout, cols, rows) → { removed: number } // drops/clips anything outside; clamps to GRID_LIMITS (320 x 320 cells since the plan grows, defaults.js)
@@ -202,12 +231,12 @@ reachability; otherwise do an internal BFS over `roads`. Codes to implement (at 
 `flow-bad-endpoints`, `flow-fleet-missing`, `source-no-outflow`, `process-no-inflow`, `process-no-outflow`, `sink-no-inflow`,
 `perCycle-exceeds-inCap` (process can never start), `batch-exceeds-capacity`, `storage-small`, `depot-missing` (battery enabled but no depot
 with chargers), `home-depot-missing`, `vehicle-longer-than-cell` (warning), `road-fragment` (road cells not connected to any dock),
-`one-way-dead-end`, `fleet-count-zero`, `duplicate-names` (info). Each issue has a stable `id` (code + ref) so the UI can keep dismissed state.
+`one-way-dead-end`, `fleet-count-zero`, `duplicate-names` (info). Each issue has a stable `id` (code + ref) so the UI can keep dismissed state. The checks of optional features are in `model/validate-ops.js`, called once at the end (3.1).
 
 ### 4.8 `js/model/serialize.js` (owner: model agent)
 ```js
-exportProject(project) → string       // JSON of { app:'logiplan', schema:1, name, active:index, scenarios:[{ id, name, layout }] }
-importProject(text) → project         // accepts a project export OR a bare layout JSON; normalizes; throws Error with a friendly message on junk
+exportProject(project) → string       // JSON of { app:'logiplan', schema, name, active:index, scenarios:[{ id, name, layout }] }; schema = the highest of the layouts (1 for every legacy plant)
+importProject(text) → project         // accepts a project export OR a bare layout JSON; normalizes; throws Error with a friendly message on junk; `warnings` when a schema is above SCHEMA_MAX (schema.js)
 encodeShare(project) → Promise<string>   // deflate-raw (CompressionStream) + base64url; falls back to plain base64url, prefix 'z.' / 'p.'
 decodeShare(str) → Promise<project>
 shareUrl(base, project) → Promise<string>   // `${base}#p=${encodeShare}`
@@ -329,11 +358,12 @@ logistics.setRuntime({ demandFactor, speedFactor, processFactor, dispatch, routi
 logistics.liveLoads            // number of existing loads (WIP)
 logistics.completed            // loads that left the system (sink consumption + process-without-outflow output)
 ```
-**Loads/WIP.** `Load = { id, createdAt, origin, readyAt, claimed }`. Created by sources (`createdAt = t`) and by process output (`createdAt` = the
+**Loads/WIP.** `Load = { id, createdAt, origin, readyAt, claimed, ty, tk, at, slot }` (the last four are seams of the warehouse module, 3.1: `0, -1, -1, -1` and unread). Created by sources (`createdAt = t`) and by process output (`createdAt` = the
 **oldest** input's `createdAt`, so lead time is end-to-end). Consumed by processes (inputs vanish at cycle start; WIP counts them as in-process) and by sinks.
 
 **StationRT** (all types): `id, type, def, state, fill /* 0..1 */, fillLabel /* e.g. "3/8" */, inCount, outCount, produced, consumed, arrivals,
-inQ: Map<flowId, Load[]>, outQ: Map<flowId, Load[]>, inbound: Map<flowId, number> /* space reserved by orders en route */`. Type specific:
+inQ: Map<flowId, Load[]>, outQ: Map<flowId, Load[]>, inbound: Map<flowId, number> /* space reserved by orders en route */, capacity /* getter: the ONE answer to "how many loads can this storage hold" = params.capacity today */,
+trucks, rack, cal /* null: seams of the warehouse module */`. `Logistics` also has `ext` and `clock` (null; 3.1). Type specific:
 * **source:** `yard` (loads that arrived but found the output buffer full — unbounded backlog), `state`: `'normal'` | `'blocked'` (yard > 0). Arrival times
   from `interArrival` (÷ `demandFactor`), first at `startDelay`. Each arrival creates `batch` loads → yard → moved to `outQ` of a flow chosen by
   smooth-weighted-round-robin among flows with free space (`outCap` per flow).
@@ -354,7 +384,7 @@ relevant events, build all (idle-or-parked vehicle, flow) candidate pairs where 
 dock is reachable from the pickup dock; sort by **priority desc**, then by strategy score —
 `nearest`: pickup route cost (m, then oldest age); `oldest`: oldest-load age desc (then nearest); `balanced`: `cost − 0.5·age(s) ` —
 and assign greedily; each assignment *claims* the loads and *reserves* `inbound` space immediately, so later pairs see reduced availability/space.
-`Order = { id, flowId, from, to, qty, vehicleId, loads, createdAt /* assignment time */, readySince, pickedAt, deliveredAt }`.
+`Order = { id, flowId, from, to, qty, vehicleId, loads, createdAt /* assignment time */, readySince, pickedAt, deliveredAt, pickAt, dropAt, pickExtra, dropExtra }` (the last four: seams, `-1, -1, 0, 0`).
 Unreachable flows never get assigned (the UI lists them via `validateLayout`). Which dock of the station a vehicle drives to is decided by the **dock book** (below), not by route cost alone; the dispatcher ranks vehicles
 by the route cost to the cheapest dock (unchanged), the leg planned afterwards (`planLeg`) picks the dock.
 
@@ -392,6 +422,7 @@ new Stats(sim)                  // sim exposes { time, layout, graph, traffic, l
 stats.sample(dt)                // called once per tick, after traffic.step
 stats.onEvent(name, payload)    // called by the engine for every emitted event
 stats.reset()                   // start a fresh measurement window now (engine calls it when time reaches settings.warmup)
+stats.ext                       // null, or the extension object of the optional features (3.1): reset / sample / onEvent / report hooks; `report.ops` exists only then
 stats.report() → KpiReport      // JSON-serialisable, cheap enough to call at 2–4 Hz
 stats.heat() → { edgePasses: Int32Array, edgeWait: Float64Array, nodeWait: Float64Array, maxEdgePasses, maxEdgeWait, maxNodeWait }   // window-relative
 ```
@@ -664,6 +695,7 @@ Status colours used consistently everywhere: busy/ok green, starved amber, block
 
 ## 8. Quality gates
 * `npm run test:quiet` (unit + integration; the same files as `npm run test:fast` + `npm run test:heavy`, which CI runs as parallel jobs), `npm run check` (imports), `npm run test:e2e` (Playwright, headless Chromium, screenshots in `e2e-output/`).
+* **Golden tests** (`tests/sim.golden.*.test.js`, fixtures in `tests/fixtures/golden/`): the KPI report of each example (seeds 1 and 2, one simulated hour, warm-up 600 s), of two multi-dock scratch plants and of five frozen dock-dense plants (`layout.dockplant-<seed>.json`, 600 s; together they notice a change of any one of the twelve constants of the dock choice and the dock book) must equal the recorded text bit for bit, and the recorded legacy layouts and share links must survive `normalizeLayout` / export / import unchanged (schema 1). A change in a legacy result is a bug unless the pull request that re-records the fixtures (`node scripts/rebaseline-golden.mjs`) says why. `node scripts/perf-baseline.mjs` measures CPU seconds per simulated hour (`--root DIR` compares checkouts in one run); the figures recorded at M0 are in `tests/fixtures/golden/perf-baseline.json`.
 * Simulation invariants that integration tests assert on every example and on random layouts: no overlapping vehicles; load conservation
   (`created = live + completed + consumed-by-processes` bookkeeping holds); buffers never exceed capacity or go negative; sim time monotonic; same seed ⇒ identical KPIs; no `NaN` anywhere in a `KpiReport`; vehicle state shares sum to 1.
 * No console errors/warnings in the browser during a full session (load → edit → run → compare → export).

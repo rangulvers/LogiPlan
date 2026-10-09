@@ -10,6 +10,7 @@
 //   --runs N       rounds per example (default 9); the figure is the BEST round (the least disturbed by other work on the machine)
 //   --hours H      simulated hours per round (default 8, the default run length of a plant; a run of 1 hour of the Starter takes 60 ms of CPU, too short to resolve 2 %)
 //   --seed S       seed of the runs (default 1)
+//   --json         print the measurements of every --root as JSON instead of the table (for scripts that run several processes)
 //
 // What is timed: Simulation#advance(3600 * hours) of a freshly built Simulation, in CPU time of this process (process.cpuUsage, user +
 // system, all threads including the garbage collector), the way tests/sim.traffic.perf.test.js times. Wall clock is meaningless on a
@@ -24,11 +25,12 @@ import { existsSync, readFileSync } from 'node:fs';
 import { GOLDEN_DIR, PERF_FILE, ROOT, loadTree, writeGolden } from '../tests/helpers/golden.js';
 
 function parseArgs(argv) {
-  const opts = { runs: 9, hours: 8, seed: 1, roots: [], write: false, compare: false };
+  const opts = { runs: 9, hours: 8, seed: 1, roots: [], write: false, compare: false, json: false };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === '--write') opts.write = true;
     else if (arg === '--compare') opts.compare = true;
+    else if (arg === '--json') opts.json = true;
     else if (arg === '--runs') opts.runs = Number(argv[++i]);
     else if (arg === '--hours') opts.hours = Number(argv[++i]);
     else if (arg === '--seed') opts.seed = Number(argv[++i]);
@@ -94,19 +96,25 @@ async function measure(opts) {
 }
 
 const fmt = (x, d = 3) => x.toFixed(d);
+const signed = (x, d = 1) => `${x >= 0 ? '+' : ''}${x.toFixed(d)} %`;
+const change = (now, ref) => (now / ref - 1) * 100;
 function printTable(result, base, baseLabel) {
   console.log(`${path.relative(process.cwd(), result.root) || '.'}`);
-  console.log('  example          best CPU s/h   median   worst    x real time' + (base ? `   vs ${baseLabel}` : ''));
+  console.log(`  example          best CPU s/h   median   worst    x real time${base ? `   best vs ${baseLabel}   median vs ${baseLabel}` : ''}`);
   for (const [id, r] of Object.entries(result.examples)) {
     const ref = base && base.examples[id];
-    const ratio = ref ? `   ${((r.cpuSecondsPerSimulatedHour / ref.cpuSecondsPerSimulatedHour - 1) * 100 >= 0 ? '+' : '')}${fmt((r.cpuSecondsPerSimulatedHour / ref.cpuSecondsPerSimulatedHour - 1) * 100, 1)} %` : '';
-    console.log(`  ${id.padEnd(16)} ${fmt(r.cpuSecondsPerSimulatedHour).padStart(8)}   ${fmt(r.cpuSecondsMedian).padStart(6)}   ${fmt(r.cpuSecondsWorst).padStart(6)}   ${String(Math.round(3600 / r.cpuSecondsPerSimulatedHour)).padStart(8)}${ratio}`);
+    const vs = ref ? `   ${signed(change(r.cpuSecondsPerSimulatedHour, ref.cpuSecondsPerSimulatedHour)).padStart(14)}   ${signed(change(r.cpuSecondsMedian, ref.cpuSecondsMedian)).padStart(16)}` : '';
+    console.log(`  ${id.padEnd(16)} ${fmt(r.cpuSecondsPerSimulatedHour, 4).padStart(8)}   ${fmt(r.cpuSecondsMedian, 4).padStart(6)}   ${fmt(r.cpuSecondsWorst, 4).padStart(6)}   ${String(Math.round(3600 / r.cpuSecondsPerSimulatedHour)).padStart(8)}${vs}`);
   }
 }
 
 const opts = parseArgs(process.argv.slice(2));
 const load0 = os.loadavg()[0];
 const results = await measure(opts);
+if (opts.json) {
+  console.log(JSON.stringify(results));
+  process.exit(0);
+}
 console.log(`Node ${process.version}, ${os.cpus().length} x ${os.cpus()[0].model.trim()}, load average at start ${fmt(load0, 2)}, best of ${opts.runs} rounds, ${opts.hours} simulated hour(s), seed ${opts.seed}\n`);
 results.forEach((r, i) => printTable(r, i ? results[0] : null, 'first tree'));
 

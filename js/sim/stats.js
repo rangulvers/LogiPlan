@@ -330,6 +330,7 @@ export class Stats {
     this.sWorking = [];
     this.sWaiting = [];
     this._snapshot();
+    if (this.ext) this.ext.reset(); // extension hook 2 of 5 (see _build)
   }
 
   /**
@@ -355,6 +356,7 @@ export class Stats {
     }
     const k = Math.floor((this.duration + EPS) / SERIES_INTERVAL);
     if (k > this.serK) this._closeInterval(k);
+    if (this.ext) this.ext.sample(dt); // extension hook 3 of 5 (see _build): one pointer test per tick for a plant without extensions
   }
 
   /**
@@ -370,6 +372,7 @@ export class Stats {
     else if (name === 'orderDelivered') this._onOrderDelivered(payload || {});
     else if (name === 'deadlock') this._onDeadlock(payload || {});
     else if (name === 'deadlockRepeat') this.deadlockRepeats++;
+    if (this.ext) this.ext.onEvent(name, payload); // extension hook 4 of 5 (see _build)
   }
 
   /**
@@ -394,7 +397,7 @@ export class Stats {
     if (this._stale()) this.reset();
     const dur = this.duration;
     const liveNow = nn(this.sim.logistics?.liveLoads);
-    return {
+    const report = {
       window: this._windowReport(dur),
       throughput: this._throughputReport(dur),
       leadTime: this._leadTimeReport(),
@@ -413,6 +416,8 @@ export class Stats {
         vehiclesWaiting: this.sWaiting.slice(),
       },
     };
+    if (this.ext) this.ext.report(report); // extension hook 5 of 5 (see _build): adds `report.ops`; a legacy report has no such key
+    return report;
   }
 
   // ---- structure -----------------------------------------------------------------------------------------
@@ -486,6 +491,9 @@ export class Stats {
     ];
     this.snapStation = f64(nSt * 3);
     this.snapVehicle = f64(this.nVeh * VEHICLE_FIELDS);
+    // Extension hook 1 of 5 (docs/ARCHITECTURE.md 3.1): null unless the layout uses an extension, i.e. unless Logistics built `ext`.
+    // `lg.ext.stats(stats)` returns { reset(), sample(dt), onEvent(name, payload), report(report) } that allocates once, here.
+    this.ext = lg.ext ? lg.ext.stats(this) : null;
   }
 
   /** Remember the cumulative counters of other modules so the window reports deltas only. */
