@@ -48,6 +48,7 @@ const SCRIPTS = Object.freeze([
   { name: 'edit-feedback', what: 'edit feedback: warm restart after edits, "Effect of your change" card, baseline, fleet status, frame times', exclusive: true },
   { name: 'canvas-grow', what: 'expandable canvas: roads, bricks and drags beyond the edges grow the plan (one undo step, the view stays), + chips, Plant settings buttons, auto-pan, the 320 x 320 limit, a large plant at speed', exclusive: true },
   { name: 'edit-feedback-review', what: 'edit feedback, attacked: lifecycle with real frames, card at 390 px in both themes, contrast, keyboard, honesty of the card against the toast, jank, memory', exclusive: true },
+  { name: 'doors-review', what: 'independent review of trucks and dock doors from the planner\'s side: the journeys cold, German and English Excel, typing into every field, double clicks, Delete and Tab in the timetable, the gate chip at every zoom, 20 truck stations, 360 px and 4K, keyboard and contrast, Compare and a sweep over doors', review: true, exclusive: true },
   { name: 'uikit-review', what: 'independent review of the UI kit', review: true },
   { name: 'render-review', what: 'independent review of the renderer', review: true },
 ]);

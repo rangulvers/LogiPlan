@@ -481,7 +481,8 @@ await withBrowser(async ({ browser, url, errors }) => {
       `"Run one day" says "roughly 10 to 40 seconds" and the week asks for confirmation ("roughly 1 to 5 minutes"); measured here: ${seconds.toFixed(1)} s for the day (machine dependent: re-measure); one week took 10.9 s when tried by hand on the same plant`);
     await setTab(page, 'results');
     await frames(page, 4);
-    ok(/24 h measured/.test(await page.locator('#panel-results').innerText()), 'Results say that a whole day was measured');
+    await page.waitForFunction(() => /24 h measured/.test(document.querySelector('#panel-results')?.innerText || ''), null, { timeout: 15000 }); // the runner refreshes its report a few times a second
+    ok(true, 'Results say that a whole day was measured');
     await snap(page, 'day-03-results');
     await context.close();
   });
@@ -511,7 +512,7 @@ await withBrowser(async ({ browser, url, errors }) => {
       await snap(page, `canvas-${theme}-z6`, { clip: { x: 60, y: 60, width: 1000, height: 780 } });
       if (theme === 'light') {
         defect('UX-3', far.some((t) => /^Gate \d|^\d+, \d|^\d+ doors?$/.test(t)), 'medium',
-          `at 12 px per cell (the fit zoom of a plant wider than about 70 cells, or a laptop window below 1100 px) the brick of a Goods in with a gate queue of 4 trucks and 77 minutes shows neither slots, nor the count of doors, nor the gate chip: ${JSON.stringify(far)} (design 7.2: the chip is drawn at all zoom levels except the flat swatch)`);
+          `below 16.5 px per cell the brick of a 2-cell-high Goods in with a gate queue of 4 trucks and 77 minutes shows neither slots, nor the count of doors, nor the gate chip: ${JSON.stringify(far)} at 12 px (planOps returns null when the band of 9 px does not fit; design 7.2: the chip is drawn at all zoom levels except the flat swatch). The Fit view of the example plants gives 16.5 px for Warehouse: first day at 1280 x 720, 11.3 px at 1024 x 768, 14.2 px for Two production lines at 1280 x 720`);
       }
       // flicker: sweep the zoom in 40 steps and check nothing throws
       for (let z = 3; z <= 40; z += 1) { await zoomOn(page, 's1', z); await frames(page, 1); }
@@ -834,29 +835,42 @@ await withBrowser(async ({ browser, url, errors }) => {
   // keyboard: the keys of the editor while the focus is in the panel
   // ---------------------------------------------------------------------------------------------------------------------------------------------------
   await run('keyboard', async () => {
-    const { page, context } = await openExample('warehouse-first-day');
-    await showTrucks(page, 's1');
-    await page.locator('[data-role=mode] button', { hasText: 'Use a timetable' }).click();
-    for (let i = 0; i < 2; i++) { await page.locator('[data-role=add-row]').click(); await frames(page, 2); }
-    const names = async () => (await layoutOf(page)).stations.map((s) => s.name);
-    const all = await names();
-    // keys inside the fields stay in the fields
-    for (const sel of ['[data-row="0"] input[type=time]', '[data-row="0"] input[type=number]', '[data-role=doors]']) {
-      await page.locator(sel).focus();
-      for (const key of ['Delete', 'Backspace', 'Space', 'r', '1', 'p']) await page.keyboard.press(key);
+    const timetablePage = async () => {
+      const s = await openExample('warehouse-first-day');
+      await showTrucks(s.page, 's1');
+      await s.page.locator('[data-role=mode] button', { hasText: 'Use a timetable' }).click();
+      for (let i = 0; i < 2; i++) { await s.page.locator('[data-role=add-row]').click(); await frames(s.page, 2); }
+      return s;
+    };
+    const names = async (page) => (await layoutOf(page)).stations.map((s) => s.name);
+    // a keyboard planner clicks into the pallets of row 1, presses Tab to reach "Delete row 1: 06:00" and presses Delete
+    {
+      const { page, context } = await timetablePage();
+      const all = await names(page);
+      await page.locator('[data-row="0"] input[type=number]').click();
+      await page.keyboard.press('Tab');
+      eq(await page.evaluate(() => document.activeElement.getAttribute('aria-label')), 'Delete row 1: 06:00', 'Tab from the pallets of row 1 reaches its Delete button');
+      await page.keyboard.press('Delete');
+      await frames(page, 3);
+      const after = await names(page);
+      const toastText = (await toasts(page)).join(' | ');
+      if (after.length < all.length) await page.evaluate(() => window.__logiplan.store.undo());
+      defect('UX-26', after.length === all.length, 'high',
+        `Tab to the "Delete row 1: 06:00" button of the timetable and press Delete: the whole station and its flow are deleted instead of the row (toast: "${toastText.slice(-30)}"); the global Delete shortcut ignores buttons (isTypingTarget knows only input, textarea, select); Undo restores it`);
+      await context.close();
     }
-    eq(await names(), all, 'Delete, Backspace, Space and the tool keys typed into the timetable and the doors field change nothing on the plan');
-    eq(await page.evaluate(() => window.__logiplan.runner.playing), false, 'and Space does not start the simulation');
-    // a keyboard planner tabs to "Delete row 1: 06:00" and presses Delete
-    await page.locator('[data-row="0"] [data-role=delete-row]').focus();
-    await page.keyboard.press('Delete');
-    await frames(page, 3);
-    const after = await names();
-    const toastText = (await toasts(page)).join(' | ');
-    if (after.length < all.length) await page.evaluate(() => window.__logiplan.store.undo());
-    defect('UX-26', after.length === all.length, 'high',
-      `Delete pressed while the focus is on the "Delete row 1: 06:00" button of the timetable deletes the whole station and its flow instead of the row (toast: "${toastText.slice(-40)}"): the global Delete shortcut ignores buttons (isTypingTarget knows only input, textarea, select); Undo restores it`);
-    await context.close();
+    // keys typed inside the fields stay in the fields
+    {
+      const { page, context } = await timetablePage();
+      const all = await names(page);
+      for (const sel of ['[data-row="0"] input[type=time]', '[data-row="0"] input[type=number]', '[data-role=doors]']) {
+        await page.locator(sel).focus();
+        for (const key of ['Delete', 'Backspace', 'Space', 'r', '1', 'p']) await page.keyboard.press(key);
+      }
+      eq(await names(page), all, 'Delete, Backspace, Space and the tool keys typed into the timetable and the doors field change nothing on the plan');
+      eq(await page.evaluate(() => window.__logiplan.runner.playing), false, 'and Space does not start the simulation');
+      await context.close();
+    }
   });
 
   // ---------------------------------------------------------------------------------------------------------------------------------------------------
