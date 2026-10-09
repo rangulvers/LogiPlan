@@ -1,8 +1,9 @@
 // Saving, loading and sharing projects. A project is the store's shape { name, scenarios: [{ id, name, layout }], activeId }.
 //
-//  exportProject  -> JSON text   { app: 'logiplan', schema, name, active: index, scenarios: [{ id, name, layout }] }
+//  exportProject  -> JSON text   { app: 'logiplan', schema, name, active: index, scenarios: [{ id, name, layout }] }; `schema` is the
+//                                highest schema among the layouts (schema.js: 1 for a plant that uses nothing of the warehouse module)
 //  importProject  <- JSON text   a project export, or a bare layout (becomes a one-scenario project); every layout goes
-//                                through normalizeLayout; JSON with a newer `schema` is accepted with project.warnings[]
+//                                through normalizeLayout; JSON with a `schema` above SCHEMA_MAX is accepted with project.warnings[]
 //  encodeShare / decodeShare     the same JSON as one URL-safe string: 'z.' + base64url(deflate-raw) when
 //                                CompressionStream exists, else 'p.' + base64url (plain). shareUrl wraps it as `#p=…`.
 //
@@ -13,6 +14,7 @@
 // scenarios are called "A", "B", … ; `active` is an index into the file's own scenario list.
 
 import { SCHEMA_VERSION } from './defaults.js';
+import { SCHEMA_MAX, schemaNeeded } from './schema.js';
 import { normalizeLayout, cleanText, cleanId } from './layout.js';
 import { nextId } from '../util/ids.js';
 
@@ -35,6 +37,20 @@ const scenarioLetter = (i) => (i < 26 ? String.fromCharCode(65 + i) : `S${i + 1}
 // ---------------------------------------------------------------------------------------------------------
 
 /**
+ * The schema a project file is stamped with: the highest among its layouts, never below the base. Each layout counts with the larger of
+ * its stamp and what its content needs (schemaNeeded), so a layout edited after it was stamped still makes an older tab warn.
+ */
+function projectSchema(scenarios) {
+  let schema = SCHEMA_VERSION;
+  for (const s of scenarios) {
+    const layout = s && s.layout;
+    if (layout && Number.isFinite(layout.schema)) schema = Math.max(schema, layout.schema);
+    schema = Math.max(schema, schemaNeeded(layout));
+  }
+  return schema;
+}
+
+/**
  * JSON text of a project (see the file header for the format).
  * @param {{name: string, scenarios: Array<{id: string, name: string, layout: object}>, activeId?: string}} project
  * @returns {string}
@@ -46,7 +62,7 @@ export function exportProject(project) {
   const active = found >= 0 ? found : (Number.isInteger(project.active) ? project.active : 0);
   return JSON.stringify({
     app: APP,
-    schema: SCHEMA_VERSION,
+    schema: projectSchema(scenarios),
     name: project.name,
     active: Math.min(Math.max(active, 0), scenarios.length - 1),
     scenarios: scenarios.map((s) => ({ id: s.id, name: s.name, layout: s.layout })),
@@ -110,8 +126,8 @@ export function importProject(text) {
   });
   if (entries.length > MAX_SCENARIOS) warnings.push(`This file holds ${entries.length} scenarios; only the first ${MAX_SCENARIOS} were opened.`);
   if (!scenarios.length) throw new Error('This file contains no layout to open.');
-  if (newest > SCHEMA_VERSION) {
-    warnings.unshift(`This file was saved by a newer version of LogiPlan (format ${newest}; this version reads format ${SCHEMA_VERSION}). It was opened anyway, but newer details may be missing.`);
+  if (newest > SCHEMA_MAX) {
+    warnings.unshift(`This file was saved by a newer version of LogiPlan (format ${newest}; this version reads format ${SCHEMA_MAX}). It was opened anyway, but newer details may be missing.`);
   }
   const activeIndex = activeScenarioIndex(data, keptFrom, entries.length, warnings);
   const project = {

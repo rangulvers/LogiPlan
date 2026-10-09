@@ -3,6 +3,11 @@
 //
 // Units: metres, seconds, grid cells. Time distributions are { kind, mean (s), spread (0..1) }.
 
+/**
+ * The BASE schema: what createLayout and emptyLayout stamp, and what every layout without a warehouse-module key keeps for ever. It does
+ * not move when the format grows. A layout's `schema` is the lowest version that can express its content (schemaNeeded in schema.js),
+ * and SCHEMA_MAX there is the highest version this build can read without warning (docs/WAREHOUSE-DESIGN.md 5.2).
+ */
 export const SCHEMA_VERSION = 1;
 
 /** Static metadata for the five station types (palette order = STATION_TYPE_ORDER). */

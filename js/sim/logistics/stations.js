@@ -86,6 +86,10 @@ export class StationRT {
     this.swrr = null;
     this.hasRoom = null;
     this.rng = rng;
+    /** Seams of the warehouse module (docs/WAREHOUSE-DESIGN.md 5.4), present but inert: trucks and doors (M1), rack geometry (M3), the shift calendar (M2). */
+    this.trucks = null;
+    this.rack = null;
+    this.cal = null;
     if (this.type === 'source') this.initSource();
     else if (this.type === 'process') this.initProcess();
     else if (this.type === 'storage') this.pool = [];
@@ -170,11 +174,19 @@ export class StationRT {
     return n;
   }
 
+  /**
+   * How many loads a storage can hold (undefined for the other types). The ONE place that answers this (docs/WAREHOUSE-DESIGN.md F10):
+   * `params.capacity` today; M3 returns the capacity derived from a rack or block here.
+   */
+  get capacity() {
+    return this.params.capacity;
+  }
+
   get state() {
     switch (this.type) {
       case 'source': return this.yardQ.length > 0 ? 'blocked' : 'normal';
       case 'process': return aggregateState(this.machines);
-      case 'storage': return this.outCount >= this.params.capacity ? 'full' : 'normal';
+      case 'storage': return this.outCount >= this.capacity ? 'full' : 'normal';
       default: return 'normal';
     }
   }
@@ -184,7 +196,7 @@ export class StationRT {
     switch (this.type) {
       case 'source': return ratio(this.outCount, this.outCapacity()) || (this.yardQ.length > 0 ? 1 : 0);
       case 'process': return ratio(this.inCount, this.inLinks.length * this.params.inCap);
-      case 'storage': return ratio(this.outCount, this.params.capacity);
+      case 'storage': return ratio(this.outCount, this.capacity);
       case 'depot': return ratio(this.parked.length + this.charging.length, this.slots);
       default: return 0;
     }
@@ -194,7 +206,7 @@ export class StationRT {
     switch (this.type) {
       case 'source': return `${this.outCount}/${this.outCapacity()}${this.yardQ.length ? ` +${this.yardQ.length}` : ''}`;
       case 'process': return `${this.inCount}/${this.inLinks.length * this.params.inCap}`;
-      case 'storage': return `${this.outCount}/${this.params.capacity}`;
+      case 'storage': return `${this.outCount}/${this.capacity}`;
       case 'depot': return `${this.parked.length + this.charging.length}/${this.slots}`;
       default: return '';
     }
@@ -247,7 +259,7 @@ export function flowSpace(flow) {
   const to = flow.to;
   switch (to.type) {
     case 'process': return to.params.inCap - flow.inLink.queue.length - to.inbound.get(flow.id);
-    case 'storage': return to.params.capacity - to.outCount - to.inboundTotal;
+    case 'storage': return to.capacity - to.outCount - to.inboundTotal;
     default: return Infinity;
   }
 }
@@ -256,7 +268,7 @@ export function flowSpace(flow) {
 export function flowCapacity(flow) {
   switch (flow.to.type) {
     case 'process': return flow.to.params.inCap;
-    case 'storage': return flow.to.params.capacity;
+    case 'storage': return flow.to.capacity;
     default: return Infinity;
   }
 }

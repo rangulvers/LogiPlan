@@ -27,6 +27,7 @@
 
 import { STATION_TYPES } from './defaults.js';
 import { docksOf, flowsFrom, flowsTo, hasLink } from './layout.js';
+import { validateOps } from './validate-ops.js';
 import { DX, DY, DIR_BIT, opposite, cellKey, parseKey, inBounds } from '../util/grid.js';
 
 const SEVERITY_ORDER = { error: 0, warning: 1, info: 2 };
@@ -475,5 +476,6 @@ export function validateLayout(layout, opts) {
   checkFleets(ctx, add);
   checkNames(ctx, add);
   checkRoadNetwork(ctx, add);
+  validateOps(ctx, add); // checks of the warehouse module (validate-ops.js): none for a plant that does not use it
   return issues.sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity]); // Array#sort is stable
 }

@@ -36,6 +36,9 @@ import {
 } from '../util/grid.js';
 import { nextId } from '../util/ids.js';
 import { clamp } from '../util/format.js';
+import { sanitizeOps, mergeOps } from './ops.js';
+import { schemaNeeded, migrate } from './schema.js';
+import { normalizeExtensions } from './extensions.js';
 
 // ---------------------------------------------------------------------------------------------------------
 // Field specifications (shared by the sanitizers and by checkInvariants)
@@ -358,9 +361,12 @@ function normalizeStations(raw, grid, occ) {
     if (!isObj(r) || !hasKey(STATION_TYPES, r.type)) continue;
     const rect = rectFromRaw(r, grid, STATION_TYPES[r.type].size);
     if (!rect || !claim(occ, grid, rect)) continue;
-    stations.push({
+    const station = {
       id: cleanId(r.id), type: r.type, name: cleanText(r.name, NAME_MAX), ...rect, params: sanitizeParams(r.type, r.params),
-    });
+    };
+    const ops = sanitizeOps(r.type, r.ops); // sparse: only a station with warehouse options has the key, after `params`
+    if (ops !== undefined) station.ops = ops;
+    stations.push(station);
   }
   assignIds(stations, 's');
   const taken = new Set(stations.map((s) => s.name).filter(Boolean));
@@ -467,6 +473,7 @@ function normalizeFlows(raw, stations, fleetIds) {
  */
 export function normalizeLayout(raw) {
   if (!isObj(raw)) throw new TypeError('normalizeLayout: expected a layout object');
+  raw = migrate(raw); // reserved hook (schema.js): the identity until a file format is renamed
   const grid = normalizeGrid(raw.grid);
   const occ = new Uint8Array(grid.cols * grid.rows);
   const stations = normalizeStations(raw.stations, grid, occ);
@@ -476,13 +483,16 @@ export function normalizeLayout(raw) {
   const depotIds = new Set(stations.filter((s) => s.type === 'depot').map((s) => s.id));
   const fleets = normalizeFleets(raw.fleets, depotIds);
   const flows = normalizeFlows(raw.flows, stations, new Set(fleets.map((f) => f.id)));
-  return {
+  const layout = {
     schema: SCHEMA_VERSION,
     name: cleanText(raw.name, NAME_MAX, 'Untitled plant'),
     notes: cleanText(raw.notes, NOTES_MAX, '', true),
     grid, roads, obstacles, labels, stations, flows, fleets,
     settings: normalizeSettings(raw.settings),
   };
+  Object.assign(layout, normalizeExtensions(raw, layout)); // sparse optional blocks, appended after `settings`
+  layout.schema = schemaNeeded(layout); // the lowest version that can express the layout (1 for a legacy plant)
+  return layout;
 }
 
 /** Deep copy (structuredClone). */
@@ -630,6 +640,7 @@ function checkStation(s, tag, bad) {
     } else if (!fits(PARAM_SPEC[s.type][k], v)) bad.push(`${tag}: params.${k} invalid (${v})`);
   }
   if (s.type === 'depot' && s.params.chargers > s.params.slots) bad.push(`${tag}: more chargers than slots`);
+  if (Object.hasOwn(s, 'ops') && !deepEqual(sanitizeOps(s.type, s.ops), s.ops)) bad.push(`${tag}: ops is not a sanitized options block`);
 }
 
 function checkFlows(layout, stations, fleets, bad) {
@@ -695,7 +706,8 @@ function checkLabels(layout, bad) {
 export function checkInvariants(layout) {
   if (!isObj(layout)) return ['layout is not an object'];
   const bad = [];
-  if (layout.schema !== SCHEMA_VERSION) bad.push(`schema must be ${SCHEMA_VERSION}`);
+  const need = schemaNeeded(layout); // the lowest version that can express the layout (schema.js)
+  if (layout.schema !== need) bad.push(`schema must be ${need}`);
   if (typeof layout.name !== 'string' || !layout.name.trim()) bad.push('name must be a non-empty string');
   if (typeof layout.notes !== 'string') bad.push('notes must be a string');
   if (!checkGridAndSettings(layout, bad)) return bad;
@@ -963,6 +975,12 @@ export function updateStation(layout, id, patch) {
   if (patch.name !== undefined) s.name = cleanText(patch.name, NAME_MAX, s.name);
   if (moved) Object.assign(s, rect);
   if (patch.params !== undefined) s.params = mergeParams(s.type, s.params, patch.params);
+  if (patch.ops !== undefined) { // warehouse options (ops.js): merged and sanitized there; `null` or an empty result removes the block
+    const ops = mergeOps(s.type, s.ops, patch.ops);
+    if (ops === undefined) delete s.ops;
+    else s.ops = ops;
+    layout.schema = schemaNeeded(layout); // a mutator that adds or removes a persisted extension key keeps the stamp true (checkInvariants)
+  }
   return true;
 }
 
@@ -1004,9 +1022,11 @@ export function duplicateStation(layout, id, offset) {
   if (!s || ox === null || oy === null) return null;
   const spot = findFreeSpot(layout, { x: s.x + ox, y: s.y + oy, w: s.w, h: s.h });
   if (!spot) return null;
-  return addStation(layout, {
+  const copy = addStation(layout, {
     type: s.type, ...spot, name: copyName(new Set(layout.stations.map((o) => o.name)), s.name), params: structuredClone(s.params),
   });
+  if (copy && s.ops !== undefined) copy.ops = structuredClone(s.ops); // warehouse options are copied with the station
+  return copy;
 }
 
 // ---------------------------------------------------------------------------------------------------------
