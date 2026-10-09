@@ -221,6 +221,7 @@ try {
   await run('find', async () => {
     // the chip in the common windows, light and dark
     const windows = [['desktop', 1440, 900], ['laptop', 1366, 650], ['tablet', 768, 1024], ['phone', 390, 844], ['small-phone', 320, 568]];
+    const utcBreaks = {};
     for (const scheme of ['light', 'dark']) {
       for (const [id, w, h] of windows) {
         const { context, page } = await openApp(LIVE, { viewport: { width: w, height: h }, scheme });
@@ -308,6 +309,20 @@ try {
         });
         ok(d.inside && d.sideways === 0 && d.closeOn, `${id} ${scheme}: the dialog is inside the window, does not scroll sideways, Close is on screen (${JSON.stringify(d)})`);
         eq(d.low, [], `${id} ${scheme}: every text of the dialog reaches 4.5:1`);
+        // where does the UTC time of the "Built" row break?
+        const brk = await page.evaluate(() => {
+          const span = document.querySelector('[role=dialog] dl.kv .about__dim');
+          const node = span.firstChild;
+          let prevTop = null; let at = -1;
+          for (let i = 0; i < node.length; i++) {
+            const range = document.createRange(); range.setStart(node, i); range.setEnd(node, i + 1);
+            const rect = range.getClientRects()[0]; if (!rect) continue;
+            if (prevTop !== null && Math.abs(rect.top - prevTop) > 4) { at = i; break; }
+            prevTop = rect.top;
+          }
+          return { text: node.textContent, at, before: at > 0 ? node.textContent.slice(Math.max(0, at - 6), at) : '' };
+        });
+        if (scheme === 'dark') utcBreaks[id] = brk;
         if (scheme === 'dark' || id === 'desktop') await snap(page, `find-dialog-${id}-${scheme}`);
         if (id === 'phone' && scheme === 'light') {
           // turned sideways with the dialog open (a phone is rotated while reading)
@@ -321,6 +336,10 @@ try {
         await context.close();
       }
     }
+
+    console.log(`   the UTC time of the Built row breaks: ${JSON.stringify(utcBreaks)}`);
+    defect('ABT-18', !utcBreaks['small-phone'] || utcBreaks['small-phone'].at < 0 || /[ ]$/.test(utcBreaks['small-phone'].before), 'low',
+      `at 320 px the build time "9 Oct 2026, 17:08 CEST (2026-10-09 15:08 UTC)" breaks inside the ISO date ("${(utcBreaks['small-phone'] || {}).before}" | rest of the line below): the same moment is written twice in two date formats; keep the UTC part together (white-space: nowrap on that span) or show it on its own line`);
 
     // a phone: More > About and what is new, and the Help footer next to Close at 320 px
     {
@@ -711,6 +730,24 @@ try {
       eq(m.horizontal, 0, `${w} px: the dialog does not scroll sideways`);
       await page.locator('[role=dialog] .modal__body').evaluate((e) => { e.scrollTop = e.scrollHeight; });
       await snap(page, `changelog-end-${w}-dark`);
+      await context.close();
+    }
+
+    // an update with newer versions: the marks "Newer than yours" next to the dates on a phone
+    {
+      const newer = '## [0.8.0] - 2026-11-30\n\n### Added\n- A newer thing.\n\n## [0.7.0] - 2026-10-28\n\n### Fixed\n- A newer fix.\n\n';
+      const withNewer = text.replace('## [0.6.0]', `${newer}## [0.6.0]`);
+      const { context, page } = await openApp(LIVE, { viewport: { width: 390, height: 844 }, route: ['**/CHANGELOG.md', (route) => route.fulfill({ status: 200, contentType: 'text/markdown', body: withNewer })] });
+      await chipOf(page).click();
+      await page.locator('[role=dialog] .about__entry').first().waitFor();
+      await settle(page);
+      const heads = await page.evaluate(() => [...document.querySelectorAll('[role=dialog] .about__toggle')].map((b) => ({ name: b.innerText.replace(/\s+/g, ' ').trim(), h: Math.round(b.getBoundingClientRect().height) })).filter((t) => /Newer than yours|Your version/.test(t.name)));
+      console.log(`   390 px with two newer versions: ${JSON.stringify(heads)}`);
+      ok(heads.length === 3, 'two newer versions and the running one carry a mark');
+      await page.locator('[role=dialog] .about__toggle', { hasText: 'Version 0.8.0' }).scrollIntoViewIfNeeded();
+      await snap(page, 'changelog-newer-390');
+      defect('ABT-17', heads.every((t) => t.h <= 44), 'low',
+        `with newer versions in the list the header of an entry no longer fits on one line at 390 px: ${heads.filter((t) => t.h > 44).map((t) => `"${t.name}" is ${t.h} px high`).join('; ') || 'none'} (the mark, the date and the version number fight for the width: "Version 0.8.0 / 30 November 2026 / Newer than yours")`);
       await context.close();
     }
 
