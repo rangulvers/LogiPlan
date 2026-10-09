@@ -13,7 +13,7 @@
 
 import { lPath } from '../util/grid.js';
 import {
-  createLayout, setNotes, paintRoadPath, addStation, addFlow, addFleet, addObstacle, addLabel, translateAll,
+  createLayout, setNotes, paintRoadPath, addStation, addFlow, addFleet, addObstacle, addLabel, translateAll, eraseRoadCell, moveStation,
 } from './layout.js';
 
 /** Throw if a mutator rejected a request: an example that does not build is a bug, not a soft failure. */
@@ -34,9 +34,9 @@ function ring(layout, x0, y0, x1, y1, opts) {
   road(layout, [[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]], opts);
 }
 
-/** Place a station through the model API. */
-function station(layout, type, name, x, y, size, params) {
-  return must(addStation(layout, { type, name, x, y, ...size, params }), `station "${name}"`);
+/** Place a station through the model API (`ops`: the warehouse options of a Goods in / Goods out, ops.js). */
+function station(layout, type, name, x, y, size, params, ops) {
+  return must(addStation(layout, { type, name, x, y, ...size, params, ops }), `station "${name}"`);
 }
 
 function flow(layout, from, to, patch) {
@@ -172,6 +172,106 @@ function buildCongestionLab() {
   return layout;
 }
 
+// ---------------------------------------------------------------------------------------------------------
+// 4. Dock lab: one street, three docks (warehouse module M1, docs/WAREHOUSE-DESIGN.md 8.1 row 1 and Appendix C)
+// ---------------------------------------------------------------------------------------------------------
+
+/** The x of the three side roads ("bays") that lead up to Goods in, and the rows of the street and of the side roads (cells). */
+const LAB_BAYS = Object.freeze([22, 25, 28]);
+const LAB_STREET_Y = 10;
+const LAB_BAY_TOP_Y = 6;
+
+/**
+ * The plant of the dock observation: a vehicle cannot drive past a parked one, so docks lined up along one lane cannot share the work, while
+ * docks on their own short side roads can. One two-way street runs round the plant; the forklifts circle clockwise (Goods in on top, Storage on the
+ * west leg, Goods out and the Forklift park at the bottom), so every vehicle reaches Goods in from the west.
+ *  * variant 'bays' (the example): Goods in has three side roads, one dock at the end of each; the work is shared (about 6 : 3 : 1).
+ *  * variant 'row': the same plant after the edit that the notes describe - the three side roads erased and Goods in moved down onto the
+ *    street, so its docks lie in a row on one lane: the first one takes about 95 % of the visits and Checks says so (docks-share-lane).
+ * Trucks are slow to check in and out (10 minutes each) so that three doors are busy about 40 % of the time and the gate stays empty: what
+ * the lab shows is the docks, not the doors. Calibrated on the built plant (tests/sim.examples.warehouse.test.js).
+ * @param {'bays'|'row'} [variant]
+ */
+export function buildDockLab(variant = 'bays') {
+  if (variant !== 'bays' && variant !== 'row') throw new Error(`examples: unknown Dock lab variant "${variant}"`);
+  const layout = createLayout({ name: 'Dock lab', cols: 40, rows: 28, cellSize: 2 });
+  setNotes(layout, 'Trucks bring 24 pallets to Goods in about every 30 minutes and forklifts carry them to the Storage; Goods out sends 24 pallets away about every '
+    + '38 minutes. Goods in has three doors for trucks and three docks for forklifts, each dock at the end of its own short side road, so the forklifts share '
+    + 'the work (open Results, or switch on the Docks overlay, to see the bars). Try a row: erase the three side roads and drag Goods in down until it touches '
+    + 'the street. A forklift cannot drive past a parked one, so the first dock takes nearly every visit and the others stand empty; the Checks tab says "docks share a lane".');
+
+  ring(layout, 4, LAB_STREET_Y, 34, 20); // the one street, two-way
+  for (const x of LAB_BAYS) road(layout, [[x, LAB_STREET_Y], [x, LAB_BAY_TOP_Y]]); // three side roads to Goods in
+  for (const y of [12, 16]) road(layout, [[4, y], [8, y]]); // two bays for the Storage
+  for (const x of [8, 13]) road(layout, [[x, 20], [x, 22]]); // two bays for Goods out
+  road(layout, [[4, 20], [4, 21]]); // the Forklift park
+
+  const truck = (doors, gap, pallets) => ({ trucks: { doors, checkIn: 600, checkOut: 600, interArrival: arrivals(gap, 0.3), pallets } });
+  const goodsIn = station(layout, 'source', 'Goods in', LAB_BAYS[0], 4, { w: 7, h: 2 }, { outCap: 12 },
+    truck(3, 1800, { kind: 'uniform', mean: 24, spread: 0.25 }));
+  const storage = station(layout, 'storage', 'Storage', 9, 12, { w: 10, h: 5 }, { capacity: 400, dwell: 30 });
+  const goodsOut = station(layout, 'sink', 'Goods out', 7, 23, { w: 9, h: 2 }, {},
+    truck(2, 2250, { kind: 'const', mean: 24, spread: 0 }));
+  const park = station(layout, 'depot', 'Forklift park', 3, 22, { w: 3, h: 2 }, { slots: 8, chargers: 0 });
+
+  flow(layout, goodsIn, storage);
+  flow(layout, storage, goodsOut);
+  // Compact trucks 2 m long fit a 2 m road cell, like the forklifts of "Two lines + warehouse".
+  must(addFleet(layout, 'forklift', { name: 'Forklifts', count: 5, length: 2, home: park.id }), 'forklift fleet');
+
+  must(addLabel(layout, { x: 25.5, y: 1.6, text: 'Three docks, three side roads' }), 'label');
+  must(addLabel(layout, { x: 9.5, y: 9.2, text: 'The one street' }), 'label');
+  must(addLabel(layout, { x: 23.5, y: 14.5, text: 'Storage bays' }), 'label');
+  must(addLabel(layout, { x: 17, y: 24, text: 'Shipping' }), 'label');
+
+  if (variant === 'row') {
+    for (const x of LAB_BAYS) for (let y = LAB_BAY_TOP_Y; y < LAB_STREET_Y; y++) must(eraseRoadCell(layout, x, y), `side road at ${x},${y}`);
+    must(moveStation(layout, goodsIn.id, LAB_BAYS[0], LAB_STREET_Y - 2), 'moving Goods in down onto the street');
+    must(setNotes(layout, `${layout.notes} (This copy is the row: the three side roads are gone and Goods in touches the street.)`), 'notes');
+  }
+  return layout;
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// 5. Warehouse: first day (warehouse module M1, docs/WAREHOUSE-DESIGN.md 8.1 row 2)
+// ---------------------------------------------------------------------------------------------------------
+
+/**
+ * A small pallet warehouse on its first day: trucks bring 24 pallets about every 17 minutes to Goods in (three doors, a fourth dock to try),
+ * four forklifts carry them to the Storage and on to Goods out (two doors, a truck of 24 pallets about every 25 minutes). The door check at the
+ * plan stage is fine (3 doors are enough on paper); the forklifts are what limits the plant, and that is the lesson: more doors change little,
+ * one more forklift empties the gate. Calibrated on the built plant (tests/sim.examples.warehouse.test.js).
+ */
+export function buildWarehouseFirstDay() {
+  const layout = createLayout({ name: 'Warehouse: first day', cols: 48, rows: 30, cellSize: 2 });
+  setNotes(layout, 'A small pallet warehouse on its first day. A truck with about 24 pallets arrives at Goods in every 17 minutes and takes one of three doors; '
+    + 'forklifts carry the pallets to the Storage and later to Goods out, where a truck of 24 pallets waits for them about every 25 minutes. On paper three doors are '
+    + 'enough (the door check in the Properties tab says so), but a truck holds its door until the forklifts have taken its last pallet, so the four forklifts '
+    + 'decide how long the doors stay busy. Run it and open Results: the Doors card shows the gate and the door time, and the findings say what limits the plant.');
+
+  ring(layout, 4, 9, 40, 21);
+  for (const x of [8, 11, 14, 17]) road(layout, [[x, 9], [x, 5]]); // four side roads to Goods in (three doors; the fourth dock is for trying)
+  for (const y of [11, 15, 19]) road(layout, [[40, y], [37, y]]); // three bays for the Storage
+  for (const x of [21, 27]) road(layout, [[x, 21], [x, 23]]); // two bays for Goods out
+  road(layout, [[5, 21], [5, 22]]); // the Forklift park
+
+  const goodsIn = station(layout, 'source', 'Goods in', 8, 3, { w: 10, h: 2 }, { outCap: 12 },
+    { trucks: { doors: 3, interArrival: arrivals(1020, 0.3), pallets: { kind: 'uniform', mean: 24, spread: 0.25 } } });
+  const storage = station(layout, 'storage', 'Storage', 28, 11, { w: 9, h: 9 }, { capacity: 600, dwell: 30 });
+  const goodsOut = station(layout, 'sink', 'Goods out', 20, 24, { w: 9, h: 2 }, {},
+    { trucks: { doors: 2, interArrival: arrivals(1500, 0.3), pallets: { kind: 'const', mean: 24, spread: 0 } } });
+  const park = station(layout, 'depot', 'Forklift park', 4, 23, { w: 3, h: 2 }, { slots: 8, chargers: 0 });
+
+  flow(layout, goodsIn, storage);
+  flow(layout, storage, goodsOut);
+  must(addFleet(layout, 'forklift', { name: 'Forklifts', count: 4, length: 2, home: park.id }), 'forklift fleet');
+
+  must(addLabel(layout, { x: 8.5, y: 2.2, text: 'Receiving' }), 'label');
+  must(addLabel(layout, { x: 23, y: 15.5, text: 'Pallet storage' }), 'label');
+  must(addLabel(layout, { x: 21, y: 26.8, text: 'Shipping' }), 'label');
+  return layout;
+}
+
 /**
  * Worked examples for the welcome dialog. `build()` returns a fresh layout every call; `tips` are things to try.
  * @type {Array<{id: string, name: string, description: string, tips: string[], build: () => object}>}
@@ -213,5 +313,28 @@ export const EXAMPLES = [
       'Try: draw a one-way road from the cross aisle just below Inbound B east along the north side of Packing and down to the main aisle (cells 24,4 → 32,4 → 32,8). Packing gets a second dock and the traffic wait share drops by about 40 %: vehicles then take whichever of its docks is free.',
     ],
     build: buildCongestionLab,
+  },
+  {
+    id: 'dock-lab',
+    name: 'Dock lab: one street, three docks',
+    description: 'Trucks bring pallets to a Goods in with three docks, each on its own short side road, and forklifts carry them to a Storage. Turn the three side roads into a row and watch the docks stop sharing the work.',
+    tips: [
+      'Press play, select Goods in and switch on the Docks overlay (or open the Results tab): every dock carries a bar. With a side road for each dock the forklifts share the work: about 57 %, 34 % and 9 % of the visits go to the first, second and third dock.',
+      'Try: erase the three side roads above Goods in and drag Goods in down until it touches the street. The docks now lie in a row on one lane. A forklift cannot drive past a parked one, so the first dock takes about 97 % of the visits and the others stand empty. The Checks tab says "docks share a lane", the forklifts work about 10 % harder for the same pallets (58 % busy instead of 53 %) and a truck holds its door about 2 minutes longer (33 instead of 31).',
+      'Try: add a sixth forklift in the Fleet tab. Trucks are unloaded a little sooner (door time 30 instead of 31 minutes), but the street fills up: waiting in traffic rises from 9 % to 14 %. In the row it rises to 20 % and the extra forklift cannot reach the empty docks.',
+    ],
+    build: () => buildDockLab('bays'),
+  },
+  {
+    id: 'warehouse-first-day',
+    name: 'Warehouse: first day',
+    description: 'A small pallet warehouse: trucks arrive at three doors, four forklifts carry the pallets to the Storage and on to Goods out. Find out whether the doors or the forklifts decide how long trucks wait.',
+    tips: [
+      'Press play and open the Results tab: the Doors card shows the gate and the doors. Over several runs a truck waits about 8 minutes at the gate and holds its door for about 42 minutes, and the doors are busy about 83 % of the time. The findings say it is not the doors: the forklifts are busy 99 % of the time.',
+      'Try: select Goods in and raise its doors from 3 to 4 (Properties tab, Trucks and doors). Trucks wait less than half as long at the gate (about 4 minutes), but each stays at its door longer (about 47 minutes) and the forklifts are still busy 99 % of the time: the same pallets go through. More doors only move the queue from the gate to the doors.',
+      'Try: add a fifth forklift in the Fleet tab instead. The door time falls to about 26 minutes, the gate stays empty and the forklifts are busy about 89 % of the time. A sixth brings the door time to about 22 minutes, at the price of a busier street: waiting in traffic doubles, from 5 % to 10 %.',
+      'The door check in the Properties tab (Goods in, Trucks and doors) says 2.7 doors are busy at once at the busiest hour, so 3 doors are enough on paper. It assumes 90 seconds per pallet; in a run the forklifts decide how long a truck stays, and after a run the check uses the door time measured here.',
+    ],
+    build: buildWarehouseFirstDay,
   },
 ];

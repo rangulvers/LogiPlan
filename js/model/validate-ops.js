@@ -163,8 +163,8 @@ function checkDoorsExceedDocks(ctx, add) {
     const docks = docksFrom(ctx, station);
     if (docks.length === 0 || !Number.isFinite(trucks.doors) || trucks.doors <= docks.length) continue;
     add('warning', 'doors-exceed-docks', station.id,
-      `${q(station)} has ${count(trucks.doors, 'door', 'doors')} but only ${count(docks.length, 'road cell touches', 'road cells touch')} it. Vehicles serve the doors through those cells, so they queue there while the trucks wait for their pallets.`,
-      'Extend the road along the edge of the station, or give it side roads, until at least as many road cells touch it as it has doors.',
+      `${q(station)} has ${count(trucks.doors, 'door', 'doors')} but only ${count(docks.length, 'road cell touches', 'road cells touch')} it. Vehicles serve the doors through ${docks.length === 1 ? 'that cell' : 'those cells'}, so a door beyond them cannot be unloaded any faster: it only lets one more truck check in or out while the others are unloaded.`,
+      'To let more trucks be unloaded at the same time, give the station a second dock, ideally on its own side road. Extend the road adds road cells along the edge of the station (they lie in a row, so vehicles share them only when each gets a side road of its own).',
       { stationId: station.id, cells: docks.slice(0, MAX_CELLS_PER_ISSUE) });
   }
 }

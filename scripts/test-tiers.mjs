@@ -74,6 +74,7 @@ export const HEAVY_SHARDS = Object.freeze([
     'm0.review.test.js', //             ~10  the adversarial review of milestone M0 (warehouse seams): digests of the pre-M0 tree, hostile documents, stand-in sanitizers; its expensive checks are opt-in (M0_REVIEW_HEAVY=1)
     'model.ops-trucks.fuzz.test.js', // ~13  M1: 4,000 documents with ops and calendar junk (the fast checks of the same keys are in model.ops-trucks.test.js)
     'sim.trucks.fuzz.test.js', //       ~51  M1: 200 random plants with trucks, every invariant on every tick, report.ops, dt and fork independence at scale (A1.3, A1.4, A1.8, A1.9)
+    'sim.examples.warehouse.test.js', // ~52  M1: Dock lab and Warehouse: first day, 8 variants x 5 seeds x 8 simulated hours on worker threads (A1.14, A1.16, the tips)
   ),
   whole(
     'sim.integration.test.js', //       27.4  examples end to end, performance bound

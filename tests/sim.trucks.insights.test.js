@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import { dist } from '../js/model/defaults.js';
 import { DOOR_TARGET_UTILISATION } from '../js/model/doors.js';
 import { EXAMPLES } from '../js/model/examples.js';
+import { legacyExamples } from './helpers/golden.js';
 import { Simulation } from '../js/sim/engine.js';
 import {
   DOCK_BUSY_SHARE as BUILT_IN_DOCK_BUSY, DOCK_MIN_VISITS as BUILT_IN_DOCK_VISITS, DOCK_WAIT_PER_VISIT as BUILT_IN_DOCK_WAIT, EXTENSION_RULES,
@@ -232,7 +233,7 @@ test('the five rules are registered in EXTENSION_RULES in the order of Appendix 
   assert.deepEqual(EXTENSION_RULES.map((r) => r.name), ['gateQueueLong', 'doorsBottleneck', 'unloadLimitedByVehicles', 'doorsIdle', 'outboundShort']);
   assert.deepEqual(EXTENSION_RULES, [...ops.OPS_INSIGHT_RULES]);
   assert.ok(Object.isFrozen(ops.OPS_INSIGHT_RULES));
-  for (const example of EXAMPLES) {
+  for (const example of legacyExamples(EXAMPLES)) {
     const sim = new Simulation(example.build(), { seed: 1 });
     sim.advance(1800);
     const report = sim.kpis();

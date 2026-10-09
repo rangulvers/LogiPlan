@@ -13,7 +13,11 @@ import assert from 'node:assert/strict';
 import * as L from '../js/model/layout.js';
 import { validateLayout } from '../js/model/validate.js';
 import * as S from '../js/model/serialize.js';
-import { EXAMPLES } from '../js/model/examples.js';
+import { EXAMPLES as ALL_EXAMPLES } from '../js/model/examples.js';
+import { legacyExamples } from './helpers/golden.js';
+
+/** The three legacy examples: the catalogue also holds the warehouse examples since M1 (trucks, schema 2), which have their own tests (sim.examples.warehouse.test.js). */
+const EXAMPLES = legacyExamples(ALL_EXAMPLES);
 import { emptyLayout, defaultGrid, RUNTIME_KEYS, GRID_LIMITS } from '../js/model/defaults.js';
 import { buildGraph } from '../js/sim/graph.js';
 import { createRng } from '../js/util/rng.js';

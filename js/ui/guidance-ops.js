@@ -22,6 +22,16 @@ export const ADD_DOORS_ID = 'info:add-doors';
 /** Re-export so guidance.js imports the fix data and its performer from one module. */
 export const opsFixForIssue = opsFixFor;
 
+/** Pallets an hour that reached a Goods out in the last run (the live report), or 0 when there was no run or too few pallets to say. */
+export function shippedPerHour(ctx, stationId) {
+  const report = ctx && ctx.runner && typeof ctx.runner.kpis === 'function' ? ctx.runner.kpis() : null;
+  const sink = report && report.throughput && report.throughput.bySink ? report.throughput.bySink[stationId] : null;
+  return sink && Number.isFinite(sink.perHour) && sink.perHour > 0 && sink.count >= MIN_SHIPPED_PALLETS ? sink.perHour : 0;
+}
+
+/** Fewer pallets than this in the window say nothing about a rate. */
+export const MIN_SHIPPED_PALLETS = 6;
+
 /** Can this layout station get doors, and has it none yet? */
 export const canAddDoors = (station) => Boolean(station) && TRUCK_TYPES.includes(station.type) && !trucksOf(station);
 
@@ -43,7 +53,7 @@ export function addDoorsText(station) {
   return station.type === 'sink'
     ? {
       title: `Trucks collect the goods at ${station.name}`,
-      text: 'At the moment the loads leave at once. Add dock doors to let trucks collect them, and see whether the doors or the forklifts limit the shipping.',
+      text: 'At the moment the loads leave at once. Add dock doors to let trucks collect them, and see whether the doors or the forklifts limit the shipping. Run the plant once first: the trucks are then sized to what it shipped.',
     }
     : {
       title: `Trucks bring the goods to ${station.name}`,
@@ -75,14 +85,18 @@ export function addDoorsSteps(layout) {
  */
 export function addDockDoors(ctx, stationId) {
   const { store } = ctx;
-  const station = getStation(store.getState().layout, stationId);
+  const layout = store.getState().layout;
+  const station = getStation(layout, stationId);
   if (!canAddDoors(station)) return false;
-  const trucks = convertToDoors(station);
+  // What the screen knows and the pure conversion does not: for a Goods out, what the plant shipped in the last run (the default trucks of 48 pallets an hour
+  // would leave short in a plant that ships 20, and hold their doors for the full hour of the longest wait).
+  const shipped = station.type === 'sink' ? shippedPerHour(ctx, station.id) : 0;
+  const trucks = convertToDoors(station, { shippedPerHour: shipped });
   if (!trucks) return false;
   const before = station.type === 'source' ? legacyPalletsPerHour(station.params) : undefined;
   if (!store.commit('Add dock doors', (d) => { if (!updateStation(d, station.id, { ops: { trucks } })) return false; })) return false;
   store.select('station', [station.id]);
-  ctx.toast(dockDoorsToast({ name: station.name, type: station.type, trucks, before }), {
+  ctx.toast(dockDoorsToast({ name: station.name, type: station.type, trucks, before, shipped }), {
     kind: 'info', ms: 8000, action: { label: 'Show doors', onClick: () => ctx.actions?.focus?.({ stationIds: [station.id] }) },
   });
   return true;

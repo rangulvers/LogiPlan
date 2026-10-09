@@ -6,6 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { dist } from '../js/model/defaults.js';
 import { EXAMPLES } from '../js/model/examples.js';
+import { legacyExamples } from './helpers/golden.js';
 import { convertToDoors } from '../js/model/doors.js';
 import { updateStation } from '../js/model/layout.js';
 import { Simulation } from '../js/sim/engine.js';
@@ -56,7 +57,7 @@ function costPerHour(build) {
 }
 
 test('A1.16 (sim): the three examples with dock doors on every Goods in and Goods out simulate at least 500x real time (target 2000x), and the doors really work', (t) => {
-  for (const example of EXAMPLES) {
+  for (const example of legacyExamples(EXAMPLES)) {
     const { cost, trucks } = costPerHour(() => withDoors(example));
     const factor = 3600 / cost;
     t.diagnostic(`${example.name} with doors: ${cost.toFixed(3)} CPU s per simulated hour = ${Math.round(factor)}x real time, ${trucks} trucks in ${HOURS} h`);

@@ -23,6 +23,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import v8 from 'node:v8';
 import vm from 'node:vm';
+import { legacyExamples } from './golden.js';
 
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 /** The commit whose production code is the PRE-M0 tree (the base of the M0 branch; steps 1 of M0 changed tests only). */
@@ -182,7 +183,7 @@ export function runMatrixCell(tree, id, seed, dt) {
 /** Every cell of the matrix for a tree, as { key: digest }. Used once to record the table that the review test embeds. */
 export function captureMatrix(tree) {
   const table = {};
-  for (const example of tree.EXAMPLES) for (const seed of MATRIX_SEEDS) for (const dt of MATRIX_DTS) table[matrixKey(example.id, seed, dt)] = digestOf(runMatrixCell(tree, example.id, seed, dt));
+  for (const example of legacyExamples(tree.EXAMPLES)) for (const seed of MATRIX_SEEDS) for (const dt of MATRIX_DTS) table[matrixKey(example.id, seed, dt)] = digestOf(runMatrixCell(tree, example.id, seed, dt));
   return table;
 }
 

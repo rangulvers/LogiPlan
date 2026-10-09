@@ -13,6 +13,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as L from '../js/model/layout.js';
 import { EXAMPLES } from '../js/model/examples.js';
+import { legacyExamples } from './helpers/golden.js';
 import { MAX_SCHEDULE_ROWS, OPS_KEYS, OPS_SANITIZERS, TRUCK_DEFAULTS, defaultTrucks, mergeOps, sanitizeOps, trucksOf } from '../js/model/ops.js';
 import { CALENDAR_KEYS, makeClock, sanitizeCalendar, usesTimetable } from '../js/model/calendar.js';
 import { reconcileLayout } from '../js/model/extensions.js';
@@ -253,8 +254,8 @@ test('A1.2 sanitizeCalendar and makeClock read the same fields: strings, clampin
   assert.equal(makeClock({ startTod: 100000 }).startTod, 86399);
 });
 
-test('A1.2 a legacy layout is schema 1, has no ops and no calendar, and every example survives normalizeLayout and the project round trip byte for byte (A1.1 keeps the golden tests for the rest)', () => {
-  for (const example of EXAMPLES) {
+test('A1.2 a legacy layout is schema 1, has no ops and no calendar, and every legacy example survives normalizeLayout and the project round trip byte for byte (A1.1 keeps the golden tests for the rest)', () => {
+  for (const example of legacyExamples(EXAMPLES)) {
     const layout = example.build();
     assert.equal(layout.schema, 1);
     assert.ok(!('calendar' in layout));

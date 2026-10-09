@@ -45,7 +45,8 @@ import v8 from 'node:v8';
 import vm from 'node:vm';
 import { Simulation, DEADLOCK_HISTORY } from '../js/sim/engine.js';
 import { runSimulation, runReplications, sweep, compareScenarios, listSweepParameters, summarizeReport } from '../js/sim/experiments.js';
-import { EXAMPLES } from '../js/model/examples.js';
+import { EXAMPLES as ALL_EXAMPLES } from '../js/model/examples.js';
+import { legacyExamples } from './helpers/golden.js';
 import * as L from '../js/model/layout.js';
 import { validateLayout } from '../js/model/validate.js';
 import { SERIES_MAX_POINTS } from '../js/sim/stats.js';
@@ -61,16 +62,25 @@ const scale = (full, quick) => (QUICK ? quick : full);
 const mean = (a) => a.reduce((x, y) => x + y, 0) / a.length;
 const sd = (a) => { const m = mean(a); return Math.sqrt(a.reduce((s, x) => s + (x - m) ** 2, 0) / Math.max(1, a.length - 1)); };
 const sha = (text) => crypto.createHash('sha1').update(text).digest('hex').slice(0, 16);
+/** This review attacks the engine with the three legacy plants (supply napkin checks, tips): the warehouse examples have trucks and their own tests (sim.examples.warehouse.test.js, sim.integration.test.js). */
+const EXAMPLES = legacyExamples(ALL_EXAMPLES);
 const example = (id) => EXAMPLES.find((e) => e.id === id).build();
 const unitsNear = (a, b, tol) => Math.abs(a - b) <= tol * Math.max(1e-9, Math.abs(b));
 
-/** The longest time the event loop was blocked while `fn` ran (a 2 ms timer measures the gaps). */
+/**
+ * The longest time the event loop was blocked while `fn` ran (a 2 ms timer measures the gaps). The gap is the CPU time this thread used between two ticks
+ * where Node offers it (process.threadCpuUsage): a machine under load (a neighbour on the cores, other test processes) deschedules the process, which
+ * stretches the WALL clock gap without any code having blocked the loop (ENG-LOOP-1 failed once at a load average of 8 with a 156 ms gap, 6 ms over the
+ * bound). Without it the wall clock is used, and the best of several runs (calmestStall) has to carry the noise.
+ */
 async function longestStall(fn) {
-  let last = performance.now();
+  const threadMillis = typeof process.threadCpuUsage === 'function' ? () => { const u = process.threadCpuUsage(); return (u.user + u.system) / 1000; } : null;
+  const clock = threadMillis || (() => performance.now());
+  let last = clock();
   let worst = 0;
   let ticks = 0;
   const timer = setInterval(() => {
-    const now = performance.now();
+    const now = clock();
     worst = Math.max(worst, now - last);
     last = now;
     ticks++;

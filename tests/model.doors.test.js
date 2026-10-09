@@ -154,7 +154,7 @@ test('7.6 number 1: the toast after "Add dock doors" (the Starter example senten
   const source = exampleStation('starter', 'source');
   const text = dockDoorsToast({ name: 'Goods receiving', trucks: convertToDoors(source), before: legacyPalletsPerHour(source.params) });
   assert.equal(text, 'Goods receiving now receives trucks: 2 doors, 24 pallets per truck, about one truck every 72 min. That is the same 20 pallets an hour as before, but they now arrive in bunches.');
-  assert.match(dockDoorsToast({ name: 'Dispatch', type: 'sink', trucks: convertToDoors('sink') }), /^Dispatch now loads trucks: 2 doors, 24 pallets per truck, about one truck every 30 min\. That is 48 pallets an hour\.$/);
+  assert.match(dockDoorsToast({ name: 'Dispatch', type: 'sink', trucks: convertToDoors('sink') }), /^Dispatch now loads trucks: 2 doors, 24 pallets per truck, about one truck every 30 min\. That is 48 pallets an hour: if the plant ships less, trucks leave without a full load\.$/);
   const capped = convertToDoors({ type: 'source', params: { interArrival: { kind: 'const', mean: 0.5, spread: 0 }, batch: 50 } });
   assert.match(dockDoorsToast({ name: 'X', trucks: capped, before: 360000 }), /instead of 360,000, and they now arrive in bunches\.$/);
   assert.match(dockDoorsToast({ name: 'X', trucks: convertToDoors('source', {}), before: 0 }), /That is 32 pallets an hour\.$/);
@@ -452,4 +452,32 @@ test('the trucks block of a station is read through trucksOf; a station without 
   assert.equal(trucksOf({ ops: {} }), null);
   L.updateStation(layout, source.id, { ops: { trucks: { doors: 3 } } });
   assert.equal(trucksOf(source).doors, 3);
+});
+
+// ---------------------------------------------------------------------------------------------------------------------------
+// The option of the conversion that the screen supplies (integration, M1): what the plant shipped
+// ---------------------------------------------------------------------------------------------------------------------------
+
+test('convertToDoors({ shippedPerHour }): a Goods out gets trucks that carry what the plant shipped, not the default 48 pallets an hour', () => {
+  const rate = (block) => describeTrucks(block).palletsPerHour;
+  assert.equal(convertToDoors('sink').interArrival.mean, 1800, 'no run: the default');
+  assert.equal(convertToDoors('sink', null, { shippedPerHour: 0 }).interArrival.mean, 1800);
+  assert.equal(convertToDoors('sink', null, { shippedPerHour: 20 }).doors, 2, 'the doors stay at the design default');
+  assert.equal(convertToDoors('sink', null, { shippedPerHour: Number.NaN }).interArrival.mean, 1800);
+  const twenty = convertToDoors('sink', null, { shippedPerHour: 20 });
+  assert.deepEqual([twenty.pallets.mean, twenty.interArrival.mean], [24, 4320], '20 an hour: 24 pallets every 72 minutes, as for the Starter Goods in');
+  near(rate(twenty), 20);
+  const dense = convertToDoors('sink', null, { shippedPerHour: 200 });
+  assert.equal(dense.pallets.mean, 34, 'a gap of 10 minutes is the floor: 34 pallets every 612 s');
+  near(rate(dense), 200);
+  const sparse = convertToDoors({ type: 'sink', params: {} }, { shippedPerHour: 0.00001 });
+  assert.ok(sparse.interArrival.mean <= 1e6 && sparse.pallets.mean >= 1, 'a pallet every few days: the limits of the block hold');
+  assert.equal(convertToDoors({ type: 'source', params: { interArrival: { kind: 'const', mean: 180, spread: 0 } } }, { shippedPerHour: 20 }).interArrival.mean, 4320, 'a Goods in ignores it');
+  assert.equal(bytes(sanitizeOps('sink', { trucks: twenty }).trucks), bytes(twenty), 'a fixed point of the sanitizer');
+});
+
+test('the toast of a Goods out says what the trucks carry against what the last run shipped', () => {
+  const same = convertToDoors('sink', null, { shippedPerHour: 20 });
+  assert.equal(dockDoorsToast({ name: 'Dispatch', type: 'sink', trucks: same, shipped: 20 }), 'Dispatch now loads trucks: 2 doors, 24 pallets per truck, about one truck every 72 min. That is the same 20 pallets an hour that reached it in the last run.');
+  assert.match(dockDoorsToast({ name: 'Dispatch', type: 'sink', trucks: convertToDoors('sink'), shipped: 20 }), /That is 48 pallets an hour; 20 an hour reached it in the last run\.$/);
 });

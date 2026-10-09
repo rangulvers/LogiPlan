@@ -721,6 +721,230 @@ await withBrowser(async ({ browser, url, errors }) => {
     await context.close();
   });
 
+  // ---- the journey of A1.15 (docs/WAREHOUSE-DESIGN.md 9.2), in the real app on the Starter -------------------------------------------------------
+
+  /** Open the app on its welcome screen and take an example from the gallery with a click, like a planner. */
+  async function openExample(id, { theme = 'light', viewport = { width: 1440, height: 900 } } = {}) {
+    const context = await browser.newContext({ viewport, colorScheme: theme, deviceScaleFactor: 1 });
+    const page = await context.newPage();
+    page.setDefaultTimeout(60000);
+    page.on('console', (m) => { if (m.type() === 'error' || m.type() === 'warning') errors.push(`[console.${m.type()}] ${m.text()}`); });
+    page.on('pageerror', (e) => errors.push(`[pageerror] ${e.message}`));
+    page.on('requestfailed', (r) => errors.push(`[requestfailed] ${r.url()} ${r.failure()?.errorText}`));
+    page.on('request', (r) => { if (!r.url().startsWith(origin) && !r.url().startsWith('data:') && !r.url().startsWith('blob:')) foreign.push(r.url()); });
+    await page.goto(url('/index.html'));
+    await page.waitForFunction(() => document.getElementById('app')?.dataset.state === 'ready' && window.__logiplan);
+    await page.locator('[role=dialog]').first().waitFor();
+    await page.locator(`[role=dialog] [data-example="${id}"]`).click();
+    await page.locator('[role=dialog]').waitFor({ state: 'detached' });
+    await frames(page, 3);
+    return { context, page };
+  }
+
+  /** The brick of a station type on the screen (x, y, w, h in page pixels). */
+  const brickOf = async (page, type) => page.evaluate((t) => {
+    const { ctx, store } = window.__logiplan;
+    const layout = store.getState().layout;
+    const s = layout.stations.find((x) => x.type === t);
+    const cs = layout.grid.cellSize;
+    const r = ctx.canvas.getBoundingClientRect();
+    const [x0, y0] = ctx.camera.worldToScreen(s.x * cs, s.y * cs);
+    const [x1, y1] = ctx.camera.worldToScreen((s.x + s.w) * cs, (s.y + s.h) * cs);
+    return { x: r.left + x0, y: r.top + y0, w: x1 - x0, h: y1 - y0 };
+  }, type);
+
+  /** The text of every metric of the Doors card of a station, as { served: '7', gateWait: '0 s', ... } (the first line of each). */
+  const doorsCard = (page, stationId) => page.locator(`[data-door-station="${stationId}"]`).evaluate((li) => ({
+    text: li.innerText,
+    metrics: Object.fromEntries([...li.querySelectorAll('[data-metric]')].map((m) => [m.dataset.metric, m.querySelector('dd').innerText.split('\n')[0]])),
+  }));
+
+  await run('journey', async () => {
+    // 1. the Starter from the gallery, the Goods in picked on the plan with a click
+    const { context, page } = await openExample('starter');
+    const before = JSON.stringify(await layoutOf(page));
+    ok((await layoutOf(page)).schema === 1 && (await stationOf(page, 'source')).ops === undefined, 'the Starter is a legacy plant: schema 1, no options');
+    await page.evaluate(() => { window.__logiplan.ctx.actions.setRightTab('properties'); window.__logiplan.runner.setSpeed(1200); });
+    const brick = await brickOf(page, 'source');
+    await page.mouse.click(brick.x + brick.w / 2, brick.y + brick.h / 2);
+    await frames(page, 3);
+    const src = await stationOf(page, 'source');
+    eq((await state(page)).selection, { kind: 'station', ids: [src.id] }, 'a click on the plan selects Goods receiving');
+
+    // the plant before the doors: what it delivers in four simulated hours
+    await step(page, 4 * 3600);
+    const legacy = await page.evaluate(() => { const k = window.__logiplan.runner.kpis(); return { perHour: k.throughput.perHour, ops: k.ops }; });
+    eq(legacy.ops, undefined, 'a legacy report has no truck figures');
+    ok(legacy.perHour > 15 && legacy.perHour < 25, `the Starter delivers about 20 pallets an hour (${legacy.perHour.toFixed(1)})`);
+
+    // 2. Add dock doors: one undo step, the toast with the numbers, the pallet rate stays
+    await page.locator('[data-role=add-doors]').click();
+    await frames(page, 4);
+    eq((await state(page)).label, 'Add dock doors', 'one undo step');
+    const trucks = (await stationOf(page, 'source')).ops.trucks;
+    eq([trucks.doors, trucks.pallets.mean, trucks.interArrival.mean], [2, 24, 4320], '24 pallets every 72 minutes: the rate of one pallet every 3 minutes');
+    ok(/receives trucks: 2 doors, 24 pallets per truck, about one truck every 72 min\. That is the same 20 pallets an hour as before/.test((await toasts(page)).join(' ')), 'the toast says it');
+    ok(await page.locator('[data-role=trucks-on]').isVisible(), 'the Trucks and doors controls are there');
+    // the first impression of a plant with one dock and two doors: the Checks tab says why a second door helps little, as a warning, not an error
+    await page.evaluate(() => window.__logiplan.ctx.actions.setRightTab('checks'));
+    await page.waitForTimeout(450);
+    await frames(page, 3);
+    const checks = await page.locator('[data-panel=checks]').innerText();
+    ok(/has 2 doors but only 1 road cell touches it\. Vehicles serve the doors through that cell, so a door beyond them cannot be unloaded any faster/.test(checks), checks);
+    eq(await page.locator('#tab-checks').getAttribute('aria-label'), 'Checks, 1 problem', 'one warning in the Checks tab, not a wall of them');
+    ok(!(await page.locator('[data-panel=checks]').innerText()).includes('Error'), 'and no error');
+    await page.evaluate(() => window.__logiplan.ctx.actions.setRightTab('properties'));
+
+    // 3. Play: the real play button, at 1200x, until about three simulated hours have gone by, then Pause
+    await page.getByRole('button', { name: 'Run simulation' }).click();
+    await page.waitForFunction(() => window.__logiplan.runner.sim && window.__logiplan.runner.sim.time >= 3 * 3600 + 600, null, { timeout: 120000 });
+    await page.getByRole('button', { name: 'Pause simulation' }).click();
+    await frames(page, 3);
+    ok(!(await page.evaluate(() => window.__logiplan.runner.playing)), 'paused');
+
+    // 4. the Doors card shows numbers (the Goods in has served trucks; nothing is NaN)
+    await page.evaluate(() => window.__logiplan.ctx.actions.setRightTab('results'));
+    await frames(page, 5);
+    const sec = page.locator('details[data-section=doors]');
+    await sec.waitFor({ state: 'visible' });
+    if (!(await sec.evaluate((e) => e.open))) await sec.locator('summary').click();
+    await frames(page, 3);
+    const card = await doorsCard(page, src.id);
+    ok(Number(card.metrics.served) >= 1, `trucks served: ${card.metrics.served}`);
+    ok(/^\d+(\.\d+)? (min|h)$/.test(card.metrics.doorTime), `door time: ${card.metrics.doorTime}`);
+    ok(!/NaN|undefined|Infinity/.test(card.text), 'no NaN in the card');
+    ok(/Doors busy/.test(card.text) && /\(measured\)/.test(card.text), 'the door check line uses the measured door time after a run');
+    await shot(page, 'journey-results-light-desktop');
+
+    // 5. undo restores the plant byte for byte, and the Doors card is gone
+    await page.keyboard.press('Control+z');
+    await page.waitForFunction(() => window.__logiplan.store.getState().layout.schema === 1);
+    eq(JSON.stringify(await layoutOf(page)), before, 'undo: the Starter again, byte for byte');
+    await frames(page, 5);
+    ok(!(await page.locator('details[data-section=doors]').first().isVisible().catch(() => false)), 'and no Doors card without trucks (hidden, not just empty)');
+    await page.keyboard.press('Control+Shift+z');
+    await page.waitForFunction(() => window.__logiplan.store.getState().layout.schema === 2);
+    eq((await stationOf(page, 'source')).ops.trucks.doors, 2, 'redo: the doors are back');
+
+    // 6. the share link round trip: the link of the Share dialog opens in a fresh browser with the doors in it
+    await page.getByRole('button', { name: 'Share' }).first().click();
+    const dialog = page.locator('[role=dialog]');
+    await dialog.waitFor();
+    const field = dialog.getByLabel('Link to this project');
+    await field.waitFor();
+    const link = await field.inputValue();
+    ok(/#p=/.test(link), 'a share link');
+    await dialog.getByRole('button', { name: 'Done' }).click();
+    await dialog.waitFor({ state: 'detached' });
+    const other = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+    const shared = await other.newPage();
+    shared.on('pageerror', (e) => errors.push(`[pageerror] ${e.message}`));
+    await shared.goto(link.replace(/^https?:\/\/[^/]+/, origin));
+    await shared.waitForFunction(() => document.getElementById('app')?.dataset.state === 'ready' && window.__logiplan);
+    await shared.waitForFunction(() => window.__logiplan.store.getState().layout.stations.some((s) => s.ops && s.ops.trucks));
+    const sharedTrucks = (await stationOf(shared, 'source')).ops.trucks;
+    eq([sharedTrucks.doors, sharedTrucks.pallets.mean, sharedTrucks.interArrival.mean, (await layoutOf(shared)).schema], [2, 24, 4320, 2], 'the share link keeps the doors');
+    await other.close();
+
+    // 7. a pasted timetable (German Excel) is applied only after "Use N rows"
+    await page.evaluate(() => window.__logiplan.ctx.actions.setRightTab('properties'));
+    await page.locator('[data-role=mode] button', { hasText: 'Use a timetable' }).click();
+    await frames(page, 3);
+    const schedule = async () => (await stationOf(page, 'source')).ops.trucks.schedule;
+    eq(await schedule(), [], 'a new timetable has no rows');
+    await page.locator('[data-role=paste]').click();
+    const paste = page.locator('[role=dialog]');
+    await paste.locator('[data-role=paste-text]').fill('Ankunft;Paletten\n06.00;24,0\n6:30 Uhr;18\n08:00;\n25:70;4');
+    await frames(page, 2);
+    ok(/3 rows read, 1 skipped: row 5 “25:70” is not a time\. Nothing is applied until you press Use 3 rows\./.test(await paste.locator('[data-role=paste-summary]').innerText()), 'the preview says what it read');
+    eq(await schedule(), [], 'while the preview is open nothing is applied');
+    await paste.getByRole('button', { name: 'Use 3 rows' }).click();
+    await paste.waitFor({ state: 'detached' });
+    eq(await schedule(), [{ at: 21600, pallets: 24 }, { at: 23400, pallets: 18 }, { at: 28800, pallets: null }], 'after "Use 3 rows" the timetable is there');
+
+    // 8. (A1.13 live) a day plant restarts cold on an edit, then one whole day runs, then a stationary truck plant restarts warm
+    await step(page, 900);
+    await page.getByRole('button', { name: 'Increase Doors' }).click();
+    await page.waitForFunction(() => window.__logiplan.runner.sim && window.__logiplan.runner.sim.time < 5 && window.__logiplan.runner.sim.layout.stations.find((s) => s.type === 'source').ops.trucks.doors === 3, null, { timeout: 20000 });
+    eq(await page.evaluate(() => [window.__logiplan.runner.priming, window.__logiplan.runner.baseline]), [false, null], 'a day plant restarts cold after an edit');
+    await page.evaluate(() => window.__logiplan.ctx.actions.clearSelection?.() || window.__logiplan.store.clearSelection());
+    await page.locator('[data-role=run-day]').click();
+    await page.waitForFunction(() => window.__logiplan.runner.sim && window.__logiplan.runner.time >= 86399 && !window.__logiplan.runner.playing, null, { timeout: 180000 });
+    const day = await page.evaluate(() => { const r = window.__logiplan.runner; return { time: r.time, kpis: r.kpis() }; });
+    ok(day.time >= 86399 && day.time < 86500, `one whole day (${Math.round(day.time)} s)`);
+    eq(day.kpis.ops.trucks[src.id].trucks.arrived, 3, 'the timetable of three rows brought three trucks in that day');
+    await page.evaluate((id) => window.__logiplan.store.select('station', [id]), src.id);
+    await page.locator('[data-role=mode] button', { hasText: 'Generate from rate' }).click();
+    await frames(page, 3);
+    eq((await layoutOf(page)).calendar, undefined, 'back to a rate: the clock goes, the plant is stationary again');
+    await step(page, 900); // a plant that has not run yet has nothing to continue: warm restarts need time on the clock
+    await page.getByRole('button', { name: 'Increase Doors' }).click();
+    await page.waitForFunction(() => window.__logiplan.runner.sim && window.__logiplan.runner.sim.layout.stations.find((s) => s.type === 'source').ops.trucks.doors === 4, null, { timeout: 60000 });
+    ok(await page.evaluate(() => Boolean(window.__logiplan.runner.warm)), 'a stationary truck plant restarts warm');
+    await context.close();
+  });
+
+  // ---- hand-computed figures of a live run (A1.15, the integrator's part) --------------------------------------------------------------------------------
+
+  /**
+   * A plant whose truck figures can be worked out on paper. Goods in: a truck of 6 pallets every 20 minutes, the first one at time 0 (startDelay 0, no variation at
+   * all: constant gap, constant pallets), 2 doors, 5 minutes of check-in and of check-out. Two forklifts carry the pallets to a Goods out, which is close.
+   */
+  async function referencePlant() {
+    const layout = L.createLayout({ name: 'Reference', cols: 30, rows: 14, cellSize: 2 });
+    L.paintRoadPath(layout, [[3, 9], [26, 9]]);
+    const src = L.addStation(layout, { type: 'source', name: 'Goods receiving', x: 6, y: 6, w: 3, h: 3, params: { outCap: 6 } });
+    const sink = L.addStation(layout, { type: 'sink', name: 'Dispatch', x: 14, y: 6, w: 3, h: 3 });
+    L.addFlow(layout, src.id, sink.id);
+    const park = L.addStation(layout, { type: 'depot', name: 'Parking', x: 3, y: 11, w: 3, h: 2, params: { slots: 4 } });
+    L.paintRoadPath(layout, [[4, 9], [4, 10]]);
+    L.addFleet(layout, 'forklift', { count: 2, home: park.id, length: 2 });
+    L.updateStation(layout, src.id, { ops: { trucks: { ...defaultTrucks(), doors: 2, checkIn: 300, checkOut: 300, mode: 'rate', interArrival: { kind: 'const', mean: 1200, spread: 0 }, pallets: { kind: 'const', mean: 6, spread: 0 } } } });
+    layout.settings.warmup = 0;
+    return { layout, src };
+  }
+
+  await run('reference', async () => {
+    const { layout, src } = await referencePlant();
+    const { context, page } = await open({ layout, select: [src.id] });
+    const T = 10900; // 3 h and a bit: trucks come at 0, 1200, ..., 10800 s
+    await step(page, T);
+    await page.evaluate(() => window.__logiplan.ctx.actions.setRightTab('results'));
+    await frames(page, 5);
+    const sec = page.locator('details[data-section=doors]');
+    await sec.waitFor({ state: 'visible' });
+    if (!(await sec.evaluate((e) => e.open))) await sec.locator('summary').click();
+    await frames(page, 3);
+    const entry = await page.evaluate((id) => window.__logiplan.runner.kpis().ops.trucks[id], src.id);
+    // arrivals: 10 trucks (t = 0, 1200, ..., 9 x 1200 = 10800); the one that came at 10800 has been at a door for 100 s only
+    eq(entry.trucks.arrived, 10, 'ten trucks in 10,900 s at one every 1,200 s, the first at 0');
+    eq(entry.trucks.docked, 10, 'two doors and 20 minutes between trucks: nobody waits for a door');
+    eq(entry.trucks.departed, 9, 'nine have left (the last arrived 100 s ago)');
+    eq(entry.trucks.turnedAway + entry.trucks.noShow + entry.trucks.short, 0);
+    ok(entry.gateWait.mean < 1, `nobody waits at the gate (${entry.gateWait.mean} s)`);
+    // door time: check-in 300 + unloading 6 pallets by two forklifts (a pallet is "taken" when it is loaded, 20 s each, about 40 s per round trip) + check-out 300
+    ok(entry.doorTime.mean >= 600 && entry.doorTime.mean <= 600 + 6 * 60, `door time ${entry.doorTime.mean.toFixed(0)} s is 600 s of paperwork plus less than 6 minutes of unloading`);
+    // doors busy: nine finished trucks and the tenth (100 s) hold doors for 9 x doorTime + 100 s of 2 doors x 10,900 s
+    const expected = (9 * entry.doorTime.mean + 100) / (2 * T);
+    ok(Math.abs(entry.doorUtilization - expected) < 0.01, `doors busy ${(entry.doorUtilization * 100).toFixed(1)} % against ${(expected * 100).toFixed(1)} % worked out from the door time`);
+    ok(entry.doorUtilization > 0.27 && entry.doorUtilization < 0.34, `about 30 %: ${(entry.doorUtilization * 100).toFixed(1)} %`);
+    // the card says the same thing in words
+    const card = await doorsCard(page, src.id);
+    eq(card.metrics.served, '9', 'trucks served on the card');
+    const minutes = /^(\d+(?:\.\d)?) min$/.exec(card.metrics.doorTime);
+    ok(minutes && Math.abs(Number(minutes[1]) - entry.doorTime.mean / 60) < 0.06, `door time on the card: ${card.metrics.doorTime} (${(entry.doorTime.mean / 60).toFixed(2)} min)`);
+    eq(card.metrics.gateWait, '0 s', 'gate wait on the card');
+    ok(new RegExp(`Doors busy\\s*${Math.round(entry.doorUtilization * 100)} %`).test(card.text.replace(/\n/g, ' ')) || card.text.includes(`${Math.round(entry.doorUtilization * 100)} %`), `doors busy on the card (${Math.round(entry.doorUtilization * 100)} %): ${card.text.replace(/\n/g, ' | ')}`);
+    // the door check before a run (assumed 90 s per pallet): 3 trucks an hour x (300 + 6 x 90 + 300 = 1140 s = 19 min) = 0.95 doors
+    await page.evaluate(() => window.__logiplan.runner.kpis = () => null); // pretend nothing has been measured
+    await page.evaluate(() => window.__logiplan.ctx.actions.setRightTab('properties'));
+    await frames(page, 4);
+    const text = await page.locator('[data-role=door-check-text]').innerText();
+    ok(/At the busiest hour you need about 1 door busy at once \(3 trucks an hour, 19 minutes at a door each\)\. You have 2 doors, busy about 48 % of the time\./.test(text), text);
+    ok(/The 90 s per pallet is an assumption\. In a run your vehicles decide how long a truck stays at its door/.test(await page.locator('[data-role=door-check-note]').innerText()), 'and says who sets the door time');
+    await context.close();
+  });
+
   // ---- layout, light and dark, desktop and narrow ----------------------------------------------------------------------------------------
 
   await run('layout', async () => {

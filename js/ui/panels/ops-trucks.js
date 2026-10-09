@@ -117,6 +117,18 @@ export function doorFormula(check) {
 }
 
 /**
+ * The line under the door check that says WHO sets the door time: the vehicles. Before a run the check works with ASSUMED_UNLOAD_PER_PALLET (a guess);
+ * a plant with one or two forklifts at one dock needs much more per pallet (a 24-pallet truck held its door for about an hour at the Starter plant),
+ * one with many forklifts less. After a run the measured time stands in and the line points at the forklifts before the doors.
+ */
+export function doorCheckNote(check) {
+  if (!check || check.empty) return '';
+  return check.basis === 'measured'
+    ? 'This door time was measured in the last run, and your vehicles set it: if it is long, look at the forklifts and AGVs before adding doors.'
+    : `The ${check.tPallet} s per pallet is an assumption. In a run your vehicles decide how long a truck stays at its door: few forklifts at one dock need much longer, many forklifts less. Run the plant to see the measured time.`;
+}
+
+/**
  * Goods out only: what the plant delivered to it per hour in the last run, set against what its trucks can take (WAREHOUSE-DESIGN 6.3.1: "so that
  * shipping is not silently the limit"). '' without a report or when nothing arrived.
  */
@@ -152,6 +164,7 @@ const CSS = `
 .doorcheck__head{display:flex;align-items:center;gap:var(--sp-2);flex-wrap:wrap}
 .doorcheck__text{margin:0;font-size:var(--fs-sm);line-height:1.45;color:var(--text)}
 .doorcheck__formula{margin:0;font-size:var(--fs-xs);color:var(--text-dim);font-variant-numeric:tabular-nums}
+.doorcheck__note{margin:0;font-size:var(--fs-xs);line-height:1.45;color:var(--text-dim)}
 .doorcheck__actions{display:flex;flex-wrap:wrap;gap:var(--sp-2)}
 .trucks-link{align-self:flex-start;padding:2px 0;border:0;background:none;color:var(--accent-text);font:inherit;font-size:var(--fs-sm);text-decoration:underline;cursor:pointer}
 .trucks-link:hover{color:var(--accent-hover)}
@@ -416,6 +429,7 @@ export function trucksSections(ctx, env) {
     const checkTitle = h('div', { class: 'doorcheck__head' }, h('span', { class: 'eyebrow' }, 'Door check'), h('span', { class: 'chip chip--outline', title: 'A rule of thumb from typical values. Change the numbers above to your own; Results shows the measured figures after a run.' }, 'Indicative'));
     const checkText = h('p', { class: 'doorcheck__text', 'data-role': 'door-check-text' });
     const checkFormula = h('p', { class: 'doorcheck__formula', 'data-role': 'door-check-formula' });
+    const checkNote = h('p', { class: 'doorcheck__note', 'data-role': 'door-check-note' });
     const useDoors = h('button', { class: 'btn btn--sm btn--primary', type: 'button', 'data-role': 'use-doors', hidden: true }, 'Use doors');
     let useDoorsCount = 0;
     useDoors.addEventListener('click', () => {
@@ -423,7 +437,7 @@ export function trucksSections(ctx, env) {
       const n = useDoorsCount;
       store.commit('Set dock doors', (d) => { if (!updateStation(d, id, { ops: { trucks: { doors: n } } })) return false; });
     });
-    const checkBox = h('div', { class: 'doorcheck', 'data-role': 'door-check', role: 'group', 'aria-label': 'Door check' }, checkTitle, checkText, checkFormula, h('div', { class: 'doorcheck__actions' }, useDoors));
+    const checkBox = h('div', { class: 'doorcheck', 'data-role': 'door-check', role: 'group', 'aria-label': 'Door check' }, checkTitle, checkText, checkFormula, checkNote, h('div', { class: 'doorcheck__actions' }, useDoors));
 
     const remove = h('button', {
       class: 'trucks-link', type: 'button', 'data-role': 'remove-trucks', title: 'Back to the plain arrivals of this station. Nothing you set before is lost.',
@@ -486,6 +500,8 @@ export function trucksSections(ctx, env) {
           checkText.textContent = check.text;
           checkFormula.textContent = doorFormula(check);
           checkFormula.hidden = !checkFormula.textContent;
+          checkNote.textContent = check.empty ? '' : doorCheckNote(check);
+          checkNote.hidden = !checkNote.textContent;
           checkBox.classList.toggle('is-warn', check.tooFew);
           useDoorsCount = check.action ? check.action.doors : 0;
           useDoors.hidden = !check.action;

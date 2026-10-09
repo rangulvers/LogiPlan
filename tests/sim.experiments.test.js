@@ -6,7 +6,11 @@ import {
   METRICS, compareScenarios, listSweepParameters, runReplications, runSimulation, summarizeReport, sweep,
 } from '../js/sim/experiments.js';
 import { Simulation } from '../js/sim/engine.js';
-import { EXAMPLES } from '../js/model/examples.js';
+import { EXAMPLES as ALL_EXAMPLES } from '../js/model/examples.js';
+import { legacyExamples } from './helpers/golden.js';
+
+/** The three legacy examples: the catalogue also holds the warehouse examples since M1 (trucks, schema 2), which have their own tests (sim.examples.warehouse.test.js). */
+const EXAMPLES = legacyExamples(ALL_EXAMPLES);
 import { validateLayout } from '../js/model/validate.js';
 import {
   checkInvariants, cloneLayout, createLayout, docksOf, getFleet, getStation, moveStation, normalizeLayout, paintRoadPath, updateFleet, updateSettings,

@@ -9,6 +9,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as L from '../js/model/layout.js';
 import { EXAMPLES } from '../js/model/examples.js';
+import { legacyExamples } from './helpers/golden.js';
 import { validateLayout } from '../js/model/validate.js';
 import { OPS_CHECKS, applyOpsFix, dockLanes, extendDockRoad, opsFixFor, validateOps } from '../js/model/validate-ops.js';
 import { convertToDoors } from '../js/model/doors.js';
@@ -124,8 +125,8 @@ test('A1.12 doors-exceed-docks fires when the doors exceed the road cells that t
   const found = issue(layout, 'doors-exceed-docks');
   assert.ok(found);
   assert.deepEqual([found.severity, found.id], ['warning', `doors-exceed-docks:${sourceOf(layout).id}`]);
-  assert.match(found.message, /^“Goods in” has 4 doors but only 3 road cells touch it\. Vehicles serve the doors through those cells, so they queue there while the trucks wait for their pallets\.$/);
-  assert.match(found.hint, /Extend the road along the edge/);
+  assert.match(found.message, /^“Goods in” has 4 doors but only 3 road cells touch it\. Vehicles serve the doors through those cells, so a door beyond them cannot be unloaded any faster: it only lets one more truck check in or out while the others are unloaded\.$/);
+  assert.match(found.hint, /give the station a second dock, ideally on its own side road\. Extend the road adds road cells along the edge/);
   assert.deepEqual(found.refs.cells, [[10, 6], [13, 6], [16, 6]]);
   const single = plant(['.AAA....', '.+++....', '........', '........', '........', '........', '........', '........'], { trucks: { doors: 5 } });
   assert.deepEqual(codesOf(single), ['doors-exceed-docks', 'docks-share-lane']);
@@ -199,7 +200,7 @@ test('timetable-empty: a station in schedule mode without a row, not in rate mod
 
 test('the checks are listed in the order of Appendix B, run only on stations with trucks, and give stable ids', () => {
   assert.deepEqual(OPS_CHECKS.map((c) => c.name), ['checkDoorsTooFew', 'checkDoorsExceedDocks', 'checkDocksShareLane', 'checkTimetableEmpty']);
-  for (const example of EXAMPLES) assert.deepEqual(codesOf(example.build()), [], `${example.id}: no trucks, no new issue`);
+  for (const example of legacyExamples(EXAMPLES)) assert.deepEqual(codesOf(example.build()), [], `${example.id}: no trucks, no new issue`);
   const layout = dockLab('row', { ...APPENDIX_A, doors: 8, mode: 'schedule' });
   const own = validateLayout(layout).filter((i) => OWN_CODES.includes(i.code));
   assert.deepEqual(own.map((i) => i.code), ['doors-exceed-docks', 'docks-share-lane', 'timetable-empty'], '8 doors, 6 docks in a row, no rows: all warnings, in the order of the checks (too few doors is silent for an empty timetable)');
@@ -220,8 +221,8 @@ test('Goods out: the same four checks apply to a station of type sink; a Goods i
   assert.deepEqual(mine[1].refs.cells, [[30, 13], [30, 14]], 'the two docks of the Goods out lie in a row on the loop (a column on its left side)');
 });
 
-test('converting every example with "Add dock doors" gives no error, and only the warnings the plant deserves', () => {
-  for (const example of EXAMPLES) {
+test('converting every legacy example with "Add dock doors" gives no error, and only the warnings the plant deserves', () => {
+  for (const example of legacyExamples(EXAMPLES)) {
     const layout = example.build();
     const errorsBefore = validateLayout(layout).filter((i) => i.severity === 'error').length;
     for (const station of layout.stations.filter((s) => s.type === 'source' || s.type === 'sink')) {

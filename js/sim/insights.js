@@ -31,6 +31,7 @@
 // explained by source-unconnected-activity, not by "delivers more than the plant takes".
 
 import { formatDistance, formatDuration, formatNumber, formatPercent, round } from '../util/format.js';
+import { hasLink } from '../model/layout.js';
 import { OPS_INSIGHT_RULES } from './insights-ops.js';
 
 /** Measured sim seconds needed before any rule is evaluated. */
@@ -848,13 +849,42 @@ const SKEW_TEXT = {
   },
 };
 
+const DOCK_STEPS = [[0, -1], [1, 0], [0, 1], [-1, 0]];
+
+/**
+ * Do the docks `quiet` lie in a row with the busy one, side by side on one lane? A chain of neighbouring dock cells of the station leads from
+ * the busy dock to the quiet one, and every cell of the chain is a plain piece of lane (at most two linked road neighbours: no side road, no
+ * parallel road to pass a vehicle that stands there). The statistics call such a dock 'detour' when the road is a loop (the quiet dock can be
+ * reached from the other side the long way round, and the golden fixtures pin that word in the KPI report); the planner is told what the
+ * plan shows: they lie in a row (the plan check docks-share-lane, model/validate-ops.js dockLanes). Said only for a plant with trucks (the
+ * report has `ops`): the insights of a legacy plant are pinned bit for bit too (tests/m0.review.test.js 1.1), so there the old word stays.
+ */
+function quietDocksInRow(layout, docks, busy, quiet) {
+  if (!layout || !layout.roads || !Array.isArray(docks)) return false;
+  const key = (d) => `${d.cx},${d.cy}`;
+  const cells = new Map(docks.map((d) => [key(d), d]));
+  const linked = (d) => DOCK_STEPS.map(([dx, dy], dir) => [d.cx + dx, d.cy + dy, dir])
+    .filter(([x, y, dir]) => hasLink(layout, d.cx, d.cy, dir) || hasLink(layout, x, y, (dir + 2) % 4));
+  const reach = new Set([key(busy)]);
+  const queue = [busy];
+  for (let h = 0; h < queue.length; h++) {
+    const next = linked(queue[h]);
+    if (next.length > 2) continue;
+    for (const [x, y] of next) {
+      const k = `${x},${y}`;
+      if (cells.has(k) && !reach.has(k)) { reach.add(k); queue.push(cells.get(k)); }
+    }
+  }
+  return quiet.some((q) => reach.has(key(q)) && linked(q).length <= 2);
+}
+
 /** One dock does nearly all the work while others stand unused and vehicles wait: only said when the report knows why. */
 function docksUnbalanced(ctx) {
   const out = [];
   for (const s of ctx.stations) {
     const skew = s.dockSkew;
     if (!skew || !SKEW_TEXT[skew.reason]) continue;
-    const text = SKEW_TEXT[skew.reason];
+    const text = SKEW_TEXT[skew.reason === 'detour' && ctx.report.ops && quietDocksInRow(ctx.layout, s.docks, skew.busy, skew.quiet) ? 'lane' : skew.reason];
     const wait = s.dockWaitTotal || 0;
     out.push(candidate('docks-unbalanced', s.id, skew.waitPerVisit >= DOCK_WARNING_WAIT_PER_VISIT ? 'warning' : 'info', skew.busy.share,
       `${s.name}: the dock at ${cellText(skew.busy)} takes ${pct(skew.busy.share)} of the visits while ${cellsText(skew.quiet)} ${skew.quiet.length === 1 ? 'is' : 'are'} hardly used.`,
