@@ -13,16 +13,24 @@
 //   help       the page "Trucks and dock doors"
 //   share      the doors survive the share link and the project file
 //   layout     light and dark, 1440 px and 390 px: nothing sticks out of the panel, screenshots in e2e-output/doors-*.png (open them and look)
+//   journey    A1.15, the journey of docs/WAREHOUSE-DESIGN.md 9.2 in one go on the Starter, with the real buttons: the example from the gallery, a click on the plan, what the
+//              plant delivers before, Add dock doors (the rate stays, one warning in Checks), the real Play button, the Doors card with numbers, Undo (the plant byte for byte,
+//              the card gone) and Redo, the Share dialog and the link opened in a fresh browser (the doors are in it), a pasted German Excel timetable that is applied only after
+//              "Use 3 rows", a cold restart on an edit of the day plant, Run one day (three trucks for three rows) and a warm restart of the stationary plant
+//   examples   A1.14 live: Dock lab and Warehouse: first day from the gallery (schema 2, doors, a clean Checks tab, the real Play button, a Doors card per station with numbers), and the row
+//              variant of the Dock lab (the Checks tab says docks-share-lane, Show docks selects Goods in, the first dock takes more than 90 % of the visits, the finding names the lane)
+//   reference  hand-computed figures of a live run (two plants whose trucks can be worked out on paper): 10 trucks arrive in 10,900 s at one per 1,200 s, 9 have left, nobody
+//              waits, the doors are busy about 30 %, the door check says 1 door of 2 at 48 % (3 trucks an hour x 19 minutes); and with one door and a truck every 10 minutes
+//              the gate queue grows by (door time - 600 s) per truck: 19 arrived, 14 docked, 13 left, 5 at the gate, a mean wait of 6.5 x (door time - 600 s), the card and the chip agree
 //
-// What this script can NOT prove without the numbers of a long live run (the integrator extends it): the figures of the Doors card against a hand-computed plant, the
-// look of the canvas while the gate really queues for an hour. It runs against the simulation that is in the tree, so it checks that numbers appear and are finite.
+// The runner refreshes its report a few times a second, not on every step: the sections that read it after a long step wait until it covers the whole run (`fresh`).
 //
 // Run: node tests/e2e/doors.mjs [section]
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { withBrowser, OUT } from './browser.mjs';
 import * as L from '../../js/model/layout.js';
-import { EXAMPLES } from '../../js/model/examples.js';
+import { EXAMPLES, buildDockLab } from '../../js/model/examples.js';
 import { convertToDoors } from '../../js/model/doors.js';
 import { defaultTrucks } from '../../js/model/ops.js';
 
@@ -774,11 +782,11 @@ await withBrowser(async ({ browser, url, errors }) => {
     eq((await state(page)).selection, { kind: 'station', ids: [src.id] }, 'a click on the plan selects Goods receiving');
 
     // the plant before the doors: what it delivers in four simulated hours
-    await step(page, 4 * 3600);
+    await step(page, 8 * 3600);
     await fresh(page);
     const legacy = await page.evaluate(() => { const k = window.__logiplan.runner.kpis(); return { perHour: k.throughput.perHour, ops: k.ops }; });
     eq(legacy.ops, undefined, 'a legacy report has no truck figures');
-    ok(legacy.perHour > 15 && legacy.perHour < 25, `the Starter delivers about 20 pallets an hour (${legacy.perHour.toFixed(1)})`);
+    ok(legacy.perHour > 17 && legacy.perHour < 23, `the Starter delivers about 20 pallets an hour (${legacy.perHour.toFixed(1)})`);
 
     // 2. Add dock doors: one undo step, the toast with the numbers, the pallet rate stays
     await page.locator('[data-role=add-doors]').click();
@@ -799,11 +807,16 @@ await withBrowser(async ({ browser, url, errors }) => {
     await page.evaluate(() => window.__logiplan.ctx.actions.setRightTab('properties'));
 
     // 3. Play: the real play button, at 1200x, until about three simulated hours have gone by, then Pause
-    await page.getByRole('button', { name: 'Run simulation' }).click();
+    await page.locator('.simbar').getByRole('button', { name: 'Run simulation' }).click(); // the bar: the empty Results tab has a second "Run simulation" button
     await page.waitForFunction(() => window.__logiplan.runner.sim && window.__logiplan.runner.sim.time >= 3 * 3600 + 600, null, { timeout: 120000 });
     await page.getByRole('button', { name: 'Pause simulation' }).click();
     await frames(page, 3);
     ok(!(await page.evaluate(() => window.__logiplan.runner.playing)), 'paused');
+    // A1.10 live: the plant keeps its pallet rate. Eight hours in all, then what it delivers an hour is what it delivered before, although the pallets now come in bunches of 24
+    await step(page, 5 * 3600);
+    await fresh(page);
+    const withDoors = await page.evaluate(() => window.__logiplan.runner.kpis().throughput.perHour);
+    ok(Math.abs(withDoors / legacy.perHour - 1) < 0.1, `with doors the Starter delivers ${withDoors.toFixed(1)} pallets an hour against ${legacy.perHour.toFixed(1)} without (within 10 %)`);
 
     // 4. the Doors card shows numbers (the Goods in has served trucks; nothing is NaN)
     await page.evaluate(() => window.__logiplan.ctx.actions.setRightTab('results'));
@@ -855,9 +868,11 @@ await withBrowser(async ({ browser, url, errors }) => {
     await frames(page, 3);
     const schedule = async () => (await stationOf(page, 'source')).ops.trucks.schedule;
     eq(await schedule(), [], 'a new timetable has no rows');
+    ok((await toasts(page)).some((t) => /daily timetable/.test(t)), 'the first timetable says why the simulation will start again (copy 7)');
     await page.locator('[data-role=paste]').click();
     const paste = page.locator('[role=dialog]');
     await paste.locator('[data-role=paste-text]').fill('Ankunft;Paletten\n06.00;24,0\n6:30 Uhr;18\n08:00;\n25:70;4');
+    eq((await toasts(page)).filter((t) => /daily timetable/.test(t)), [], 'the toast does not lie over the preview of the dialog');
     await frames(page, 2);
     ok(/3 rows read, 1 skipped: row 5 “25:70” is not a time\. Nothing is applied until you press Use 3 rows\./.test(await paste.locator('[data-role=paste-summary]').innerText()), 'the preview says what it read');
     eq(await schedule(), [], 'while the preview is open nothing is applied');
@@ -885,6 +900,63 @@ await withBrowser(async ({ browser, url, errors }) => {
     await page.getByRole('button', { name: 'Increase Doors' }).click();
     await page.waitForFunction(() => window.__logiplan.runner.sim && window.__logiplan.runner.sim.layout.stations.find((s) => s.type === 'source').ops.trucks.doors === 4, null, { timeout: 60000 });
     ok(await page.evaluate(() => Boolean(window.__logiplan.runner.warm)), 'a stationary truck plant restarts warm');
+    await context.close();
+  });
+
+  // ---- the two examples of the warehouse module (A1.14, live) ------------------------------------------------------------------------------------------
+
+  await run('examples', async () => {
+    for (const [id, doorsIn, doorsOut] of [['dock-lab', 3, 2], ['warehouse-first-day', 3, 2]]) {
+      const { context, page } = await openExample(id);
+      const layout = await layoutOf(page);
+      eq([layout.stations.filter((s) => s.ops && s.ops.trucks).length, layout.schema], [2, 2], `${id}: Goods in and Goods out have trucks, schema 2`);
+      eq([(await stationOf(page, 'source')).ops.trucks.doors, (await stationOf(page, 'sink')).ops.trucks.doors], [doorsIn, doorsOut], `${id}: doors`);
+      // a fresh example has nothing to check: the tab carries no count
+      await page.evaluate(() => window.__logiplan.ctx.actions.setRightTab('checks'));
+      await page.waitForTimeout(450);
+      eq(await page.locator('#tab-checks').getAttribute('aria-label'), 'Checks', `${id}: no problem in the Checks tab`);
+      // Play with the real button until two simulated hours have gone by (1200x), then read the Results
+      await page.evaluate(() => { window.__logiplan.runner.setSpeed(1200); window.__logiplan.ctx.actions.setRightTab('results'); });
+      await page.locator('.simbar').getByRole('button', { name: 'Run simulation' }).click(); // the bar: the empty Results tab has a second "Run simulation" button
+      await page.waitForFunction(() => window.__logiplan.runner.sim && window.__logiplan.runner.sim.time >= 2 * 3600, null, { timeout: 120000 });
+      await page.getByRole('button', { name: 'Pause simulation' }).click();
+      await fresh(page);
+      await frames(page, 5);
+      const sec = page.locator('details[data-section=doors]');
+      await sec.waitFor({ state: 'visible' });
+      if (!(await sec.evaluate((e) => e.open))) await sec.locator('summary').click();
+      await frames(page, 3);
+      const cards = await sec.evaluate((e) => [...e.querySelectorAll('[data-door-station]')].map((li) => ({ id: li.dataset.doorStation, text: li.innerText })));
+      eq(cards.length, 2, `${id}: a Doors card for Goods in and for Goods out`);
+      ok(cards.every((c) => !/NaN|undefined|Infinity/.test(c.text) && /Trucks served/.test(c.text) && /Door time/.test(c.text) && /Doors busy/.test(c.text)), `${id}: the cards show their numbers: ${cards.map((c) => c.text.replace(/\n/g, ' | ').slice(0, 90)).join(' || ')}`);
+      const served = await page.evaluate(() => Object.values(window.__logiplan.runner.kpis().ops.trucks).map((t) => t.trucks.departed));
+      ok(served[0] >= 2, `${id}: the Goods in has served trucks (${served[0]})`);
+      await shot(page, `example-${id}-light-desktop`);
+      await context.close();
+    }
+    // the row variant (what the notes of the Dock lab lead to): Checks says so, "Show docks" selects the station, the finding names the lane, the first dock takes the visits
+    const row = buildDockLab('row');
+    const { context, page } = await open({ layout: row });
+    await page.evaluate(() => window.__logiplan.ctx.actions.setRightTab('checks'));
+    await page.waitForTimeout(450);
+    const goodsIn = row.stations.find((s) => s.type === 'source');
+    const lane = page.locator(`[data-panel=checks] [data-issue="docks-share-lane:${goodsIn.id}"]`);
+    eq(await lane.count(), 1, 'the row says docks-share-lane in the Checks tab (one button)');
+    await lane.first().click();
+    eq((await state(page)).selection, { kind: 'station', ids: [goodsIn.id] }, 'Show docks selects Goods in');
+    await step(page, 3 * 3600);
+    await fresh(page);
+    const found = await page.evaluate((id) => {
+      const insight = window.__logiplan.runner.insights().find((i) => i.id === `docks-unbalanced:${id}`);
+      const visits = window.__logiplan.runner.sim.logistics.docks.counters(id).map((d) => d.visits);
+      return { detail: insight ? insight.detail : '', share: visits[0] / visits.reduce((a, b) => a + b, 0), docks: visits.length };
+    }, goodsIn.id);
+    eq(found.docks, 7, 'seven docks in the row');
+    ok(found.share > 0.9, `the first dock takes ${(found.share * 100).toFixed(0)} % of the visits`);
+    ok(/the docks lie one behind the other on one lane/.test(found.detail), `the finding names the lane: ${found.detail.slice(0, 120)}`);
+    await page.evaluate(() => { const { store } = window.__logiplan; store.setUi({ overlays: { ...store.getState().ui.overlays, docks: true } }); window.__logiplan.ctx.actions.fitView(); });
+    await frames(page, 4);
+    await shot(page, 'example-dock-lab-row-light-desktop');
     await context.close();
   });
 

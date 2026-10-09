@@ -81,7 +81,7 @@ jobs:
         uses: actions/deploy-pages@v4
 
   heavy:
-    name: Heavy tests ${{ matrix.shard }}/5 (beside the deploy)
+    name: Heavy tests ${{ matrix.shard }}/7 (beside the deploy)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -89,7 +89,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5]
+        shard: [1, 2, 3, 4, 5, 6, 7]
     steps:
       - uses: actions/checkout@v4
         with:

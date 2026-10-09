@@ -230,13 +230,24 @@ function destinationConstrained(ctx, id) {
 }
 
 /**
+ * A Goods out with trucks is a PULL destination (docs/WAREHOUSE-DESIGN.md 6.3.3): the dispatcher fetches pallets only as trucks and staging space have room, so the
+ * pallets of that flow wait at their source for a truck, not for a vehicle. They are left out of the pickup wait like the loads that wait for room at a full
+ * buffer (without this a plant with outbound trucks and a perfectly adequate fleet is called "saturated: loads wait 27 min for a pickup"). Only a plant with
+ * trucks has `report.ops`, so the insights of every legacy plant are exactly what they were.
+ */
+function pullsForTrucks(ctx, id) {
+  const trucks = ctx.report && ctx.report.ops ? ctx.report.ops.trucks : null;
+  return Boolean(trucks && trucks[id] && trucks[id].role === 'out');
+}
+
+/**
  * Mean time loads waited for a pickup by this fleet. Flows that deliver into a saturated workstation or a full
  * buffer are left out: there a load waits for room at the destination (the dispatcher only sends a vehicle when
  * the load fits), and more vehicles do not create room. null when nothing is left to judge.
  */
 function pickupWait(ctx, f) {
   const flows = servedFlows(ctx, f);
-  const open = flows.filter((flow) => !destinationConstrained(ctx, flow.to));
+  const open = flows.filter((flow) => !destinationConstrained(ctx, flow.to) && !pullsForTrucks(ctx, flow.to));
   if (open.length === flows.length) return f.avgPickupWait;
   let trips = 0;
   let total = 0;

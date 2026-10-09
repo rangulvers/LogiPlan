@@ -219,10 +219,10 @@ export function buildDockLab(variant = 'bays') {
   // Compact trucks 2 m long fit a 2 m road cell, like the forklifts of "Two lines + warehouse".
   must(addFleet(layout, 'forklift', { name: 'Forklifts', count: 5, length: 2, home: park.id }), 'forklift fleet');
 
-  must(addLabel(layout, { x: 25.5, y: 1.6, text: 'Three docks, three side roads' }), 'label');
+  must(addLabel(layout, { x: 25.5, y: 1.6, text: 'Receiving docks' }), 'label');
   must(addLabel(layout, { x: 9.5, y: 9.2, text: 'The one street' }), 'label');
   must(addLabel(layout, { x: 23.5, y: 14.5, text: 'Storage bays' }), 'label');
-  must(addLabel(layout, { x: 17, y: 24, text: 'Shipping' }), 'label');
+  must(addLabel(layout, { x: 19.5, y: 24, text: 'Shipping' }), 'label');
 
   if (variant === 'row') {
     for (const x of LAB_BAYS) for (let y = LAB_BAY_TOP_Y; y < LAB_STREET_Y; y++) must(eraseRoadCell(layout, x, y), `side road at ${x},${y}`);

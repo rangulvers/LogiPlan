@@ -17,6 +17,7 @@ It is a **static web app** (vanilla ES modules, no build step, no runtime depend
 | **Build** | Draw two-way and one-way roads, slow zones and walls; place Goods in, Workstations, Storage, Goods out and Parking & charging depots as Lego-style bricks. Roads stay straight on their own while you drag (**Smart**: a wobble of your hand makes no jog, a clear turn makes one corner); hold **Shift** for one perfectly straight line, or choose Straight or Free in the Draw switch. Undo/redo everything, multi-select, move, resize, duplicate. The plan grows with your work: draw or place something beyond its edge (or click a **+** on an edge) and it extends by blocks of 8 cells, up to 320 × 320 cells; Properties > Plant settings also has Extend and Trim to content. |
 | **Describe the work** | Draw **flows** (arrows) between stations: where loads go next, in what share, how many a process consumes per cycle, batch sizes, priorities, optional restriction to one fleet. |
 | **Add vehicles** | Fleets of AGVs, forklifts, tugger trains or custom vehicles: speed, acceleration, length, capacity, load/unload time, batteries and charging, breakdowns, parking behaviour. |
+| **Receive and ship trucks** | Give a Goods in or Goods out **dock doors** with one button: trucks arrive at a rate or on a timetable you paste from Excel, wait at a gate, check in, are unloaded or loaded by your forklifts and AGVs, and leave. Results shows the gate wait, the door time and how busy the doors are, says whether the doors or the forklifts are the limit, and warns when the docks of a station lie in a row and cannot share the work. The examples **Dock lab** and **Warehouse: first day** show both. |
 | **Simulate** | Live, 1× to 1200×. Collision-free traffic with junction blocking, dead-end reversing, deadlock detection, machine and vehicle breakdowns, battery charging. What-if sliders (demand, vehicle speed, process time) apply while it runs. |
 | **Understand** | KPI dashboard (throughput, lead time, work in progress, utilisation, time stuck in traffic), per-station and per-fleet views, a traffic heatmap, a "Jobs" overlay showing where every vehicle is heading, and plain-language findings such as *"Final assembly is the bottleneck: busy 96 % while 8 loads wait in front of it."* |
 | **Decide** | Keep several **variants** (A, B, C…), compare them side by side with repeated runs, sweep a parameter ("how many AGVs do I need?"), and export a self-contained **report** (HTML/print/PDF), a PNG of the layout, or the project as JSON. Share a plant as a link. |
@@ -89,15 +90,15 @@ The browser tests need Playwright, which is deliberately **not** a dependency of
 
 ### Tests and CI
 
-`scripts/test-tiers.mjs` cuts the suite in two. A test file is **fast** unless the script lists it as **heavy**, so a new test file runs in CI without any registration; if it takes more than about 10 s, add it to a heavy shard (`npm run test:timings` shows which files are slow). The heavy tier is split into 5 shards of similar length, one CI job each (the longest file, the engine review, is cut into three by test name). `tests/test-tiers.test.js` fails if a test file would run in no job or in two, if a shard names a file that no longer exists, or if a workflow does not run every shard; to add a shard, add it to `HEAVY_SHARDS` and to the `shard: [...]` list and the job name of `ci.yml` and `pages.yml`, and the test tells you what is still missing.
+`scripts/test-tiers.mjs` cuts the suite in two. A test file is **fast** unless the script lists it as **heavy**, so a new test file runs in CI without any registration; if it takes more than about 10 s, add it to a heavy shard (`npm run test:timings` shows which files are slow). The heavy tier is split into 7 shards of 30 to 80 s, one CI job each (the longest file, the engine review, is cut into three by test name). `tests/test-tiers.test.js` fails if a test file would run in no job or in two, if a shard names a file that no longer exists, or if a workflow does not run every shard; to add a shard, add it to `HEAVY_SHARDS` and to the `shard: [...]` list and the job name of `ci.yml` and `pages.yml`, and the test tells you what is still missing.
 
 | Workflow | Runs | What happens | Takes about |
 |---|---|---|---|
-| `ci.yml` | every pull request | `check`, `fast` and the 5 `heavy` shards run at the same time, then one verdict, **All checks** (make that the required check of `main`) | 1.5 min |
+| `ci.yml` | every pull request | `check`, `fast` and the 7 `heavy` shards run at the same time, then one verdict, **All checks** (make that the required check of `main`) | 2 min |
 | `pages.yml` | every push to `main` | import check + fast tier, then the deploy. The heavy shards run beside it and do not hold it back; if one fails the run turns red | live after 1.5 min |
 | `e2e.yml` | on demand, Mondays | the browser tests above in headless Chromium; screenshots and logs are kept when they fail | 10 min |
 
-The times are estimates from running every job's command here (fast tier 32 s, heavy shards 32 to 60 s, the whole suite 181 s on one 4-core machine that was busy with other work) plus about 15 s per job for starting the runner. Before the split, a pull request waited about 3.5 min for the whole suite, and the deploy ran the whole suite a second time before it published (about 4 to 5 min from merge to live).
+The times are estimates from running every job's command here (fast tier 44 s, heavy shards 28 to 77 s, the whole suite about 4 minutes on one idle 4-core machine) plus about 15 s per job for starting the runner. Before the split, a pull request waited about 3.5 min for the whole suite, and the deploy ran the whole suite a second time before it published (about 4 to 5 min from merge to live).
 
 ```
 index.html, css/        the app shell and design system (tokens, components, layout)
@@ -117,7 +118,8 @@ The simulation modules (`js/model`, `js/sim`) have no DOM dependency and run ide
 * Very large plants (hundreds of stations, 100+ vehicles) run live at 10×–300×; beyond that "speed limited" is shown.
 * The plan is at most 320 × 320 cells. A plant that fills it with 16 000 road cells, 300 stations and 50 vehicles builds in about 0.1 s, but it runs live at only 5×–10×, and checking it after every edit (the Checks tab) takes seconds; the examples and plants of ordinary size are not affected (Two lines on a 320 × 320 baseplate runs at 60 fps at 600×).
 * Verified in Chromium; Firefox and Safari should work (no browser-specific APIs without fallbacks) but have not been tested yet.
-* Vehicles are point-to-point on a grid road network; shift calendars, pedestrians and traffic lights are not modelled.
+* Vehicles are point-to-point on a grid road network; shift calendars, pedestrians and traffic lights are not modelled (a clock exists only for truck timetables).
+* Trucks are events at a door, not vehicles on the road, and a door is a count, not a place on the wall. The door check assumes 90 s per pallet until a run has measured the door time, which your vehicles set; the defaults (24 pallets per truck, 5 minutes of check-in and check-out) are typical values, labelled indicative. Shifts and breaks, rack geometry and load types are not modelled yet (docs/WAREHOUSE-DESIGN.md).
 
 ## License
 

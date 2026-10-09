@@ -124,7 +124,7 @@ export function doorFormula(check) {
 export function doorCheckNote(check) {
   if (!check || check.empty) return '';
   return check.basis === 'measured'
-    ? 'This door time was measured in the last run, and your vehicles set it: if it is long, look at the forklifts and AGVs before adding doors.'
+    ? 'Your vehicles set this door time: if it is long, look at the forklifts and AGVs before adding doors.'
     : `The ${check.tPallet} s per pallet is an assumption. In a run your vehicles decide how long a truck stays at its door: few forklifts at one dock need much longer, many forklifts less. Run the plant to see the measured time.`;
 }
 
@@ -398,7 +398,7 @@ export function trucksSections(ctx, env) {
 
     const timetable = createTimetable({
       edit: (schedule) => edit('truck timetable', { schedule }, 'schedule'),
-      openPaste: () => openTimetableDialog(ctx, { stationId: id }),
+      openPaste: () => { if (coldToast) coldToast.close(); coldToast = null; openTimetableDialog(ctx, { stationId: id }); }, // the toast of the cold restart would lie over the preview at 390 px
     });
     const jitter = numberField({
       label: 'Trucks arrive up to', unit: 'min early or late', inline: true, controlW: '160px', min: 0, max: TRUCK_RANGES.jitter[1] / 60, value: toMinutes(shownTrucks.jitter),
@@ -514,6 +514,7 @@ export function trucksSections(ctx, env) {
 
   const root = h('div', { 'data-role': 'trucks-section', 'data-station': id }, off);
   let controls = null;
+  let coldToast = null; // the toast of the first timetable (copy 7), so that the paste dialog can take it away
   let wasOn = Boolean(seed);
 
   /** A clock that is still at its default start and no timetable needs any more goes with the last timetable (the plant is stationary again). */
@@ -526,7 +527,7 @@ export function trucksSections(ctx, env) {
     const before = store.getState().layout;
     const label2 = next === 'schedule' ? `Use a timetable for ${quoted(current().name)}` : `Generate trucks from a rate for ${quoted(current().name)}`;
     if (!store.commit(label2, (d) => { updateStation(d, id, { ops: { trucks: { mode: next } } }); if (next === 'rate') tidyClock(d); })) return;
-    if (next === 'schedule' && !usesTimetable(before) && shouldShowColdRestartToast()) ctx.toast(coldRestartText(store.getState().layout), { kind: 'info', ms: 9000 });
+    if (next === 'schedule' && !usesTimetable(before) && shouldShowColdRestartToast()) coldToast = ctx.toast(coldRestartText(store.getState().layout), { kind: 'info', ms: 9000 });
   }
 
   /** The legacy fields of the Deliveries section while trucks are on: relabel the output buffer, hide what the trucks replace, show the note. */

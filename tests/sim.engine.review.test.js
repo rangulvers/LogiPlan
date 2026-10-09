@@ -219,7 +219,7 @@ test('ENG-DET-1: the same layout and seed give a bit-identical state - in a seco
     `import { EXAMPLES } from ${url('../js/model/examples.js')};`,
     `import { fingerprint } from ${url('./helpers/engine-review-gen.js')};`,
     `import crypto from 'node:crypto';`,
-    `for (const e of EXAMPLES) { const sim = new Simulation(e.build(), { seed: 7 }); sim.advance(${hours * 3600}); console.log(e.id + ' ' + crypto.createHash('sha1').update(fingerprint(sim)).digest('hex').slice(0, 16)); }`,
+    `for (const e of EXAMPLES.filter((x) => ${JSON.stringify(EXAMPLES.map((x) => x.id))}.includes(x.id))) { const sim = new Simulation(e.build(), { seed: 7 }); sim.advance(${hours * 3600}); console.log(e.id + ' ' + crypto.createHash('sha1').update(fingerprint(sim)).digest('hex').slice(0, 16)); }`,
   ].join('\n');
   for (const flags of [[], ['--jitless'], ['--no-opt']]) {
     const child = spawnSync(process.execPath, [...flags, '--input-type=module', '-e', script], { encoding: 'utf8' });

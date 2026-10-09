@@ -93,7 +93,7 @@ export function doorModel(station, trucks, entry, layout, report = null) {
   const util = fin(e.doorUtilization);
   const metrics = [
     { key: 'served', label: 'Trucks served', value: whole(departed), sub: servedNote(t, arrived, departed), tone: 'neutral', hint: 'Trucks that finished at a door and left, since the warm-up ended.' },
-    { key: 'gateWait', label: 'Gate wait', value: dur(wait.mean), sub: fin(wait.p90) !== null && wait.p90 >= 1 ? `9 in 10 under ${dur(wait.p90)}` : '', tone: waitTone(wait.mean), hint: 'How long a truck waited at the gate for a free door.' },
+    { key: 'gateWait', label: 'Gate wait', value: fin(wait.mean) !== null && wait.mean < 1 ? '0 s' : dur(wait.mean), sub: fin(wait.p90) !== null && wait.p90 >= 1 ? `9 in 10 under ${dur(wait.p90)}` : '', tone: waitTone(wait.mean), hint: 'How long a truck waited at the gate for a free door.' },
     { key: 'doorTime', label: 'Door time', value: dur(doorTime.mean), sub: fin(doorTime.p90) !== null ? `9 in 10 under ${dur(doorTime.p90)}` : '', tone: 'neutral', hint: 'How long a truck held a door: check-in, the work of the vehicles, check-out. It includes waiting for a free forklift, so more forklifts shorten it.' },
     { key: 'queue', label: 'Gate queue now', value: whole(queue.now), sub: fin(queue.max) !== null ? `most ${whole(queue.max)}` : '', tone: 'neutral', hint: 'Trucks waiting at the gate now, and the most at any moment.' },
   ];

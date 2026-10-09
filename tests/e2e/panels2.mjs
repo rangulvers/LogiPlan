@@ -661,25 +661,25 @@ await withBrowser(async ({ page, context, url, errors }) => {
     eq(await dialog().locator('.modal__title').innerText(), 'Welcome to LogiPlan');
     const text = await dialog().innerText();
     ok(text.includes('Continue where you left off') && text.includes('Two lines + warehouse'), 'a project with work offers to continue');
-    eq(await dialog().locator('[data-example]').count(), 3, 'three examples');
+    eq(await dialog().locator('[data-example]').count(), 5, 'five examples: the three legacy ones and the two of the warehouse module');
     ok(text.includes('Starter: dock → assembly → shipping'), 'example names');
     ok(text.includes('4 stations · 2 flows · 2 vehicles'), 'facts line');
-    await page.waitForFunction(() => document.querySelectorAll('[role="dialog"] [data-example] img').length === 3, null, { timeout: 15000 });
+    await page.waitForFunction(() => document.querySelectorAll('[role="dialog"] [data-example] img').length === 5, null, { timeout: 15000 });
     const thumbs = await dialog().locator('[data-example] img').evaluateAll((imgs) => imgs.map((i) => ({ ok: i.complete && i.naturalWidth > 100, src: i.src.slice(0, 22), w: i.naturalWidth, h: i.naturalHeight })));
     ok(thumbs.every((t) => t.ok && t.src === 'data:image/png;base64,'), `previews are real PNG images: ${JSON.stringify(thumbs)}`);
-    eq(await page.evaluate(() => window.__toDataURLCalls), 3, 'one throw-away render per example');
+    eq(await page.evaluate(() => window.__toDataURLCalls), 5, 'one throw-away render per example');
     await closeAll();
     await page.locator('#open-welcome').click();
     await dialog().waitFor();
-    await page.waitForFunction(() => document.querySelectorAll('[role="dialog"] [data-example] img').length === 3);
-    eq(await page.evaluate(() => window.__toDataURLCalls), 3, 'previews are cached: no new render');
+    await page.waitForFunction(() => document.querySelectorAll('[role="dialog"] [data-example] img').length === 5);
+    eq(await page.evaluate(() => window.__toDataURLCalls), 5, 'previews are cached: no new render');
     await closeAll();
 
     // dark theme gets its own previews
     await page.evaluate(() => { document.documentElement.dataset.theme = 'dark'; });
     await page.locator('#open-welcome').click();
-    await page.waitForFunction(() => document.querySelectorAll('[role="dialog"] [data-example] img').length === 3);
-    eq(await page.evaluate(() => window.__toDataURLCalls), 6, 'a new theme draws new previews');
+    await page.waitForFunction(() => document.querySelectorAll('[role="dialog"] [data-example] img').length === 5);
+    eq(await page.evaluate(() => window.__toDataURLCalls), 10, 'a new theme draws new previews');
     await closeAll();
     await page.evaluate(() => { delete document.documentElement.dataset.theme; });
 
@@ -770,7 +770,7 @@ await withBrowser(async ({ page, context, url, errors }) => {
     await dialog().waitFor();
     await page.waitForTimeout(400);
     eq(await dialog().locator('[data-example] img').count(), 0, 'no pictures when drawing fails');
-    eq(await dialog().locator('[data-example] svg.icon--grid').count(), 3, 'a placeholder icon per example');
+    eq(await dialog().locator('[data-example] svg.icon--grid').count(), 5, 'a placeholder icon per example');
     await dialog().locator('[data-example="starter"]').click();
     await noDialog('and the examples still open');
     eq((await state()).project, 'Starter plant');
@@ -1044,7 +1044,7 @@ await withBrowser(async ({ page, context, url, errors }) => {
     clean(await audit('[data-panel=flows]'), 'flows panel');
     for (const name of ['welcome', 'help', 'share', 'importExport']) {
       await page.locator(`#open-${name}`).click();
-      if (name === 'welcome') await page.waitForFunction(() => document.querySelectorAll('[role="dialog"] [data-example] img').length === 3);
+      if (name === 'welcome') await page.waitForFunction(() => document.querySelectorAll('[role="dialog"] [data-example] img').length === 5);
       if (name === 'share') await page.getByLabel('Link to this project').waitFor();
       if (name === 'help') {
         for (const label of ['Tools & shortcuts', 'How the simulation works', 'Tips']) {
@@ -1105,7 +1105,7 @@ await withBrowser(async ({ page, context, url, errors }) => {
         for (const name of ['welcome', 'help', 'share', 'importExport']) {
           await page.evaluate(() => window.harness.showTab('fleet'));
           await page.locator(`#open-${name}`).evaluate((b) => b.click());
-          if (name === 'welcome') await page.waitForFunction(() => document.querySelectorAll('[role="dialog"] [data-example] img').length === 3, null, { timeout: 15000 });
+          if (name === 'welcome') await page.waitForFunction(() => document.querySelectorAll('[role="dialog"] [data-example] img').length === 5, null, { timeout: 15000 });
           if (name === 'share') await page.getByLabel('Link to this project').waitFor();
           await page.waitForTimeout(250);
           await shotPage(`dialog-${name}`, theme, size);

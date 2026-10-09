@@ -140,6 +140,8 @@ test('Doors card: the figures of a report, and a report that is partly empty', (
   assert.equal(early.metrics.find((m) => m.key === 'gateWait').sub, '9 in 10 under 40 min');
   const calm = doorModel(src, trucksOf(src), entry({ gateWait: { mean: 0, p90: 0.1, max: 0.2 } }), layout, null);
   assert.equal(calm.metrics.find((m) => m.key === 'gateWait').sub, '', 'a p90 below a second is a tick, not a wait');
+  assert.equal(calm.metrics.find((m) => m.key === 'gateWait').value, '0 s');
+  assert.equal(doorModel(src, trucksOf(src), entry({ gateWait: { mean: 0.1, p90: 0.1, max: 0.1 } }), layout, null).metrics.find((m) => m.key === 'gateWait').value, '0 s', 'one tick at the gate is no wait');
   assert.equal(get(a, 'gateWait').value, '23 min');
   assert.equal(get(a, 'gateWait').sub, '9 in 10 under 40 min');
   assert.equal(get(a, 'gateWait').tone, 'warn', 'amber from 15 minutes');
@@ -286,7 +288,7 @@ test('the line under the door check says that the vehicles set the door time: an
   const trucks = { ...defaultTrucks(), doors: 3, interArrival: { kind: 'const', mean: 900, spread: 0 }, pallets: { kind: 'const', mean: 24, spread: 0 } };
   const before = doorCheck(trucks, {});
   assert.match(doorCheckNote(before), /^The 90 s per pallet is an assumption\. In a run your vehicles decide how long a truck stays at its door/);
-  assert.match(doorCheckNote(doorCheck(trucks, { measuredDoorSeconds: 2520 })), /measured in the last run, and your vehicles set it: if it is long, look at the forklifts and AGVs before adding doors\.$/);
+  assert.match(doorCheckNote(doorCheck(trucks, { measuredDoorSeconds: 2520 })), /^Your vehicles set this door time: if it is long, look at the forklifts and AGVs before adding doors\.$/);
   assert.equal(doorCheckNote(doorCheck({ ...trucks, mode: 'schedule', schedule: [] }, {})), '', 'an empty timetable has no check');
   assert.equal(doorCheckNote(null), '');
 });
