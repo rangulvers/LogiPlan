@@ -176,7 +176,7 @@ function checkStations(lg, fail) {
       const inb = st.inbound.get(link.flow.id);
       if (link.queue.length + inb > st.params.inCap) fail(`${st.id} inQ ${link.flow.id}: ${link.queue.length} + inbound ${inb} > inCap ${st.params.inCap}`);
     }
-    if (st.type === 'storage' && st.outCount + st.inboundTotal > st.params.capacity) fail(`${st.id} storage holds ${st.outCount} + inbound ${st.inboundTotal} > capacity ${st.params.capacity}`);
+    if (st.type === 'storage' && st.outCount + st.inboundTotal > st.capacity) fail(`${st.id} storage holds ${st.outCount} + inbound ${st.inboundTotal} > capacity ${st.capacity}`);
     let total = 0;
     for (const [flowId, n] of st.inbound) {
       total += n;

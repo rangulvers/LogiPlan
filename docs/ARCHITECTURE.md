@@ -88,7 +88,7 @@ An optional feature (trucks and dock doors, shifts, racks, load types …) is ad
 * **KPIs.** `Stats` has five call sites for an extension: `_build` creates `stats.ext = logistics.ext.stats(stats)` (once, with typed arrays) when `logistics.ext` exists, and `reset`, `sample`, `onEvent` and `report` call `ext.reset()`, `ext.sample(dt)`, `ext.onEvent(name, payload)` and
   `ext.report(report)`, which adds `report.ops`. Without an extension that is one pointer test per call and the report has no `ops` key.
 * **Checks and findings.** `validateLayout` calls `validateOps(ctx, add)` (`model/validate-ops.js`, list `OPS_CHECKS`) after its own checks; `generateInsights` runs `EXTENSION_RULES` (insights.js) after its own rules. Both lists are empty until M1.
-* **Test helpers.** `tests/helpers/logistics-invariants.js` counts the loads that trucks hold (`st.trucks.gate[].pending`, `docked[].pending`, `staged`) as live and present; `tests/helpers/golden.js` and `tests/fixtures/golden/` hold the safety net
+* **Test helpers.** `tests/helpers/logistics-invariants.js` and the auditor of `tests/helpers/engine-review-gen.js` count the loads that trucks hold (`st.trucks.gate[].pending`, `docked[].pending`, `staged`) as live and present, and both ask `st.capacity` for the capacity of a storage; `tests/helpers/golden.js` and `tests/fixtures/golden/` hold the safety net
   (`node scripts/rebaseline-golden.mjs` re-records it, and a pull request that does so must say why).
 
 ---
