@@ -4,17 +4,20 @@
 //
 //   chip       a development build (the repository as it is): the chip is a real <button> in the status line with the text "v0.6.0 dev", an aria-label and a
 //              tooltip, and a development build never asks for version.json
-//   dialog     opened by mouse and by keyboard (Enter, Space): the facts, Tab stays inside, Escape and Close close it, the keyboard goes back to the chip
+//   dialog     opened by mouse and by keyboard (Enter, Space): the facts, Tab stays inside, Escape and Close close it, the keyboard goes back to the chip; a double
+//              click on the chip and an Enter held down do not close what they opened
 //   changes    the list is CHANGELOG.md of the repository: every entry in order, the newest release (and the unreleased changes) open, the others closed, a
 //              closed one opens with the keyboard; the dates are the written ones
-//   copy       "Copy version info" puts the line on the clipboard; when the browser refuses, the line is selected and the toast says so
+//   copy       "Copy version info" puts the line on the clipboard and says so under the line (a polite live region, no toast over the dialog); when the browser
+//              refuses, the line is selected and the note says so
 //   hostile    a CHANGELOG.md full of markup is shown as text and runs nothing; a missing or unreachable list says so and "Try again" works
-//   live       the SITE as scripts/build-site.mjs assembles it (GITHUB_SHA set), served under a host that is not localhost: the chip says "v0.6.0", the tooltip the
+//   live       the SITE as scripts/build-site.mjs assembles it (GITHUB_SHA set), served under a host that is not localhost: the chip says "v0.6.0 a45ce49", the tooltip the
 //              build and its day, the dialog the commit link, the build time in the viewer's zone and in UTC, "Live site"; the copy fallback of an insecure page
 //   update     a version.json with a newer commit: the chip gets its Update mark and the dialog its Reload button while a simulation runs, nothing reloads and
 //              nothing pops up; "Reload now" reloads and the plant is still there; a reload that could not save the plant is refused; junk, 404, the same commit and
 //              an older version leave no trace
-//   menu       the narrow layout reaches the dialog from the More menu, a phone held sideways (status line hidden) from the Help window
+//   menu       the narrow layout and every window lower than 521 px (status line hidden: a phone held sideways, 200 % zoom) reach the dialog from the More menu,
+//              and from the Help window
 //   report     the footer of the HTML report names the version; the project file and the share link do not contain it
 //   layout     light and dark, 1440 and 390 px: the chip is inside the window, big enough, readable (contrast), has a focus ring; nothing scrolls sideways;
 //              screenshots in e2e-output/about-*.png (open them and look)
@@ -121,6 +124,8 @@ try {
   };
   const versionRequests = () => requests.filter((u) => /\/version\.json/.test(u));
   const chipOf = (page) => page.locator('.statusbar .versionchip');
+  /** What the eye reads on the chip, in one line. */
+  const chipText = async (chip) => (await chip.innerText()).replace(/\s+/g, ' ').trim();
   const dialogOf = (page) => page.locator('[role=dialog][aria-label], [role=dialog]').first();
 
   /** The facts of the open dialog as { Version: '0.6.0', ... }. */
@@ -136,8 +141,8 @@ try {
     eq(await chip.count(), 1, 'one chip');
     eq(await chip.evaluate((el) => el.tagName), 'BUTTON', 'a real button');
     eq(await chip.getAttribute('type'), 'button');
-    eq((await chip.innerText()).trim(), `v${VERSION} dev`, 'the text of a development build');
-    eq(await chip.getAttribute('aria-label'), `LogiPlan version ${VERSION}, development build. Show version information and what is new`);
+    eq(await chipText(chip), `v${VERSION} dev`, 'the text of a development build');
+    eq(await chip.getAttribute('aria-label'), `v${VERSION} dev. Development build. Show version information and what is new`, 'the spoken name starts with the visible text');
     eq(await chip.getAttribute('data-tip'), 'Development build, not deployed – click for what is new', 'the tooltip');
     eq(await chip.getAttribute('aria-haspopup'), 'dialog');
     eq(await chip.evaluate((el) => el.parentElement.className.split(' ').includes('statusbar')), true, 'it sits in the status line');
@@ -222,9 +227,26 @@ try {
     await page.keyboard.press('Space');
     eq(await page.evaluate(() => window.__logiplan.runner.playing), false, 'Space in the dialog does not play the simulation');
     await page.keyboard.press('Escape');
-    // a click on the backdrop closes it, a click inside does not
+    // a click on the backdrop closes it, a click inside does not; the second click of a double click on the chip lands on the backdrop and does NOT close what the
+    // first one opened (the dialog ignores the backdrop for its first 400 ms), and a held Enter does not press the Close button that has the focus
+    await chip.dblclick();
+    await dialog.waitFor();
+    await page.waitForTimeout(150);
+    eq(await dialog.count(), 1, 'a double click on the chip leaves the dialog open');
+    await page.keyboard.press('Escape');
+    await dialog.waitFor({ state: 'detached' });
+    await chip.focus();
+    await page.keyboard.down('Enter'); // opens it ...
+    await dialog.waitFor();
+    for (let i = 0; i < 4; i++) await page.keyboard.down('Enter'); // ... and the key stays down: auto-repeat events (repeat = true) arrive
+    await page.keyboard.up('Enter');
+    await page.waitForTimeout(100);
+    eq(await dialog.count(), 1, 'the repeats of the Enter that opened the dialog do not press Close');
+    await page.keyboard.press('Enter'); // a fresh press does
+    await dialog.waitFor({ state: 'detached' });
     await chip.click();
     await dialog.waitFor();
+    await page.waitForTimeout(450);
     await page.locator('[role=dialog] .about__name').click();
     eq(await dialog.count(), 1, 'a click inside keeps it open');
     await page.mouse.click(5, 5);
@@ -248,7 +270,8 @@ try {
         expanded: toggle.getAttribute('aria-expanded'),
         hidden: body.hidden,
         controls: toggle.getAttribute('aria-controls') === body.id,
-        sections: [...body.querySelectorAll('h4')].map((h) => h.textContent),
+        sections: [...body.querySelectorAll('h5')].map((h) => h.textContent),
+        headed: toggle.parentElement.localName === 'h4',
         items: body.querySelectorAll('li').length,
       };
     }));
@@ -263,6 +286,7 @@ try {
       eq(s.expanded, String(open.has(i)), `entry ${i}: expanded only when it is the unreleased changes or the newest release`);
       eq(s.hidden, !open.has(i), `entry ${i}: a closed entry is hidden`);
       ok(s.controls, `entry ${i}: the button names the body it opens`);
+      ok(s.headed, `entry ${i}: the version button sits in a heading (a screen reader's list of headings names the versions)`);
     });
     const newestRelease = entries.findIndex((e) => !e.unreleased);
     ok(open.has(newestRelease) && [...open].every((i) => i <= newestRelease), 'the newest release is open and nothing older is');
@@ -294,9 +318,11 @@ try {
     await page.locator('[role=dialog]').waitFor();
     const line = await page.locator('[data-role=about-line]').innerText();
     await page.locator('[role=dialog] button', { hasText: 'Copy version info' }).click();
-    await page.locator('.toast', { hasText: 'The version information was copied' }).waitFor();
+    await page.locator('[data-role=about-copied]', { hasText: 'Copied.' }).waitFor();
     eq(await page.evaluate(() => navigator.clipboard.readText()), line, 'the clipboard holds exactly the line that is shown');
-    eq(await page.locator('[data-role=about-copied]').innerText(), 'Copied.');
+    eq(await page.locator('[data-role=about-copied]').innerText(), 'Copied. Paste it into your bug report.');
+    eq(await page.locator('[data-role=about-copied]').getAttribute('role'), 'status', 'a polite live region: announced, but no toast that would cover the Close button');
+    eq(await page.locator('.toast').count(), 0, 'no toast');
     await snap(page, 'copy-done');
 
     // the browser refuses: the clipboard API rejects and the old copy command says no
@@ -305,10 +331,10 @@ try {
       document.execCommand = () => false;
     });
     await page.locator('[role=dialog] button', { hasText: 'Copy version info' }).click();
-    await page.locator('.toast', { hasText: 'did not allow copying' }).waitFor();
+    await page.locator('[data-role=about-copied]', { hasText: 'Copying is blocked' }).waitFor();
     eq(await page.evaluate(() => window.getSelection().toString().trim()), line, 'the line is selected, ready for Ctrl+C');
-    ok(/Copying is blocked/.test(await page.locator('[data-role=about-copied]').innerText()), 'the dialog says so too');
-    ok(!/copied\./i.test(await page.locator('.toast').last().innerText()), 'no false "copied"');
+    ok(!/copied\./i.test(await page.locator('[data-role=about-copied]').innerText()), 'no false "copied"');
+    eq(await page.locator('.toast').count(), 0, 'and still no toast');
     noErrors('copy');
     await context.close();
   }
@@ -350,12 +376,16 @@ try {
     // offline, then back
     await context.unroute('**/CHANGELOG.md');
     await context.route('**/CHANGELOG.md', (route) => route.abort());
-    await page.locator('[role=dialog] button', { hasText: 'Try again' }).click();
+    await page.locator('[role=dialog] button', { hasText: 'Try again' }).focus();
+    await page.keyboard.press('Enter');
     await page.locator('[role=dialog] .callout--warn', { hasText: 'offline' }).waitFor();
+    ok(await focusInside(page), 'after Try again (still offline) the keyboard is on the new Try again button, not on the page behind the dialog');
+    eq(await page.evaluate(() => document.activeElement.textContent.trim()), 'Try again');
     await context.unroute('**/CHANGELOG.md');
-    await page.locator('[role=dialog] button', { hasText: 'Try again' }).click();
+    await page.keyboard.press('Enter');
     await page.locator('[role=dialog] .about__entry').first().waitFor();
     eq(await page.locator('[role=dialog] .about__entry').count(), entries.length, 'Try again worked');
+    ok(await focusInside(page) && await page.evaluate(() => document.activeElement.classList.contains('about__toggle')), 'and the keyboard went to the first version of the list');
     // junk is not a changelog
     await page.keyboard.press('Escape');
     await context.route('**/CHANGELOG.md', (route) => route.fulfill({ status: 200, body: '<html>a login page</html>' }));
@@ -371,9 +401,9 @@ try {
   if (wants('live')) {
     const { context, page } = await openApp(LIVE);
     const chip = chipOf(page);
-    eq((await chip.innerText()).trim(), `v${VERSION}`, 'a deployed build has no suffix');
+    eq(await chipText(chip), `v${VERSION} a45ce49`, 'a deployed build: the number and the id of the build (it changes with every deploy, the number only with a release)');
     eq(await chip.getAttribute('data-tip'), 'Build a45ce49, 9 Oct 2026 – click for what is new', 'the tooltip: the build and its day in the viewer\'s zone');
-    eq(await chip.getAttribute('aria-label'), `LogiPlan version ${VERSION}. Show version information and what is new`);
+    eq(await chip.getAttribute('aria-label'), `v${VERSION} a45ce49. Show version information and what is new`, 'the spoken name starts with the visible text');
     // the generated build-info.js and the site's version.json say the same
     const [info, served] = await page.evaluate(async () => [{ ...(await import('./js/build-info.js')).BUILD }, await (await fetch('version.json')).json()]);
     eq(info, { version: VERSION, commit: SHA, shortCommit: 'a45ce49', builtAt: '2026-10-09T15:08:00Z', channel: 'live', repository: 'https://github.com/rangulvers/LogiPlan' });
@@ -401,7 +431,7 @@ try {
       document.addEventListener('copy', () => { const a = document.activeElement; window.__copied = a && 'value' in a ? a.value.slice(a.selectionStart, a.selectionEnd) : null; });
     });
     await page.locator('[role=dialog] button', { hasText: 'Copy version info' }).click();
-    await page.locator('.toast', { hasText: 'The version information was copied' }).waitFor();
+    await page.locator('[data-role=about-copied]', { hasText: 'Copied.' }).waitFor();
     eq(await page.evaluate(() => window.__copied), await page.locator('[data-role=about-line]').innerText(), 'the fallback copied the line');
     ok(await page.evaluate(() => document.activeElement.closest('[role=dialog]') !== null), 'the temporary text field is gone and the keyboard is back in the dialog');
     eq(await page.locator('[role=dialog] textarea').count(), 0, 'no leftover field');
@@ -431,10 +461,11 @@ try {
       const timeBefore = await page.evaluate(() => window.__logiplan.runner.time);
       const chip = chipOf(page);
       await page.waitForFunction(() => document.querySelector('.versionchip')?.classList.contains('is-update'));
-      eq((await chip.innerText()).replace(/\s+/g, ' ').trim(), `v${VERSION} Update`, 'the chip: the version and the word Update');
+      eq(await chipText(chip), `v${VERSION} a45ce49 Update`, 'the chip: the version, the build and the word Update');
       eq(await page.locator('.versionchip__dot').isVisible(), true, 'and a dot');
-      ok((await chip.getAttribute('data-tip')).startsWith('Update available (v0.7.0) – click to see what is new and to reload. Build a45ce49'), await chip.getAttribute('data-tip'));
-      eq(await chip.getAttribute('aria-label'), `LogiPlan version ${VERSION}. An update is available. Show version information and what is new`);
+      eq(await chip.getAttribute('data-tip'), 'Update available (v0.7.0) – click for details and to reload. Your build: a45ce49, 9 Oct 2026');
+      eq(await chip.getAttribute('aria-label'), `v${VERSION} a45ce49 Update. An update is available. Show version information and what is new`);
+      eq(await page.evaluate(() => document.documentElement.hasAttribute('data-update')), true, 'the root is marked (the More button of a window without a status line shows a dot)');
       ok(await page.evaluate(() => window.__logiplan.runner.playing), 'the simulation still runs');
       ok(await page.evaluate((t) => window.__logiplan.runner.time > t, timeBefore), 'and it kept going');
       eq(await page.locator('[role=dialog]').count(), 0, 'no dialog came up');
@@ -446,6 +477,7 @@ try {
       await page.locator('[role=dialog] .callout--info').waitFor();
       const box = await page.locator('[role=dialog] .callout--info').innerText();
       ok(/A newer version is available/.test(box) && /Version 0\.7\.0 \(build b3c4d5e\) is on the site; this page is version 0\.6\.0/.test(box) && /Ctrl\+Shift\+R/.test(box), box);
+      ok(/running simulation, its results and the undo history start again/.test(box), `the box says what a reload does not keep: ${box}`);
       await page.locator('[role=dialog] .about__entry').first().waitFor(); // the list loads after the dialog opens
       eq(await page.locator('[role=dialog] .about__entry .chip').allInnerTexts(), ['Your version'], 'the list of changes marks the version that runs');
       await snap(page, 'dialog-update-desktop-light');
@@ -572,10 +604,17 @@ try {
     noErrors('menu');
     await context.close();
 
-    // a phone held sideways is wide enough for the desktop top bar but hides the status line (and the chip in it): Help leads to the dialog too
+    // a phone held sideways (and any window lower than 521 px: 200 % zoom on a Full HD monitor, a laptop at 125 %) hides the status line and the chip in it:
+    // the More menu is there at every width then, and Help leads to the dialog too
     const sideways = await openApp(DEV, { viewport: { width: 915, height: 412 } });
     eq(await chipOf(sideways.page).isVisible(), false, 'the status line is hidden on a phone held sideways');
-    eq(await sideways.page.locator('[aria-label="More actions"]').isVisible(), false, 'and there is no More menu');
+    eq(await sideways.page.locator('[aria-label="More actions"]').isVisible(), true, 'and the More menu takes over');
+    await sideways.page.locator('[aria-label="More actions"]').click();
+    await sideways.page.locator('.menu__item', { hasText: 'About and what is new' }).click();
+    await sideways.page.locator('[role=dialog] .about__entry').first().waitFor();
+    eq(await sideways.page.locator('[role=dialog] .modal__title').innerText(), 'About LogiPlan', 'About and what is new is in the More menu');
+    await sideways.page.keyboard.press('Escape');
+    await sideways.page.locator('[role=dialog]').waitFor({ state: 'detached' });
     await sideways.page.keyboard.press('?');
     await sideways.page.locator('[role=dialog] .modal__title', { hasText: 'Help' }).waitFor();
     await sideways.page.locator('[role=dialog] [data-role=help-about]').click();
@@ -588,7 +627,7 @@ try {
     await snap(sideways.page, 'dialog-sideways-phone');
     await sideways.page.keyboard.press('Escape');
     await sideways.page.locator('[role=dialog]').waitFor({ state: 'detached' });
-    ok(await sideways.page.evaluate(() => document.activeElement && document.activeElement.textContent.includes('Help')), 'the keyboard is back on the Help button');
+    ok(await sideways.page.evaluate(() => document.activeElement && document.activeElement.closest('.topbar') !== null), 'the keyboard is back on the button in the top bar that it came from (More here)');
     noErrors('sideways');
     await sideways.context.close();
   }
@@ -632,7 +671,7 @@ try {
         const chip = chipOf(page);
         const box = await chip.boundingBox();
         ok(box && box.x >= 0 && box.y >= 0 && box.x + box.width <= viewport.width && box.y + box.height <= viewport.height, `${kind} ${name}: the chip is inside the window ${JSON.stringify(box)}`);
-        ok(box.height >= 24 && box.width >= 44, `${kind} ${name}: big enough to hit (${box.width} x ${box.height})`);
+        ok(box.height >= 24 && box.width >= 40, `${kind} ${name}: big enough to hit (${box.width} x ${box.height}; on a touch screen 40 high, see compat in about-review)`);
         ok(box.y > viewport.height - 70, `${kind} ${name}: at the bottom, in the status line`);
         const ratio = await contrast(page, '.versionchip');
         ok(ratio >= 4.5, `${kind} ${name}: readable, contrast ${ratio.toFixed(2)}`);

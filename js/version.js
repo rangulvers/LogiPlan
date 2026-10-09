@@ -7,16 +7,17 @@
 //   isNewer(candidate, current)      -> boolean          false when the candidate is no version
 //   formatBuildDate(iso, { timeZone }) -> { day, local, utc, zone, iso } | null   "9 Oct 2026", "9 Oct 2026, 17:08 CEST", "2026-10-09 15:08 UTC"
 //   parseChangelog(text)             -> [{ version, date, unreleased, sections: [{ title, items: [text] }] }]   never throws
-//   updateVerdict(build, fetched)    -> { available, reason, remote }     is the version.json that was fetched a newer deploy than this build?
-//   versionLabel / chipTooltip / bugReportLine / whereItRuns / commitUrl   the texts of the chip, the dialog and the bug report line
+//   updateVerdict(build, fetched)    -> { available, reason, remote }     is the version.json that was fetched a newer deploy than this build? (commit, version, and
+//                                       for the same version number the build time: an older deploy is no update)
+//   versionLabel / chipText / chipTooltip / chipAriaLabel / updateNotice / bugReportLine / whereItRuns / hostName / commitUrl   the texts of the chip, the dialog and the bug report line
 //
 // Everything that comes from outside (a fetched version.json, the text of CHANGELOG.md) is treated as hostile: types are checked, lengths are
 // capped, only own properties are read, and nothing from it is ever used as markup (the callers use textContent).
 
 /** The longest version text, commit or date text that is looked at; longer is junk. */
 export const MAX_TEXT = 64;
-/** The most entries, sections per entry, items per section and characters per item parseChangelog keeps. */
-export const CHANGELOG_LIMITS = Object.freeze({ chars: 400_000, entries: 300, sections: 30, items: 200, item: 700, title: 60 });
+/** The most characters, entries, sections per entry, items per section, characters per line, per item and per title parseChangelog keeps. */
+export const CHANGELOG_LIMITS = Object.freeze({ chars: 400_000, entries: 300, sections: 30, items: 200, line: 2_000, item: 700, title: 60 });
 
 const own = (obj, key) => obj !== null && typeof obj === 'object' && Object.hasOwn(obj, key);
 const isPlainObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -148,11 +149,23 @@ export function buildSummary(build) {
   return `v${b.version} (${tail})`;
 }
 
-/** Where this copy runs: 'Live site', 'Local development' or 'Built site on this computer'. `host` is location.hostname (optional). */
+/** A host name without its port: "localhost:8080" -> "localhost", "[::1]:8080" -> "[::1]", "::1" and "example.com" stay as they are. */
+export function hostName(host) {
+  const text = String(host ?? '').trim().toLowerCase();
+  const bracketed = /^(\[[^\]]*\])(?::\d*)?$/.exec(text);
+  if (bracketed) return bracketed[1];
+  const plain = /^([^:]*):\d*$/.exec(text); // exactly one colon: a name or an IPv4 address with a port (a bare IPv6 address has several)
+  return plain ? plain[1] : text;
+}
+
+/**
+ * Where this copy runs: 'Live site', 'Local development' or 'Built site on this computer'. `host` is location.hostname or location.host (the port is
+ * ignored, so "localhost:8080" and "127.0.0.1:41234" are local like "localhost").
+ */
 export function whereItRuns(build, host = '') {
   const b = normalizeBuild(build);
   if (b.channel === 'dev') return 'Local development';
-  const local = /^(localhost|127(?:\.\d{1,3}){3}|\[?::1\]?|.*\.local)$/i.test(String(host || ''));
+  const local = /^(localhost|.*\.localhost|127(?:\.\d{1,3}){3}|\[?::1\]?|.*\.local)$/i.test(hostName(host));
   return b.channel === 'live' && !local ? 'Live site' : 'Built site on this computer';
 }
 
@@ -169,6 +182,20 @@ const pad = (n) => String(n).padStart(2, '0');
 const plausible = (date) => date.getUTCFullYear() >= 2000 && date.getUTCFullYear() < 2200;
 
 /**
+ * The British names are "CEST" for Berlin but "GMT-4" for New York, where the American ones say "EDT": when the first name is only an offset, the other
+ * locale may know the real abbreviation (for Tokyo neither does, and "GMT+9" stays).
+ */
+function readableZone(name, date, timeZone) {
+  if (!/^GMT[+\-\u2212]/.test(name)) return name;
+  try {
+    const other = new Intl.DateTimeFormat('en-US', { timeZone, timeZoneName: 'short' }).formatToParts(date).find((p) => p.type === 'timeZoneName');
+    return other && other.value && !/^GMT[+\-\u2212]/.test(other.value) ? other.value : name;
+  } catch {
+    return name;
+  }
+}
+
+/**
  * A moment in time as the viewer reads it.
  * @param {string} iso an ISO 8601 date and time WITH a zone ("2026-10-09T15:08:00Z"); anything else gives null
  * @param {{ timeZone?: string }} [opts] the zone to show "local" in (default: the viewer's own; a bad name falls back to it)
@@ -183,11 +210,13 @@ export function formatBuildDate(iso, { timeZone } = {}) {
   if (Number.isNaN(date.getTime()) || !plausible(date)) return null;
   const utc = `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())} UTC`;
   let parts = null;
+  let shownIn;
   for (const zone of [timeZone, undefined]) {
     try {
       parts = Object.fromEntries(new Intl.DateTimeFormat('en-GB', {
         timeZone: zone, day: 'numeric', month: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZoneName: 'short',
       }).formatToParts(date).map((p) => [p.type, p.value]));
+      shownIn = zone;
       break;
     } catch {
       parts = null; // a zone name the browser does not know: show the viewer's own
@@ -195,7 +224,7 @@ export function formatBuildDate(iso, { timeZone } = {}) {
   }
   if (!parts) return { iso, day: utc.slice(0, 10), local: utc, zone: 'UTC', utc };
   const day = `${Number(parts.day)} ${MONTHS[Number(parts.month) - 1]} ${parts.year}`;
-  const zone = parts.timeZoneName || '';
+  const zone = readableZone(parts.timeZoneName || '', date, shownIn);
   return { iso, day, local: `${day}, ${parts.hour}:${parts.minute}${zone ? ` ${zone}` : ''}`, zone, utc };
 }
 
@@ -235,7 +264,9 @@ export function parseChangelog(text) {
     let section = null;
     let item = null; // the item an indented line continues
     for (const raw of text.slice(0, L.chars).split(/\r?\n/)) {
-      const line = raw.replace(/\s+$/, '');
+      // trimEnd() is linear; a regular expression like /\s+$/ is retried at every start of a run of blanks (quadratic: 80,000 blanks took 5 s). A line is cut
+      // before anything else looks at it, because nothing after the first LINE characters of a line is ever kept (an item is cut at L.item, a title at L.title).
+      const line = raw.slice(0, L.line).trimEnd();
       if (/^##\s/.test(line)) {
         entry = null;
         section = null;
@@ -329,10 +360,17 @@ export function sameCommit(a, b) {
   return x.startsWith(y) || y.startsWith(x);
 }
 
+/** Was the build time `a` before the build time `b`? False when either is missing or not a real date (then nothing can be said). */
+const builtBefore = (a, b) => Boolean(a && b && formatBuildDate(a) && formatBuildDate(b) && Date.parse(a) < Date.parse(b));
+
 /**
  * Is the site serving a newer build than the one that is running? True only for a deployed build (commit of the pipeline, channel 'live')
- * and a version.json that has a different commit and a version that is not older. A development build, a hand-made one, junk, a missing
- * field, a commit that is the same and a version that went backwards all give `available: false` (the caller stays silent).
+ * and a version.json that has a different commit and is not older. A development build, a hand-made one, junk, a missing field and a commit that is
+ * the same all give `available: false` (the caller stays silent), and so does "older":
+ *   - a lower version number: a rollback is not announced (reloading would take the planner back; a page that is newer than the site harms nobody);
+ *   - the SAME version number but a build time before this one: the version number is bumped by hand, so most deploys share it and the build time says which
+ *     is newer. An older deploy can finish last (pages.yml says so) and a stale edge node serves old files; neither is an update.
+ * Equal or missing build times say nothing about the direction: the commit decides, and a different commit is an update.
  * @returns {{ available: boolean, reason: string, remote: object|null }} reason: 'newer' | 'same' | 'older' | 'unreadable' | 'not-deployed'
  */
 export function updateVerdict(build, fetched) {
@@ -343,7 +381,8 @@ export function updateVerdict(build, fetched) {
     const remote = readRemoteBuild(fetched);
     if (!remote) return none('unreadable');
     if (sameCommit(mine.commit, remote.commit)) return none('same');
-    if (compareVersions(remote.version, mine.version) < 0) return none('older');
+    const order = compareVersions(remote.version, mine.version);
+    if (order < 0 || (order === 0 && builtBefore(remote.builtAt, mine.builtAt))) return none('older');
     return { available: true, reason: 'newer', remote };
   } catch {
     return none('unreadable');
@@ -354,22 +393,72 @@ export function updateVerdict(build, fetched) {
 // Texts
 // ---------------------------------------------------------------------------------------------------------
 
+/** The build part of the chip: the short commit of a deployed build ("a45ce49"); '' for a development or hand-made one (versionLabel already says "dev" or "local"). */
+export function chipBuildId(build) {
+  const b = normalizeBuild(build);
+  return b.channel === 'live' ? b.shortCommit : '';
+}
+
+/** What the chip shows, as one text: "v0.6.0 a45ce49", "v0.6.0 dev", and "... Update" while a newer build is live. */
+export function chipText(build, { update = null } = {}) {
+  const id = chipBuildId(build);
+  return `${versionLabel(build)}${id ? ` ${id}` : ''}${update ? ' Update' : ''}`;
+}
+
+/** The short commit of a fetched or watched remote build ("b3c4d5e"), or ''. */
+const remoteShort = (remote) => (remote && typeof remote === 'object' ? shortCommit(remote.commit) || (isCommitId(remote.shortCommit) ? remote.shortCommit.slice(0, 7).toLowerCase() : '') : '');
+
+/**
+ * The words for an update that is waiting. Most deploys carry the SAME version number as the one before (the number is raised by hand, a deploy is every
+ * merge), so the notice says "build" then, and "version" only when the number really is higher. `remote` is what the watcher recorded
+ * ({ version, shortCommit, ... }).
+ * @returns {{ kind: 'version'|'build', headline: string, detail: string, short: string }}
+ *   short: "v0.7.0" or "build b3c4d5e", for the tooltip
+ */
+export function updateNotice(build, remote) {
+  const b = normalizeBuild(build);
+  const there = remote && typeof remote === 'object' ? remote : {};
+  const version = parseVersion(there.version) ? String(there.version).trim().replace(/^v/, '') : '';
+  const theirs = remoteShort(there);
+  const mine = b.shortCommit || b.commit;
+  if (version && compareVersions(version, b.version) > 0) {
+    return {
+      kind: 'version',
+      headline: 'A newer version is available',
+      detail: `Version ${version}${theirs ? ` (build ${theirs})` : ''} is on the site; this page is version ${b.version}.`,
+      short: `v${version}`,
+    };
+  }
+  return {
+    kind: 'build',
+    headline: 'A newer build is available',
+    detail: `${theirs ? `Build ${theirs}` : 'A newer build'} of version ${version || b.version} is on the site; this page is build ${mine}.`,
+    short: theirs ? `build ${theirs}` : 'a newer build',
+  };
+}
+
 /** The tooltip of the chip: "Build a45ce49, 9 Oct 2026 – click for what is new". `update` is the verdict's remote when a newer build is live. */
 export function chipTooltip(build, { update = null, timeZone } = {}) {
   const b = normalizeBuild(build);
   const when = b.builtAt ? formatBuildDate(b.builtAt, { timeZone }) : null;
   const day = when ? `, ${when.day}` : '';
-  const text = b.channel === 'dev' ? 'Development build, not deployed – click for what is new'
+  if (update) {
+    const mine = b.channel === 'live' ? `Your build: ${b.shortCommit}${day}` : `Your copy${day}`;
+    return `Update available (${updateNotice(b, update).short}) – click for details and to reload. ${mine}`;
+  }
+  return b.channel === 'dev' ? 'Development build, not deployed – click for what is new'
     : b.channel === 'local' ? `Local build${day} – click for what is new`
       : `Build ${b.shortCommit}${day} – click for what is new`;
-  return update ? `Update available${update.version ? ` (v${update.version})` : ''} – click to see what is new and to reload. ${text}` : text;
 }
 
-/** The spoken name of the chip (aria-label). */
+/**
+ * The spoken name of the chip (aria-label). It starts with what the eye reads on the chip ("v0.6.0 a45ce49", "v0.6.0 dev", "... Update"), so that a person who says
+ * "click v0.6.0" to a voice control finds the button (WCAG 2.5.3, label in name); the rest tells what it does.
+ */
 export function chipAriaLabel(build, { update = null } = {}) {
   const b = normalizeBuild(build);
-  const kind = b.channel === 'dev' ? ', development build' : b.channel === 'local' ? ', local build' : '';
-  return `LogiPlan version ${b.version}${kind}${update ? '. An update is available' : ''}. Show version information and what is new`;
+  const note = b.channel === 'dev' ? 'Development build. ' : b.channel === 'local' ? 'Local build. ' : '';
+  return `${chipText(b, { update })}. ${note}${update ? 'An update is available. ' : ''}Show version information and what is new`;
 }
 
 /** "Chrome 126", "Firefox 127", "Safari 17", "Edge 126", or 'an unknown browser', from a user-agent string. */

@@ -24,7 +24,7 @@
 //   M1-MODEL-REV-6   fixed: no "Use 32 doors" where even 32 doors are too few; the text says so
 //   M1-MODEL-REV-7   fixed: the message of doors-too-few between 95 and 100 % busy
 //   M1-MODEL-REV-8   fixed: doorCheck(trucks, null) reads null as no options
-//   M1-MODEL-REV-9   OPEN (a `defect`, a todo while it fails): an empty time cell before a tab is reported as "“24” is not a time", not as "has no arrival time"
+//   M1-MODEL-REV-9   fixed (by the UI fixer, js/ui/panels/timetable-paste.js trimKeepingTabs): an empty time cell before a tab is reported as "has no arrival time"
 //   M1-MODEL-REV-10  fixed: "06:00:00" (seconds that are zero) is read
 //
 // A `defect` is a REAL DEFECT that is NOT fixed: its test FAILS today and is `todo`, so that the suite stays green until it is fixed
@@ -1111,7 +1111,7 @@ test('M1-MODEL-REV-5 (fixed) decodeShare took QUADRATIC time on a link that ends
   assert.ok(ms < 30, `10,000 punctuation characters: ${ms.toFixed(0)} ms of CPU (linear: a millisecond; measured: 8e4 characters = 6.5 s, 4 times the input = 16 times the time)`);
 });
 
-defect('M1-MODEL-REV-9 a row whose time cell is EMPTY and whose pallets are given ("<TAB>24") is reported as “24” is not a time, not as "has no arrival time": the line is trimmed before its columns are split', () => {
+test('M1-MODEL-REV-9 (fixed) a row whose time cell is EMPTY and whose pallets are given ("<TAB>24") was reported as “24” is not a time, not as "has no arrival time": the line was trimmed before its columns were split (a tab at the ends of a line is now an empty cell)', () => {
   const r = parseTimetable('\t24\n6:00\t12');
   assert.equal(r.separator, 'tab');
   assert.deepEqual(r.rows.map((x) => x.at), [21600]);

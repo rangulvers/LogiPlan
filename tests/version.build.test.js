@@ -263,3 +263,15 @@ test('the command line: exit codes and output of node scripts/bump-version.mjs',
   assert.match(made.stdout, /Made version 0\.6\.1 \(was 0\.6\.0\), dated 2026-10-10/);
   assert.equal(cli('--check').status, 0, 'after a bump the three files agree');
 });
+
+test('SOURCE_DATE_EPOCH: only whole seconds of a year from 2000 to 2199 are used; anything else (blank, float, hex, exponent, negative, huge) falls back to the clock', () => {
+  const now = new Date('2026-10-09T15:08:09Z');
+  const built = (value) => buildIdentity({ pkg, env: { GITHUB_SHA: SHA, SOURCE_DATE_EPOCH: value }, now }).builtAt;
+  assert.equal(built('1791558480'), '2026-10-09T15:08:00Z');
+  assert.equal(built(' 1791558480 '), '2026-10-09T15:08:00Z', 'blanks around it are fine');
+  assert.equal(built('946684800'), '2000-01-01T00:00:00Z');
+  for (const bad of ['', ' ', '\t', '1.5e9', '1791558480.5', '1791558480e0', '0x10', '-5', '1e20', '99999999999999', 'NaN', 'Infinity', 'soon', '0', '946684799', '7258118400']) {
+    assert.equal(built(bad), '2026-10-09T15:08:09Z', JSON.stringify(bad));
+  }
+  assert.equal(buildIdentity({ pkg, env: { GITHUB_SHA: SHA }, now }).builtAt, '2026-10-09T15:08:09Z', 'unset: the clock');
+});

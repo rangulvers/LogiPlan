@@ -13,41 +13,52 @@
 //                             every attribute; the report footer; the links
 //   6  clipboard              refused in every way a browser can refuse; the dialog's button says so and selects the line
 //   7  time and locale        builtAt null / invalid / far future, other zones (DST, +13:45, +14), the viewer's own zone, calendar edges, against an independent oracle
-//   8  the build pipeline     build-site into a temp dir with and without GITHUB_SHA, with hostile values, twice, from another directory; the repository untouched; the
+//   8  where it runs         the dialog on the live host, a development copy, hosts with a port
+//   9  the build pipeline     build-site into a temp dir with and without GITHUB_SHA, with hostile values, twice, from another directory; the repository untouched; the
 //                             old shape of version.json; the workflows' contract with the script; a failed build leaves the old site alone
-//   9  bump-version           every argument form, bad input, nothing changed on a refusal, CRLF, a round trip, always on temp copies
-//   10 consistency, layering  package.json / build-info.js / CHANGELOG.md / README / ARCHITECTURE numbers; the import rules (version.js DOM-free and importable from
+//   10 bump-version           every argument form, bad input, nothing changed on a refusal, CRLF, a round trip, always on temp copies
+//   11 consistency, layering  package.json / build-info.js / CHANGELOG.md / README / ARCHITECTURE numbers; the import rules (version.js DOM-free and importable from
 //                             Node, no model / sim / store / util module can reach the build identity); exports, autosave and share links hold no build identity
-//   11 real browser           opt-in (VER_REVIEW_BROWSER=1): the built site served to Chromium, version.json that never answers, junk, a hostile changelog
+//   12 real browser           opt-in (VER_REVIEW_BROWSER=1): the built site served to Chromium, the traffic of the start (own origin only, one version.json, no CHANGELOG.md
+//                             before the dialog is opened), version.json that never answers, junk, a hostile changelog
+//   13 the chip and the dialog on the fake DOM   what the builder's unit tests leave to the browser and a mutation run showed to be unguarded in the fast tier: the watcher is
+//                             started with the app's signal, the update box follows the watcher and is unsubscribed on close, "Reload now" saves first and refuses a
+//                             reload that would lose work
 //
-// The defects (all `todo`, each with a test that fails today and passes with the fix; the cause and the evidence are in the failure message):
-//   VER-REV-1  parseChangelog takes QUADRATIC time on a run of whitespace inside a line (`raw.replace(/\s+$/, '')`): 80,000 spaces take 5.6 s, the 400,000 characters
-//              the parser accepts take 193 s (measured) - the About dialog freezes the tab when CHANGELOG.md holds such a line
-//   VER-REV-2  scripts/build-site.mjs and scripts/bump-version.mjs start only `if (process.argv[1] === fileURLToPath(import.meta.url))`: reached through a symlink
-//              (a checkout under a linked directory, macOS /tmp) the two compare different paths and the scripts do NOTHING and exit 0 - the site is not built,
-//              `npm run version:check` "passes" without checking. The old build-site.mjs ran unconditionally.
-//   VER-REV-3  updateVerdict ignores builtAt: the same version with another commit is "an update" even when the site's build is OLDER than the running one
-//              (an older deploy that finished last - pages.yml documents that it can happen -, a stale edge)
-//   VER-REV-4  the dialog says "Live site" for a deployed build that runs on localhost:8080, 127.0.0.1:8080 or [::1]:8080: openAbout passes location.host (with
-//              the port) to whereItRuns, whose pattern only knows host names without a port
-//   VER-REV-5  assertSafeOutput refuses the repository and its parents but not its own folders: `node scripts/build-site.mjs docs` (the folder GitHub Pages used to
-//              publish) or `.git`, `js`, `css` empties them
-//   VER-REV-6  SOURCE_DATE_EPOCH is not validated: ' ' means 1970 (the app then calls a live build "Not built"), 1e20 crashes with "Invalid time value"
-//   VER-REV-7  bump-version accepts ' 0.7.0' and '0.7.0 ' (written into package.json with the blanks) and crashes with a stack trace on '0.7.0\n'
-//   VER-REV-8  the list of changes is read once per page load: after an update is announced the dialog still shows the list it read before the update
-//   VER-REV-9  "Reload now" can bring the old code back (GitHub Pages: max-age=600 on every file); real browser only (VER_REVIEW_BROWSER=1)
+// Run in other time zones and with the environment of a CI run (GITHUB_SHA, GITHUB_REPOSITORY, SOURCE_DATE_EPOCH, LANG=de_DE): the result must not change
+// (one test here used to depend on the zone: it now accepts the 9th and the 10th of October for a build time of 15:08 UTC).
 //
-// Tests named "VER-REV-n" are REAL DEFECTS found by this review that are NOT fixed: they FAIL today and are `todo`, so that the suite stays green until they are
-// fixed (VER_REVIEW_STRICT=1 turns them into ordinary tests). Tests named "DISCREPANCY" pin a place where the code differs from a standard or from the
-// document: they pass, and say what is different.
-import { test } from 'node:test';
+// The defects the review found, each with a test named "VER-REV-n" that failed when it was found and passes now (the fix pass fixed all of them, at the root):
+//   VER-REV-1  parseChangelog took QUADRATIC time on a run of whitespace inside a line (`raw.replace(/\s+$/, '')`): 80,000 spaces took 5.6 s, the 400,000 characters
+//              the parser accepts took 193 s - the About dialog froze the tab. Fixed: a line is cut at CHANGELOG_LIMITS.line and trimmed with trimEnd().
+//   VER-REV-2  scripts/build-site.mjs and scripts/bump-version.mjs started only `if (process.argv[1] === fileURLToPath(import.meta.url))`: reached through a symlink they did
+//              NOTHING and exited 0. Fixed: both compare real paths (realpathSync).
+//   VER-REV-3  updateVerdict ignored builtAt: the same version with another commit was "an update" even when the site's build was OLDER than the running one.
+//              Fixed: for the same version number an older build time is 'older'. A lower version number (a rollback) is still not announced, on purpose.
+//   VER-REV-4  the dialog said "Live site" for a deployed build on localhost:8080: openAbout passed location.host (with the port). Fixed: it passes the host name,
+//              and whereItRuns (hostName) ignores a port in any case.
+//   VER-REV-5  assertSafeOutput refused the repository and its parents but not its own folders (docs, .git, js ...). Fixed: inside the repository only _site* is allowed.
+//   VER-REV-6  SOURCE_DATE_EPOCH was not validated (' ' meant 1970, 1e20 crashed). Fixed: whole seconds only, a year from 2000 to 2199, else the clock.
+//   VER-REV-7  bump-version accepted ' 0.7.0' and crashed on '0.7.0\n'. Fixed: a target with any blank is refused (exit 2).
+//   VER-REV-8  the list of changes was read once per page load. Fixed: it is read again while an update is waiting (when the dialog opens and when the update arrives).
+//   VER-REV-9  "Reload now" could bring the old code back (GitHub Pages: max-age=600); real browser only (VER_REVIEW_BROWSER=1). Fixed: refreshLoadedFiles() fetches the
+//              page and every file it loaded with { cache: 'reload' } before location.reload().
+//   VER-REV-10 bump-version said it updated js/build-info.js (exit 0) when its version line was not in the expected form. Fixed: all three texts are made first; one that
+//              cannot be made refuses with exit 2 and writes nothing.
+//   VER-REV-11 the 5-minute throttle of the update check read the wall clock: after the clock was set back no check was made. Fixed: a negative age counts as old.
+//   VER-REV-12 bump-version threw away what stood under [Unreleased] when it had no "-" bullet. Fixed: the text moves with the heading (with a warning), only an empty
+//              body gets the stub.
+//   VER-REV-13 the update box said "A newer version is available" and then gave two equal version numbers. Fixed: updateNotice() says "newer build" when the number is the same.
+//
+// Tests named "DISCREPANCY" pin a place where the code differs from a standard or from the document: they pass, and say what is different.
+import { test, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import * as V from '../js/version.js';
 import { createUpdateWatcher, CHECK_EVERY_MS, CHECK_TIMEOUT_MS, MAX_BODY_CHARS, START_DELAY_MS } from '../js/update-check.js';
 import { BUILD } from '../js/build-info.js';
-import { createVersionChip, loadChangelog, openAbout, renderChangelog, copyText } from '../js/ui/about.js';
+import { createVersionChip, loadChangelog, openAbout, openByDefault, renderChangelog, copyText } from '../js/ui/about.js';
 import { exportReportHtml } from '../js/ui/report.js';
 import { createStore } from '../js/store/store.js';
 import { EXAMPLES } from '../js/model/examples.js';
@@ -58,14 +69,10 @@ import { run as bump, checkFiles } from '../scripts/bump-version.mjs';
 import * as H from './helpers/version-review-gen.js';
 
 const { SHA_A, SHA_B, LIVE, DEV, ROOT } = H;
+const REPO_URL_FOR_TESTS = H.REPO_URL;
 const read = H.read;
 const pkg = JSON.parse(read('package.json'));
 
-/** A defect found by this review: fails today; a `todo` so that the suite stays green until it is fixed. */
-const defect = (name, a, b) => {
-  const [opts, fn] = typeof a === 'function' ? [{}, a] : [a, b];
-  test(name, H.STRICT ? opts : { ...opts, todo: 'a defect found by the version review (see its message); fix it, then delete this marker' }, fn);
-};
 const ms = (fn) => { const t = performance.now(); fn(); return performance.now() - t; };
 const seeds = (n, base = 1) => Array.from({ length: n }, (_, i) => base + i);
 
@@ -226,7 +233,7 @@ test('2.1 the running build against what the site serves, case by case', () => {
   }
 });
 
-defect('VER-REV-3 an older deploy with the same version is reported as "Update available" (updateVerdict ignores builtAt)', () => {
+test('VER-REV-3 an older deploy with the same version is reported as "Update available" (updateVerdict ignores builtAt)', () => {
   // The site is allowed to go back: pages.yml says that a run whose freshness check cannot read the branch deploys anyway, so an older commit that finishes last
   // replaces a newer one. The page of the newer build is then told to "update" to the older one. Both ends know when they were built.
   const mine = { ...LIVE, builtAt: '2026-10-09T15:08:00Z' };
@@ -394,6 +401,19 @@ test('3.4 the throttle: three visibility changes in a row make one request; five
   const [a, b] = await Promise.all([shared.watcher.check({ force: true }), shared.watcher.check({ force: true })]);
   assert.equal(shared.calls.length, 1);
   assert.deepEqual(a, b);
+});
+
+test('VER-REV-11 the 5-minute throttle reads the wall clock: after the clock is set back, no check is made until it has caught up again', async () => {
+  // Date.now() is not monotonic: an NTP step, a manual change or a virtual machine resumed from a snapshot can set it back. `now() - lastAttempt` is then negative,
+  // which is "less than five minutes", and the page does not look again until the clock is where it was (an hour later in this example). A monotonic clock
+  // (performance.now()) or "a negative age counts as old" fixes it.
+  const { watcher, calls, clock } = rig([okResponse(NEWER_BODY)]);
+  await watcher.check();
+  assert.equal(calls.length, 1);
+  clock.t -= 3_600_000; // the clock is set back by an hour
+  clock.t += CHECK_EVERY_MS + 60_000; // and the planner comes back to the tab six minutes later (by the clock's own count)
+  await watcher.check();
+  assert.equal(calls.length, 2, `the clock reads ${(5_000_000 - clock.t) / 60_000} minutes BEFORE the last request: the age of that request is negative, so it counts as "fresh"`);
 });
 
 test('3.5 a request that never answers is abandoned after the timeout and never blocks anything; an answer after stop() is ignored', async () => {
@@ -627,7 +647,7 @@ test('4.6 600 random documents: the structure is always valid, CRLF reads like L
   }
 });
 
-defect('VER-REV-1 parseChangelog takes quadratic time on a run of whitespace inside a line (a hostile or careless CHANGELOG.md freezes the About dialog)', () => {
+test('VER-REV-1 parseChangelog takes quadratic time on a run of whitespace inside a line (a hostile or careless CHANGELOG.md freezes the About dialog)', () => {
   // `raw.replace(/\s+$/, '')` is retried at every start of the run and scans to the end of it each time. Measured here: 80,000 spaces 5.6 s, 160,000 about 22 s,
   // and the 400,000 characters the parser accepts (CHANGELOG_LIMITS.chars) 193 s - the tab is frozen for three minutes when the user clicks the version number.
   const n = 20_000;
@@ -666,8 +686,8 @@ test('5.1 grep: no innerHTML, outerHTML, insertAdjacentHTML, document.write, eva
   for (const arg of hrefs) assert.match(arg, /^(?:url|`\$\{b\.repository\}[^`]*`|b\.repository)$/, `link target ${arg} must come from the build identity`);
 });
 
-const ALLOWED_TAGS = new Set(['div', 'button', 'span', 'svg', 'path', 'h4', 'ul', 'li', 'strong', 'em', 'code']);
-const ALLOWED_ATTRS = new Set(['class', 'id', 'type', 'aria-expanded', 'aria-controls', 'hidden', 'aria-haspopup', 'aria-label', 'data-tip', 'data-role', 'aria-live', 'xmlns', 'width', 'height', 'viewBox', 'fill', 'stroke', 'stroke-width', 'stroke-linecap', 'stroke-linejoin', 'aria-hidden', 'focusable', 'd']);
+const ALLOWED_TAGS = new Set(['div', 'button', 'span', 'svg', 'path', 'h4', 'h5', 'p', 'ul', 'li', 'strong', 'em', 'code']);
+const ALLOWED_ATTRS = new Set(['class', 'id', 'type', 'role', 'aria-expanded', 'aria-controls', 'hidden', 'aria-haspopup', 'aria-label', 'data-tip', 'data-role', 'aria-live', 'xmlns', 'width', 'height', 'viewBox', 'fill', 'stroke', 'stroke-width', 'stroke-linecap', 'stroke-linejoin', 'aria-hidden', 'focusable', 'd']);
 
 /** Walk a tree built from a hostile changelog and fail on anything that could run or load something. */
 function assertInert(dom, root, { tags = ALLOWED_TAGS, attrs = ALLOWED_ATTRS } = {}) {
@@ -726,8 +746,9 @@ test('5.3 the whole About dialog with a hostile changelog, a live build and a ho
     await watcher.check({ force: true });
     const chip = createVersionChip(ctx, { build: LIVE, watcher });
     assertInert(dom, chip.el);
-    assert.match(chip.el.getAttribute('aria-label'), /An update is available/);
-    assert.match(chip.el.getAttribute('data-tip'), /^Update available \(v0\.7\.0\) – click to see what is new and to reload\. Build a45ce49, 9 Oct 2026/);
+    assert.match(chip.el.getAttribute('aria-label'), /^v0\.6\.0 a45ce49 Update\. An update is available/);
+    // the build time is 15:08 UTC on the 9th: in the viewer's own zone that is the 9th or, east of UTC+8:52, the 10th - the test must not depend on the zone it runs in
+    assert.match(chip.el.getAttribute('data-tip'), /^Update available \(v0\.7\.0\) – click for details and to reload\. Your build: a45ce49, (?:9|10) Oct 2026$/);
     openAbout(ctx, dlg, { build: LIVE });
     await settle();
     const { body } = shown[0];
@@ -785,7 +806,7 @@ test('5.5 the report footer: hostile build identities cannot add markup, and the
   assert.match(footer(LIVE), /Generated with LogiPlan v0\.6\.0 \(a45ce49\)/);
 });
 
-defect('VER-REV-8 "What is new" is read once per page load: after an update is announced the dialog still shows the old list', async () => {
+test('VER-REV-8 "What is new" is read once per page load: after an update is announced the dialog still shows the old list', async () => {
   // The planner opens About early (to see the version); hours later the chip says "Update"; the box says "Version 0.7.0 is on the site" - and the list below
   // still ends at 0.6.0 because loadChangelog keeps its first answer for ever. Reading the list again when an update is waiting would show what the update brings.
   const dom = H.installFakeDom();
@@ -842,8 +863,8 @@ test('6.1 copyText survives every way a browser refuses, leaves no text field be
   }
 });
 
-test('6.2 the Copy button of the dialog: success says so; a refusal selects the line and says what to press; neither throws', async () => {
-  for (const [refuse, expectToast] of [[false, 'success'], [true, 'warn']]) {
+test('6.2 the Copy button of the dialog: success says so; a refusal selects the line and says what to press; neither throws, and no toast covers the dialog', async () => {
+  for (const refuse of [false, true]) {
     const dom = H.installFakeDom({ clipboard: refuse ? { writeText: async () => { throw new Error('denied'); } } : { writeText: async () => {} }, execCommand: () => false });
     try {
       const { ctx, dlg, shown, toasts } = aboutRig();
@@ -854,14 +875,16 @@ test('6.2 the Copy button of the dialog: success says so; a refusal selects the 
       assert.ok(button);
       const seen = await unhandledDuring(async () => { await button.click(); });
       assert.deepEqual(seen, []);
-      assert.equal(toasts.at(-1)[1].kind, expectToast);
-      const note = body.querySelector('[data-role="about-copied"]').textContent;
+      assert.deepEqual(toasts, [], 'the answer stands in the dialog (a polite live region), not in a toast that would cover the Close button');
+      const noteEl = body.querySelector('[data-role="about-copied"]');
+      assert.equal(noteEl.getAttribute('role'), 'status', 'announced to a screen reader');
+      const note = noteEl.textContent;
       if (refuse) {
         assert.match(note, /Copying is blocked/);
         assert.equal(dom.selection.ranges.length, 1, 'the line is selected');
         assert.equal(dom.selection.ranges[0].node, body.querySelector('[data-role="about-line"]'));
       } else {
-        assert.equal(note, 'Copied.');
+        assert.equal(note, 'Copied. Paste it into your bug report.');
       }
       const line = body.querySelector('[data-role="about-line"]').textContent;
       assert.match(line, /^LogiPlan v0\.6\.0 \(a45ce49, built 2026-10-09 15:08 UTC\), Chrome 126, window 1440 x 900 on a 1920 x 1080 screen$/);
@@ -925,6 +948,7 @@ test('7.3 the viewer\'s own zone is used when none is given (TZ of the process),
       for (const variant of rows[i]) {
         assert.ok(variant, `${tz}: a bad zone name must not make the date vanish`);
         assert.equal(variant.day, want.day, `${tz} ${iso}`);
+        assert.equal(variant.utc, `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC`, `${tz} ${iso}: the UTC text is UTC whatever zone the process runs in (a half-hour zone shows a wrong minute otherwise)`);
         assert.ok(variant.local.startsWith(`${want.day}, ${want.time}`), `${tz} ${iso}: ${variant.local}`);
       }
     }
@@ -994,7 +1018,7 @@ test('8.2 the dialog on the live host and on a development copy says the right t
   assert.match(await whereItRunsInDialog('localhost:8080', DEV), /^Local development \(localhost:8080\)$/);
 });
 
-defect('VER-REV-4 a deployed build served from localhost:PORT is called "Live site" (openAbout passes location.host, with the port, to whereItRuns)', async () => {
+test('VER-REV-4 a deployed build served from localhost:PORT is called "Live site" (openAbout passes location.host, with the port, to whereItRuns)', async () => {
   // This is how a planner looks at the Pages artifact before it goes out (`npx serve _site`, `python -m http.server`): the build carries a real commit, so the
   // channel is 'live', and the dialog claims to be the live site. whereItRuns knows "localhost", "127.x.x.x", "::1" and "*.local" but only without a port.
   const wrong = [];
@@ -1135,7 +1159,17 @@ test('9.7 the workflows\' contract with the script: the output folders are ignor
   assert.ok(pages.indexOf('npm run test:fast') < pages.indexOf('node scripts/build-site.mjs'), 'the tests run before the site is built, so no test can see a generated build-info.js');
 });
 
-defect('VER-REV-2 build-site.mjs and bump-version.mjs do nothing, silently and with exit 0, when they are started through a symlink', () => {
+test('9.8 the branch name is trimmed and a blank one is "local"; the commit page address is lower-case whatever the case of the commit', () => {
+  for (const [value, want] of [['  main \n', 'main'], ['', 'local'], ['   ', 'local'], ['\t\n', 'local'], ['release/1.0', 'release/1.0']]) {
+    assert.equal(buildIdentity({ pkg, env: { GITHUB_SHA: SHA_A, GITHUB_REF_NAME: value } }).builtFrom, want, JSON.stringify(value));
+  }
+  assert.equal(V.commitUrl(REPO_URL_FOR_TESTS, SHA_A.toUpperCase()), `${REPO_URL_FOR_TESTS}/commit/${SHA_A}`);
+  assert.equal(V.commitUrl(`${REPO_URL_FOR_TESTS}.git`, SHA_A), `${REPO_URL_FOR_TESTS}/commit/${SHA_A}`, 'a .git address is the same repository');
+  assert.equal(V.commitUrl(REPO_URL_FOR_TESTS, 'dev'), null);
+  assert.equal(V.commitUrl('https://gitlab.com/a/b', SHA_A), null, 'only GitHub has this address scheme');
+});
+
+test('VER-REV-2 build-site.mjs and bump-version.mjs do nothing, silently and with exit 0, when they are started through a symlink', () => {
   // `process.argv[1] === fileURLToPath(import.meta.url)`: node resolves the symlinks of the main module for import.meta.url but not for argv[1]. A checkout under a
   // linked directory (or macOS /tmp -> /private/tmp) therefore never reaches the code. The old build-site.mjs ran unconditionally; this is a regression.
   const holder = H.tmpDir('ver-link-');
@@ -1150,7 +1184,7 @@ defect('VER-REV-2 build-site.mjs and bump-version.mjs do nothing, silently and w
   assert.deepEqual(failures, []);
 });
 
-defect('VER-REV-5 the build empties any folder of the repository it is told to write to (docs, .git, js, css ...), not only the repository itself', () => {
+test('VER-REV-5 the build empties any folder of the repository it is told to write to (docs, .git, js, css ...), not only the repository itself', () => {
   const repo = path.join(path.sep, 'work', 'LogiPlan');
   const unsafe = ['docs', '.git', 'js', 'css', 'tests', 'scripts', 'assets', 'node_modules', '.github'].filter((name) => {
     try { assertSafeOutput(path.join(repo, name), repo); return true; } catch { return false; }
@@ -1162,7 +1196,7 @@ defect('VER-REV-5 the build empties any folder of the repository it is told to w
   assert.ok(existsSync(path.join(copy, 'docs', 'DESIGN.md')) || res.status !== 0, `exit ${res.status}; docs/DESIGN.md ${existsSync(path.join(copy, 'docs', 'DESIGN.md')) ? 'survived' : 'was deleted'}`);
 });
 
-defect('VER-REV-6 SOURCE_DATE_EPOCH is not validated: a blank means 1970 (the app then shows a live build as "Not built"), 1e20 crashes the build with "Invalid time value"', () => {
+test('VER-REV-6 SOURCE_DATE_EPOCH is not validated: a blank means 1970 (the app then shows a live build as "Not built"), 1e20 crashes the build with "Invalid time value"', () => {
   const now = new Date('2026-10-09T15:08:09Z');
   const bad = [];
   for (const value of [' ', '\t', '1e20', '-5', '0x10', '99999999999999', 'NaN', 'Infinity']) {
@@ -1245,7 +1279,7 @@ test('10.4 the real files pass --check from the command line, and a copy with ea
   assert.equal(H.runNode([path.join(ROOT, 'scripts/bump-version.mjs'), '--check', '--root', path.join(H.tmpDir(), 'nowhere')]).status, 2);
 });
 
-defect('VER-REV-7 bump-version writes a blank-padded version into package.json and crashes with a stack trace on a trailing newline', () => {
+test('VER-REV-7 bump-version writes a blank-padded version into package.json and crashes with a stack trace on a trailing newline', () => {
   // parseVersion trims its input (right for the fetched texts), but bump-version checks only /^v/ and /\+/ before it writes the text it was given.
   const problems = [];
   for (const target of [' 0.7.0', '0.7.0 ', '\t0.7.0', '0.7.0\n']) {
@@ -1257,6 +1291,77 @@ defect('VER-REV-7 bump-version writes a blank-padded version into package.json a
     if (code !== 2) problems.push(`${JSON.stringify(target)} -> ${code}${JSON.stringify(after) !== JSON.stringify(before) ? `, package.json now says ${JSON.stringify(JSON.parse(after.pkg.replace(/\n/g, '')).version ?? null)}` : ''}`);
   }
   assert.deepEqual(problems, [], 'expected exit 2 and nothing changed for each');
+});
+
+test('10.5 a package.json whose version line cannot be found is never half-written; a lower-case [unreleased] heading is found like the parser finds it', () => {
+  const minified = JSON.stringify(JSON.parse(read('package.json'))); // one line: `"version"` does not start a line, the text replacement finds nothing
+  const dir = H.miniRepo({ pkg: minified });
+  const before = filesOf(dir);
+  let code;
+  try { code = bump(['minor', '--root', dir, '--date', '2026-10-10'], quiet()); } catch (err) { code = `throws ${err.message}`; }
+  assert.notEqual(code, 0, 'it must not claim success');
+  assert.deepEqual(filesOf(dir), before, 'and it must not leave build-info.js and CHANGELOG.md changed while package.json is not');
+  // the heading in lower case (parseChangelog reads it case-insensitively, so must the tool)
+  const dir2 = H.miniRepo({ changelog: read('CHANGELOG.md').replace('## [Unreleased]', '## [unreleased]') });
+  assert.equal(bump(['minor', '--root', dir2, '--date', '2026-10-10'], quiet()), 0);
+  const after = filesOf(dir2).log;
+  assert.equal((after.match(/^## \[?unreleased\]?\s*$/gim) || []).length, 1, 'exactly one Unreleased heading afterwards');
+  assert.deepEqual(problemsOf(dir2), []);
+  const entries = V.parseChangelog(after);
+  assert.deepEqual(entries.slice(0, 2).map((e) => e.version), ['Unreleased', '0.7.0']);
+  assert.ok(entries[1].sections.flatMap((x) => x.items).length >= 1, 'the lines that stood under [unreleased] are under 0.7.0 now');
+});
+
+test('VER-REV-10 bump-version says it updated js/build-info.js (exit 0) when the version line of that file is not in the expected form: the three files then disagree', () => {
+  // writeBuildInfoVersion is a String.replace that does nothing when `version: '...'` is not found, and run() never looks at the result (writePackageVersion, in
+  // contrast, re-parses what it wrote). The tool prints "Made version 0.7.0 ...: package.json, js/build-info.js, CHANGELOG.md", has changed package.json and
+  // CHANGELOG.md, and leaves build-info.js at the old version; only a later `--check` notices. A refusal BEFORE anything is written (exit 2) is the other good answer.
+  const info = read('js/build-info.js');
+  const forms = {
+    'double quotes (a formatter)': info.replace("version: '0.6.0'", 'version: "0.6.0"'),
+    'a template literal': info.replace("version: '0.6.0'", 'version: `0.6.0`'),
+    'a computed value': info.replace("version: '0.6.0'", "version: ['0', '6', '0'].join('.')"),
+    'the key quoted': info.replace("version: '0.6.0'", "'version': '0.6.0'"),
+  };
+  const problems = [];
+  for (const [name, text] of Object.entries(forms)) {
+    assert.notEqual(text, info, name);
+    const dir = H.miniRepo({ buildInfo: text });
+    const before = filesOf(dir);
+    const out = quiet();
+    const code = bump(['minor', '--root', dir, '--date', '2026-10-10'], out);
+    const after = filesOf(dir);
+    const refusedCleanly = code === 2 && JSON.stringify(after) === JSON.stringify(before);
+    const doneAndConsistent = code === 0 && problemsOf(dir).length === 0;
+    if (!refusedCleanly && !doneAndConsistent) problems.push(`${name}: exit ${code} "${out.lines[0]}" - build-info.js ${after.info === before.info ? 'unchanged' : 'changed'}, package.json says ${JSON.parse(after.pkg).version}; afterwards: ${problemsOf(dir)[0] || 'consistent'}`);
+  }
+  assert.deepEqual(problems, [], 'either refuse before writing anything (exit 2) or leave the three files in agreement');
+});
+
+test('VER-REV-12 bump-version throws away what stands under [Unreleased] when it has no "-" bullet (prose, a numbered list) and puts the TODO stub in its place, without a word', () => {
+  // `content = body.some(isBullet) ? body : ['### Added', STUB_LINE]`: a body without a bullet counts as empty. parseChangelog does not show such text either, so
+  // the app and the tool agree - but the tool destroys text a person wrote, and its output ("Made version ...") does not say so. Keeping the lines under the new
+  // heading (the changelog test then fails on the entry with no items and the author notices), or refusing with exit 2, are both acceptable.
+  const lost = [];
+  const bodies = {
+    'prose': 'Planners can now copy a whole plant to another browser.\n\nSee the Share window.',
+    'a numbered list': '### Added\n1. Copy a plant to another browser.\n2. Pick a start time.',
+    'a bullet in unicode': '### Added\n• Copy a plant to another browser.',
+    'bullets indented by four spaces': '### Added\n    - Copy a plant to another browser.',
+  };
+  for (const [name, body] of Object.entries(bodies)) {
+    const log = read('CHANGELOG.md').replace(/## \[Unreleased\][\s\S]*?(?=\n## \[0\.6\.0\])/, `## [Unreleased]\n\n${body}\n`);
+    assert.ok(log.includes(body), `${name}: the fixture was built`);
+    const dir = H.miniRepo({ changelog: log });
+    const before = filesOf(dir);
+    const out = quiet();
+    const code = bump(['minor', '--root', dir, '--date', '2026-10-10'], out);
+    const after = filesOf(dir);
+    const kept = body.split('\n').filter((l) => l.trim() && !l.startsWith('###')).every((l) => after.log.includes(l));
+    const refusedCleanly = code === 2 && JSON.stringify(after) === JSON.stringify(before);
+    if (!kept && !refusedCleanly) lost.push(`${name}: exit ${code}, "${body.split('\n').find((l) => l.trim() && !l.startsWith('###'))}" is gone from CHANGELOG.md`);
+  }
+  assert.deepEqual(lost, [], 'text under [Unreleased] must survive a bump (or the bump must refuse)');
 });
 
 test('DISCREPANCY: bumpVersion("1.2.0-rc.1", "minor") is 1.3.0, where npm\'s semver (inc minor) gives 1.2.0', () => {
@@ -1382,7 +1487,7 @@ test('12.1 real Chromium: the built site with a version.json that never answers,
   assert.deepEqual(report.problems, []);
 });
 
-defect('VER-REV-9 "Reload now" can bring the same old code back for up to ten minutes (GitHub Pages sends max-age=600 for every file)', { skip: H.BROWSER ? false : 'opt-in: VER_REVIEW_BROWSER=1 (needs Playwright)', timeout: 120_000 }, async () => {
+test('VER-REV-9 "Reload now" can bring the same old code back for up to ten minutes (GitHub Pages sends max-age=600 for every file)', { skip: H.BROWSER ? false : 'opt-in: VER_REVIEW_BROWSER=1 (needs Playwright)', timeout: 120_000 }, async () => {
   // A normal reload revalidates the page but takes the modules (js/*.js) from the HTTP cache while they are fresh, so the page that comes back is the old build and
   // the chip still says "Update". The dialog's hint (Ctrl+Shift+R) is the workaround; reloadPage() could refresh the cache itself first: fetch every script the page
   // loaded (performance.getEntriesByType('resource')) with { cache: 'reload' }, then location.reload(). No hashed file names needed.
@@ -1390,4 +1495,249 @@ defect('VER-REV-9 "Reload now" can bring the same old code back for up to ten mi
   assert.equal(before.update, true, 'the mark was shown before the reload');
   assert.equal(after.update, false, `after "Reload now" the page runs commit ${runningCommit.slice(0, 7)} and the chip still says ${JSON.stringify(after.text)}`);
   assert.equal(runningCommit, SHA_B);
+});
+
+// =============================================================================================================================================================
+// 13  the chip and the dialog on the fake DOM
+// =============================================================================================================================================================
+// A mutation run over the builder's tests and the tests above showed what only the real-browser script (tests/e2e/about.mjs, not part of CI) guarded: that the chip
+// starts the watcher at all, that the update box follows it, that the dialog stops listening when it closes, and what "Reload now" does with unsaved work. These tests
+// guard it in the fast tier, with the watcher replaced by a recording stand-in.
+
+/** A stand-in for the update watcher that records start() and lets the test publish an answer. */
+function standInWatcher() {
+  const subscribers = new Set();
+  const started = [];
+  let state = { available: false, remote: null, checkedAt: null };
+  return {
+    started,
+    subscribers,
+    watcher: { state: () => state, subscribe: (fn) => { subscribers.add(fn); return () => subscribers.delete(fn); }, start: (opts) => started.push(opts) },
+    publish(next) { state = next; for (const fn of [...subscribers]) fn(next); },
+  };
+}
+const UPDATE = Object.freeze({ available: true, remote: Object.freeze({ version: '0.7.0', commit: SHA_B, shortCommit: 'b3c4d5e', builtAt: '2026-10-10T08:00:00Z' }), checkedAt: 1 });
+const NO_UPDATE = Object.freeze({ available: false, remote: null, checkedAt: 2 });
+const SMALL_LOG = '## [0.6.0] - 2026-10-09\n### Added\n- The version is shown in the app.\n';
+
+test('13.1 the chip starts the watcher once, on the document and with the signal of the app; paints the answer as it changes; opens the dialog when clicked', async () => {
+  const dom = H.installFakeDom();
+  try {
+    const stand = standInWatcher();
+    const { ctx } = aboutRig();
+    let opened = 0;
+    ctx.dialogs.openAbout = () => { opened++; };
+    const controller = new AbortController();
+    const chip = createVersionChip(ctx, { build: LIVE, watcher: stand.watcher, signal: controller.signal });
+    assert.equal(stand.started.length, 1, 'start() is called once');
+    assert.equal(stand.started[0].document, dom.document, 'on the document');
+    assert.equal(stand.started[0].signal, controller.signal, 'with the signal of the app, so that the watcher stops with it');
+    assert.equal(chip.el.localName, 'button');
+    assert.equal(chip.el.getAttribute('type'), 'button');
+    const parts = () => { const [label, id, dot, hint] = chip.el.children; return { label: label.textContent, id: id.textContent, idHidden: id.hidden, dotHidden: dot.hidden, hintHidden: hint.hidden, hint: hint.textContent, marked: chip.el.classList.contains('is-update') }; };
+    assert.deepEqual(parts(), { label: 'v0.6.0', id: 'a45ce49', idHidden: false, dotHidden: true, hintHidden: true, hint: 'Update', marked: false }, 'quiet while nothing is new');
+    assert.ok(!/update/i.test(chip.el.getAttribute('aria-label')), 'and the spoken name says nothing about an update');
+    assert.ok(chip.el.getAttribute('aria-label').startsWith('v0.6.0 a45ce49'), 'it starts with what the eye reads (label in name)');
+    assert.match(chip.el.getAttribute('data-tip'), /^Build a45ce49, /);
+    stand.publish(UPDATE);
+    assert.deepEqual(parts(), { label: 'v0.6.0', id: 'a45ce49', idHidden: false, dotHidden: false, hintHidden: false, hint: 'Update', marked: true }, 'a dot and the word, not colour alone');
+    assert.match(chip.el.getAttribute('aria-label'), /An update is available/);
+    assert.match(chip.el.getAttribute('data-tip'), /^Update available \(v0\.7\.0\)/);
+    stand.publish(NO_UPDATE);
+    assert.deepEqual(parts(), { label: 'v0.6.0', id: 'a45ce49', idHidden: false, dotHidden: true, hintHidden: true, hint: 'Update', marked: false }, 'withdrawn when the site says so');
+    assert.ok(!/update/i.test(chip.el.getAttribute('aria-label')));
+    await chip.el.click();
+    assert.equal(opened, 1, 'a click opens the About dialog');
+
+    // a development copy: the plain label, and a watcher that can never ask
+    const dev = createVersionChip(aboutRig().ctx, { build: DEV });
+    assert.equal(dev.el.children[0].textContent, 'v0.6.0 dev');
+    assert.equal(dev.el.children[1].hidden, true, 'a development copy has no build id to show');
+    assert.equal(dev.watcher.enabled, false);
+    assert.match(dev.el.getAttribute('data-tip'), /^Development build, not deployed/);
+  } finally {
+    dom.restore();
+  }
+});
+
+test('13.2 the update box follows the watcher while the dialog is open, is empty without an update, and stops listening when the dialog closes', async () => {
+  const dom = H.installFakeDom();
+  try {
+    const fetchFn = async () => okResponse(SMALL_LOG); // given to every opening: a dialog that re-reads the list (VER-REV-8) must not reach for the real fetch
+    await loadChangelog({ fetchFn, force: true });
+    const stand = standInWatcher();
+    const { ctx, dlg, shown } = aboutRig();
+    createVersionChip(ctx, { build: LIVE, watcher: stand.watcher }); // registers the watcher for this ctx; the chip itself listens too
+    const chipListeners = stand.subscribers.size;
+    assert.equal(chipListeners, 1);
+    openAbout(ctx, dlg, { build: LIVE, fetchFn });
+    await settle();
+    const { body, onClose } = shown[0];
+    const box = () => body.querySelector('.about__update');
+    const reloadButtons = () => dom.elements(box()).filter((e) => e.localName === 'button' && /Reload now/.test(e.textContent));
+    assert.equal(stand.subscribers.size, chipListeners + 1, 'the dialog listens while it is open');
+    assert.equal(box().textContent, '', 'no update: the box is empty');
+    assert.equal(reloadButtons().length, 0);
+    stand.publish(UPDATE);
+    assert.match(box().textContent, /A newer version is available/);
+    assert.match(box().textContent, /Version 0\.7\.0 \(build b3c4d5e\) is on the site; this page is version 0\.6\.0/);
+    assert.equal(reloadButtons().length, 1, 'with the one button');
+    assert.equal(box().getAttribute('aria-live'), 'polite', 'announced politely, never as an alert');
+    stand.publish(NO_UPDATE);
+    assert.equal(box().textContent, '', 'withdrawn while the dialog is open');
+    stand.publish(UPDATE);
+    assert.equal(reloadButtons().length, 1);
+    onClose();
+    assert.equal(stand.subscribers.size, chipListeners, 'closing the dialog removes its listener (no leak per opening)');
+    stand.publish(NO_UPDATE);
+    assert.match(box().textContent, /A newer version is available/, 'and the closed dialog is left alone');
+
+    // opened while an update is already waiting: the box is there from the start
+    stand.publish(UPDATE);
+    openAbout(ctx, dlg, { build: LIVE, fetchFn });
+    await settle();
+    assert.match(shown[1].body.querySelector('.about__update').textContent, /A newer version is available/);
+    shown[1].onClose();
+    for (let i = 0; i < 5; i++) { openAbout(ctx, dlg, { build: LIVE, fetchFn }); shown.at(-1).onClose(); }
+    await settle(); // the lists of the openings arrive while the fake DOM is still installed
+    assert.equal(stand.subscribers.size, chipListeners + 0, 'six openings and closings leave one listener (the chip\'s)');
+  } finally {
+    dom.restore();
+  }
+});
+
+test('13.3 "Reload now" saves first and reloads once; a failed save with unsaved work is refused with a message; a failed save with nothing to lose still reloads', async () => {
+  const cases = [
+    ['the save works', { persist: () => true, dirty: true }, ['persist', 'reload'], 0],
+    ['the save fails, nothing is unsaved', { persist: () => false, dirty: false }, ['persist', 'reload'], 0],
+    ['the save fails, there is unsaved work', { persist: () => false, dirty: true }, ['persist'], 1],
+    ['the store has no persist()', { persist: undefined, dirty: true }, ['reload'], 0],
+  ];
+  for (const [name, { persist, dirty }, expectedEvents, warnings] of cases) {
+    const dom = H.installFakeDom();
+    try {
+      const fetchFn = async () => okResponse(SMALL_LOG);
+      await loadChangelog({ fetchFn, force: true });
+      const events = [];
+      const stand = standInWatcher();
+      const { ctx, dlg, shown, toasts } = aboutRig();
+      ctx.store = { getState: () => ({ dirty }), ...(persist ? { persist: () => { events.push('persist'); return persist(); } } : {}) };
+      dom.location.reload = () => { events.push('reload'); };
+      createVersionChip(ctx, { build: LIVE, watcher: stand.watcher });
+      stand.publish(UPDATE);
+      openAbout(ctx, dlg, { build: LIVE, fetchFn });
+      await settle();
+      const button = dom.elements(shown[0].body).find((e) => e.localName === 'button' && /Reload now/.test(e.textContent));
+      assert.ok(button, `${name}: the button is there`);
+      const seen = await unhandledDuring(async () => { await button.click(); });
+      assert.deepEqual(seen, [], name);
+      await settle();
+      assert.deepEqual(events, expectedEvents, name);
+      const warned = toasts.filter((t) => t[1] && t[1].kind === 'warn');
+      assert.equal(warned.length, warnings, name);
+      if (warnings) assert.match(warned[0][0], /could not be saved.*Download the project file/, 'it says what to do instead');
+    } finally {
+      dom.restore();
+    }
+  }
+});
+
+test('13.4 the list of changes marks the version the planner runs and the newer ones, and starts with the latest changes and the newest release open; the headings toggle', () => {
+  const dom = H.installFakeDom();
+  try {
+    const entries = V.parseChangelog('## [Unreleased]\n### Added\n- soon\n\n## [0.7.0] - 2026-10-12\n### Added\n- seven\n\n## [0.6.0] - 2026-10-09\n### Added\n- six\n\n## [0.5.0] - 2026-10-01\n### Added\n- five\n');
+    const list = renderChangelog(entries, { currentVersion: '0.6.0' });
+    const rows = list.children.map((entry) => { const toggle = entry.children[0].children[0]; assert.equal(entry.children[0].localName, 'h4', 'each version button sits in a heading'); return { text: toggle.textContent, open: toggle.getAttribute('aria-expanded'), hidden: entry.children[1].hidden, toggle, body: entry.children[1] }; });
+    assert.equal(rows.length, 4);
+    assert.match(rows[0].text, /^Latest changesnot in a numbered version yet$/, 'no mark on the unreleased changes');
+    assert.match(rows[1].text, /^Version 0\.7\.012 October 2026Newer than yours$/);
+    assert.match(rows[2].text, /^Version 0\.6\.09 October 2026Your version$/);
+    assert.match(rows[3].text, /^Version 0\.5\.01 October 2026$/, 'no mark on an older version');
+    assert.deepEqual(rows.map((r) => r.open), ['true', 'true', 'false', 'false'], 'the latest changes and the newest release start open');
+    assert.deepEqual(rows.map((r) => r.hidden), [false, false, true, true]);
+    rows[2].toggle.click();
+    assert.equal(rows[2].toggle.getAttribute('aria-expanded'), 'true');
+    assert.equal(rows[2].body.hidden, false, 'a click opens it');
+    rows[2].toggle.click();
+    assert.equal(rows[2].body.hidden, true, 'and closes it again');
+    assert.equal(rows[2].toggle.getAttribute('aria-controls'), rows[2].body.id, 'the button names the region it controls');
+    assert.equal(new Set(rows.map((r) => r.body.id)).size, 4, 'ids are unique');
+    // nothing released yet: the first entry is open whatever it is
+    assert.deepEqual([...openByDefault([{ unreleased: true, sections: [] }])], [0]);
+  } finally {
+    dom.restore();
+  }
+});
+
+test('13.5 a list of changes that could not be loaded offers "Try again", and the second try shows the list', async () => {
+  const dom = H.installFakeDom();
+  try {
+    await loadChangelog({ fetchFn: async () => { throw new TypeError('offline'); }, force: true }).catch(() => {}); // forget any list read before
+    let calls = 0;
+    const fetchFn = async () => { calls++; if (calls === 1) throw new TypeError('offline'); return okResponse(SMALL_LOG); };
+    const { ctx, dlg, shown } = aboutRig();
+    openAbout(ctx, dlg, { build: DEV, fetchFn });
+    await settle();
+    const news = shown[0].body.querySelector('[data-role="about-news"]');
+    assert.match(news.textContent, /offline/i);
+    const retry = dom.elements(news).find((e) => e.localName === 'button' && /Try again/.test(e.textContent));
+    assert.ok(retry, 'a button that asks again');
+    assert.equal(calls, 1);
+    await retry.click();
+    await settle();
+    assert.equal(calls, 2, 'the second try asks again (a failure is not remembered)');
+    assert.match(news.textContent, /Version 0\.6\.0/);
+    assert.ok(!/Try again/.test(news.textContent), 'and the message is gone');
+  } finally {
+    dom.restore();
+  }
+});
+
+test('13.6 a list of changes that never answers is given up after ten seconds and says so: the dialog is not stuck on "Loading"', async () => {
+  mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    let aborted = false;
+    const hang = (url, options) => new Promise((resolve, reject) => { options.signal.addEventListener('abort', () => { aborted = true; reject(new DOMException('aborted', 'AbortError')); }); });
+    const outcome = loadChangelog({ fetchFn: hang, force: true }).then(() => 'resolved', (err) => err.message);
+    await Promise.resolve();
+    mock.timers.tick(9_999);
+    assert.equal(aborted, false, 'still waiting at 9.999 s');
+    mock.timers.tick(1);
+    const message = await outcome;
+    assert.equal(aborted, true, 'the request was aborted at 10 s');
+    assert.match(message, /could not be loaded.*offline/i);
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test('13.7 the timeout of a request is always cleared: a good, a failed, a refused and a junk answer leave no timer behind', async () => {
+  for (const answer of [okResponse(NEWER_BODY), () => { throw new Error('offline'); }, { ok: false, status: 404 }, okResponse('junk'), okResponse('{"commit":"x"}')]) {
+    const { watcher, timers } = rig([answer]);
+    await watcher.check({ force: true });
+    assert.equal(timers.length, 1, 'one timeout was armed for the request');
+    assert.deepEqual(timers.map((t) => t.live), [false], 'and cleared');
+  }
+});
+
+test('VER-REV-13 the update box says "A newer version is available" and then "Version 0.6.0 is on the site; this page is version 0.6.0" when only the build differs (every merge to main between two releases)', async () => {
+  // The common case: main moves on without a release, so the site serves another commit of the SAME version number. The answer is right (there is something new to load,
+  // the list of changes calls it "Latest changes") but the headline talks about a newer version and the next sentence gives two equal version numbers.
+  // "A newer build is available" / "LogiPlan was updated", with the build names, would be true.
+  const dom = H.installFakeDom();
+  try {
+    const fetchFn = async () => okResponse(SMALL_LOG);
+    await loadChangelog({ fetchFn, force: true });
+    const stand = standInWatcher();
+    const { ctx, dlg, shown } = aboutRig();
+    createVersionChip(ctx, { build: LIVE, watcher: stand.watcher });
+    stand.publish({ available: true, remote: { version: '0.6.0', commit: SHA_B, shortCommit: 'b3c4d5e', builtAt: '2026-10-10T08:00:00Z' }, checkedAt: 1 });
+    openAbout(ctx, dlg, { build: LIVE, fetchFn });
+    await settle();
+    const text = shown[0].body.querySelector('.about__update').textContent;
+    assert.match(text, /b3c4d5e/, 'the box names the build that is on the site');
+    assert.doesNotMatch(text, /newer version/i, `the version number did not change, but the box says: ${text.slice(0, 170)}`);
+  } finally {
+    dom.restore();
+  }
 });

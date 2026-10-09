@@ -3,14 +3,15 @@
 //
 //   node scripts/bump-version.mjs patch|minor|major|x.y.z [--date YYYY-MM-DD] [--dry-run]
 //       package.json "version", js/build-info.js `version` and CHANGELOG.md are updated together: what stands under "## [Unreleased]" moves under the new
-//       heading "## [x.y.z] - date" (an empty one gets a stub that the changelog test refuses until it is written), and a fresh empty [Unreleased] stays on top.
+//       heading "## [x.y.z] - date" (an empty one gets a stub that the changelog test refuses until it is written; text that is no "- " bullet is kept, with a
+//       warning, never thrown away), and a fresh empty [Unreleased] stays on top. Nothing is written unless all three files can be updated.
 //   node scripts/bump-version.mjs --check
 //       exits 1 when package.json, js/build-info.js and the newest released entry of CHANGELOG.md name different versions, when that entry has no valid date,
 //       or when js/build-info.js is not the development default. `npm run version:check` runs it.
 //   --root DIR   work on another copy of these files (the tests use it)
 //
 // The commit and the build time are NOT kept in the repository: scripts/build-site.mjs writes them into the site it assembles (GITHUB_SHA, the clock).
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bumpVersion, compareVersions, latestRelease, parseChangelog, parseDay, parseVersion } from '../js/version.js';
@@ -21,7 +22,8 @@ const HERE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const STUB_LINE = '- TODO: say in plain words what planners can now do.';
 
 const isHeading = (line) => /^##\s/.test(line);
-const isBullet = (line) => /^\s{0,3}[-*+]\s+\S/.test(line);
+/** Text a person wrote under [Unreleased]: anything that is not blank and not a bare "### Section" heading. */
+const hasText = (line) => line.trim() !== '' && !/^###\s/.test(line);
 
 /** The new text of CHANGELOG.md for the release `version` made on `date` ("2026-10-09"). */
 export function bumpChangelog(text, version, date) {
@@ -40,7 +42,9 @@ export function bumpChangelog(text, version, date) {
   const body = lines.slice(unreleased + 1, end);
   while (body.length && !body[0].trim()) body.shift();
   while (body.length && !body[body.length - 1].trim()) body.pop();
-  const content = body.some(isBullet) ? body : ['### Added', STUB_LINE];
+  // what a person wrote is moved as it is, even when it is no "- " bullet (prose, a numbered list): the app would not show it and run() warns, but it is not
+  // thrown away; only an empty body (or bare section headings) gets the stub
+  const content = body.some(hasText) ? body : ['### Added', STUB_LINE];
   lines.splice(unreleased, end - unreleased, '## [Unreleased]', '', heading, '', ...content, '');
   return lines.join('\n').replace(/\n*$/, '\n');
 }
@@ -48,8 +52,13 @@ export function bumpChangelog(text, version, date) {
 /** `version: '0.6.0'` of js/build-info.js, or null. */
 export const readBuildInfoVersion = (text) => (/^\s*version:\s*'([^']*)'/m.exec(text) || [])[1] ?? null;
 
-/** js/build-info.js with another version. */
-export const writeBuildInfoVersion = (text, version) => text.replace(/^(\s*version:\s*)'[^']*'/m, `$1'${version}'`);
+/** js/build-info.js with another version; throws when its version line is not in the form the scripts read (`version: '0.6.0',`). */
+export function writeBuildInfoVersion(text, version) {
+  if (readBuildInfoVersion(text) === null) throw new Error("js/build-info.js: the line `version: '...'` was not found (a formatter may have changed its quotes). Nothing was written.");
+  const next = text.replace(/^(\s*version:\s*)'[^']*'/m, `$1'${version}'`);
+  if (readBuildInfoVersion(next) !== version) throw new Error('js/build-info.js: could not set the version. Nothing was written.');
+  return next;
+}
 
 /** package.json with another "version" (the rest of the text is kept as it is). */
 export function writePackageVersion(text, version) {
@@ -142,17 +151,28 @@ export function run(argv, { now = new Date(), log = console.log, error = console
   if (!opts.target) { error(`✗ Say which version to make.\n${USAGE}`); return 2; }
   const current = JSON.parse(files.pkgText).version;
   const next = ['patch', 'minor', 'major'].includes(opts.target) ? bumpVersion(current, opts.target) : opts.target;
-  if (!next || !parseVersion(next) || /^v/.test(next) || /\+/.test(next)) { error(`✗ "${opts.target}" is not patch, minor, major or a version like 1.2.3.\n${USAGE}`); return 2; }
+  if (!next || !parseVersion(next) || !/^\S+$/.test(next) || /^v/.test(next) || /\+/.test(next)) { error(`✗ "${opts.target}" is not patch, minor, major or a version like 1.2.3.\n${USAGE}`); return 2; }
   if (compareVersions(next, current) <= 0) { error(`✗ ${next} is not newer than the current version ${current}.`); return 2; }
   const date = opts.date ?? now.toISOString().slice(0, 10);
   if (!parseDay(date)) { error(`✗ "${date}" is not a date (YYYY-MM-DD).`); return 2; }
-  const out = {
-    'package.json': writePackageVersion(files.pkgText, next),
-    'js/build-info.js': writeBuildInfoVersion(files.buildInfoText, next),
-    'CHANGELOG.md': bumpChangelog(files.changelogText, next, date),
-  };
+  // all three texts are made BEFORE anything is written, so a file that cannot be updated leaves the others alone
+  let out;
+  try {
+    out = {
+      'package.json': writePackageVersion(files.pkgText, next),
+      'js/build-info.js': writeBuildInfoVersion(files.buildInfoText, next),
+      'CHANGELOG.md': bumpChangelog(files.changelogText, next, date),
+    };
+  } catch (err) {
+    error(`✗ ${err.message}`);
+    return 2;
+  }
   if (!opts.dryRun) for (const [rel, text] of Object.entries(out)) writeFileSync(path.join(opts.root, rel), text);
   log(`${opts.dryRun ? 'Would make' : 'Made'} version ${next} (was ${current}), dated ${date}: package.json, js/build-info.js, CHANGELOG.md.`);
+  const entry = parseChangelog(out['CHANGELOG.md']).find((e) => e.version === next);
+  if (!entry || !entry.sections.length) {
+    log(`\n! CHANGELOG.md: [${next}] has no "- " bullets, and the app shows nothing else (a numbered list, prose or a different bullet sign). What was there is kept; turn it into "- " lines.`);
+  }
   log([
     '',
     'Next:',
@@ -164,4 +184,13 @@ export function run(argv, { now = new Date(), log = console.log, error = console
   return 0;
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) process.exitCode = run(process.argv.slice(2));
+/** Was this file started by node (not imported)? Compares the real paths: a checkout reached through a symlink has two spellings. */
+function startedDirectly() {
+  try {
+    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+
+if (startedDirectly()) process.exitCode = run(process.argv.slice(2));

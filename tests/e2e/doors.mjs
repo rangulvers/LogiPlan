@@ -171,6 +171,7 @@ await withBrowser(async ({ browser, url, errors }) => {
     await page.getByRole('button', { name: 'Increase Doors' }).click();
     await page.getByRole('button', { name: 'Increase Doors' }).click();
     eq((await stationOf(page, 'source')).ops.trucks.doors, 4);
+    await frames(page, 3); // the panels follow the store a frame later: read the header after it (a busy machine read '3 doors' here)
     eq(await onSection.locator('.section__aside').innerText(), '4 doors');
     await page.getByLabel('Check-in', { exact: true }).fill('10');
     eq((await stationOf(page, 'source')).ops.trucks.checkIn, 600, 'minutes are stored as seconds');
@@ -199,7 +200,7 @@ await withBrowser(async ({ browser, url, errors }) => {
     await use.click();
     eq((await stationOf(page, 'source')).ops.trucks.doors, proposed, 'it sets the doors');
     eq((await state(page)).label, 'Set dock doors');
-    ok(await use.isHidden(), 'and the warning is gone');
+    ok(await use.waitFor({ state: 'hidden', timeout: 5000 }).then(() => true, () => false), 'and the warning is gone'); // the panel follows the store a frame later
 
     // Remove trucks: back to the legacy fields, nothing was deleted
     await page.locator('[data-role=remove-trucks]').click();
@@ -223,7 +224,8 @@ await withBrowser(async ({ browser, url, errors }) => {
     ok(await page.locator('[data-role=timetable]').isVisible(), 'the table');
     // the trucks of the rate became the rows (UX-8): the switch keeps the load of the plant; clearing them starts an empty table
     const seeded = (await trucks()).schedule;
-    ok(seeded.length > 10 && seeded[0].at === 0 && seeded.every((r) => r.pallets === 24), `the rate became ${seeded.length} rows from 00:00`);
+    // the default pallets per truck vary (uniform, 24 +- 25 %), so the rows keep the draw ("drawn": an empty cell) instead of freezing one number; a constant 24 would give 24 (ui.ops-panels.test.js)
+    ok(seeded.length > 10 && seeded[0].at === 0 && seeded.every((r) => r.pallets === null), `the rate became ${seeded.length} rows from 00:00, each with its pallets drawn from the distribution`);
     ok(/became \d+ rows of the timetable/.test((await toasts(page)).join(' ')), 'and the toast says so');
     await page.locator('[data-role=clear-rows]').click();
     await frames(page, 2);
@@ -874,7 +876,10 @@ await withBrowser(async ({ browser, url, errors }) => {
     await page.locator('[data-role=mode] button', { hasText: 'Use a timetable' }).click();
     await frames(page, 3);
     const schedule = async () => (await stationOf(page, 'source')).ops.trucks.schedule;
-    eq(await schedule(), [], 'a new timetable has no rows');
+    // the switch keeps the load (UX-8): one truck every 72 minutes of the converted Starter became the 20 rows of a day, their pallets drawn from the distribution
+    const seededRows = await schedule();
+    eq([seededRows.length, seededRows[0].at, seededRows[1].at, seededRows.every((r) => r.pallets === null)], [20, 0, 4320, true], 'a new timetable starts with the trucks of the rate: 20 rows of a day');
+    ok((await toasts(page)).some((t) => /became 20 rows of the timetable/.test(t)), 'and the toast says where the rows came from');
     ok((await toasts(page)).some((t) => /daily timetable/.test(t)), 'the first timetable says why the simulation will start again (copy 7)');
     await page.locator('[data-role=paste]').click();
     const paste = page.locator('[role=dialog]');
@@ -882,7 +887,7 @@ await withBrowser(async ({ browser, url, errors }) => {
     eq((await toasts(page)).filter((t) => /daily timetable/.test(t)), [], 'the toast does not lie over the preview of the dialog');
     await frames(page, 2);
     ok(/3 rows read, 1 skipped: row 5 “25:70” is not a time\. Nothing is applied until you press Use 3 rows\./.test(await paste.locator('[data-role=paste-summary]').innerText()), 'the preview says what it read');
-    eq(await schedule(), [], 'while the preview is open nothing is applied');
+    eq(await schedule(), seededRows, 'while the preview is open nothing is applied');
     await paste.getByRole('button', { name: 'Use 3 rows' }).click();
     await paste.waitFor({ state: 'detached' });
     eq(await schedule(), [{ at: 21600, pallets: 24 }, { at: 23400, pallets: 18 }, { at: 28800, pallets: null }], 'after "Use 3 rows" the timetable is there');

@@ -10,22 +10,36 @@ that the history can be read. How to cut a new version is described in the READM
 ## [Unreleased]
 
 ### Added
-- **The version is shown in the app.** The number of the running version sits at the bottom right of the window. Click it to see which build you
-  are using and when it was made, to copy that information for a bug report in one click, and to read this list of changes. On narrow screens the
-  *More* menu has the same window, and so does the Help window (*About and what is new*).
+- **The version is shown in the app.** The number of the running version and the short code of its build (for example *v0.6.0 a45ce49*) sit at the bottom
+  right of the window. The number changes with a release, the code with every update of the site. Click it to see which build you are using and when it
+  was made, to copy that information for a bug report in one click, and to read this list of changes. When the window is too small for the bottom line,
+  the *More* menu has the same window, and so does the Help window (*About and what is new*).
 - **A hint when a newer version is available.** If the site has been updated while your page was open, the version number gets an *Update* mark
-  and the About window a Reload button. LogiPlan never reloads by itself, so a running simulation or an edit is never interrupted, and your plant is
-  kept in this browser.
+  (and the *More* button a dot) and the About window a Reload button. LogiPlan never reloads by itself, so a running simulation or an edit is never
+  interrupted. *Reload now* keeps your plant, which is saved in this browser first, and fetches the new files even if the browser still holds old ones;
+  a running simulation, its results and the undo history start again.
 - **Reports say which version made them.** The footer of the HTML report names the version of LogiPlan that created it.
 
 ### Improved
 - **Typing a time in the truck timetable or the plant clock** no longer restarts the simulation with every digit; the time is applied when you have
   finished typing it.
 - **Run one day and Run one week** tell you more honestly how long they take on this kind of plant, and that they also set the run length of the plant.
+- **Switching a Goods in or Goods out to a timetable keeps your trucks.** The trucks of the rate become the rows of one day, so the plant receives the
+  same load until you edit the rows, paste your own or remove them.
+- **Pasting from English Excel works.** Times such as 6:00 AM and 06:00:00 are read, and a time that cannot be read says what to change in the
+  spreadsheet (for example a time copied as the number 0.25, which is how Excel stores 06:00).
+- **A plant with a timetable explains what an edit does.** The simulation starts again at the start of the clock, a line says that the time of day
+  matters and opens Experiments, and comparisons start from whole days.
+- **The gate chip and the number of doors stay visible when you zoom out**, also on stations that are only two cells high.
+- **Remove trucks offers Undo**, and the trucks section says where the demand setting enters its numbers and when doors beyond the road cells of a
+  station cannot be unloaded any faster.
 
 ### Fixed
 - **Delete and Backspace on a button, tab or link** (for example the delete button of a timetable row) no longer delete the station that is
   selected on the plan.
+- **Typing a number above the limit in the Doors field** (33 doors) ends at the limit instead of at the first digit you typed, and a very long
+  station name wraps inside a message instead of running out of it.
+- **A pasted row without an arrival time** (an empty cell before the number of pallets) says so instead of calling the pallets a bad time.
 
 ## [0.6.0] - 2026-10-09
 
@@ -64,15 +78,12 @@ that the history can be read. How to cut a new version is described in the READM
 
 ## [0.4.0] - 2026-10-09
 
-### Added
-- **A warning for project files from a newer version.** A project file or share link that was saved by a newer version of LogiPlan than the one you are
-  running opens with a clear message that newer details may be missing, instead of being read wrongly.
-
 ### Improved
 - **Preparation for the warehouse features.** Plants, project files and share links have room for what comes next, and your existing plants keep giving
-  exactly the same results as before. New automatic tests compare the results of the examples number by number to make sure of that.
-- How fast the simulation runs on the three examples is measured and recorded (the script is part of the project), so that a later change can be compared
-  against it.
+  exactly the same results as before: the three examples give the same numbers to the last digit.
+- **A project file says which version of LogiPlan it needs.** A file that uses nothing new still opens everywhere without a message. A file that needs
+  a newer version is recognised by an older copy (for example a browser tab that was opened before an update), which tells you that newer details may be
+  missing, as LogiPlan already did, instead of silently leaving them out.
 
 ## [0.3.0] - 2026-10-09
 
@@ -89,8 +100,6 @@ that the history can be read. How to cut a new version is described in the READM
   a free dock wins over a busy one that is only a little closer. Before, every vehicle went to the same dock and queued while the others stood free.
 - **Findings about docks.** Results list how busy every dock of a station was, and the findings say when vehicles queue for docks that are always busy,
   when idle vehicles block a dock, and when one dock does all the work.
-- A design document describes where the warehouse features are going (docs/WAREHOUSE-DESIGN.md).
-- Behind the scenes, the automatic checks of every change run in parallel, so a change is verified in about two minutes instead of about three and a half.
 
 ## [0.2.0] - 2026-10-08
 

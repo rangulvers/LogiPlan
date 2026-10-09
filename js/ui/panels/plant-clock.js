@@ -61,7 +61,7 @@ export function runPatch(seconds) {
   return { duration: seconds, warmup: 0 };
 }
 
-/** What a run of `seconds` costs, in words: "roughly 10 to 40 seconds" for a day, seven times that for a week. */
+/** What a run of `seconds` costs, in words: DAY_COST_TEXT ("roughly 2 to 10 seconds", measured, see above) for a day, a longer span for a week. */
 export function runCostText(seconds) {
   return seconds >= WEEK_SECONDS ? 'roughly 15 to 60 seconds' : DAY_COST_TEXT;
 }

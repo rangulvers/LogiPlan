@@ -15,8 +15,9 @@
 //   Pallets    a whole number 1..200; "24,0", "24.0", "24,00" and "24.00" are accepted as 24; "24,5" and "1.000" are refused (never guessed);
 //              an empty or missing column means "draw the pallets from the distribution" (`pallets: null`).
 //   Header     the first non-empty line is skipped when it contains no digit ("Arrival;Pallets", "Ankunft<TAB>Paletten").
-//   Lines      \n, \r\n and \r end a line; empty lines are ignored (line numbers still count them); a UTF-8 BOM is ignored. Trailing empty
-//              columns ("6:00;24;") are ignored; a line with more than two columns is refused.
+//   Lines      \n, \r\n and \r end a line; empty lines are ignored (line numbers still count them); a UTF-8 BOM is ignored. White space at the ends of a
+//              line is ignored, but a TAB there is an empty cell ("<TAB>24" has no arrival time). Trailing empty columns ("6:00;24;") are ignored; a
+//              line with more than two columns is refused.
 //   Cap        a timetable holds MAX_SCHEDULE_ROWS (500) rows: from the 501st good row on nothing is read, and ONE skipped entry says so.
 
 import { MAX_SCHEDULE_ROWS, TRUCK_RANGES } from '../../model/ops.js';
@@ -44,6 +45,19 @@ function splitFields(line, sep, dropTrailing = true) {
   fields.push(cur.trim());
   while (dropTrailing && fields.length > 2 && fields[fields.length - 1] === '') fields.pop();
   return fields;
+}
+
+/**
+ * A line without the white space at its ends, EXCEPT tabs: a tab at the start is the separator after an EMPTY first cell ("<TAB>24": a pallet count without an
+ * arrival time must say "has no arrival time", not "“24” is not a time"), one at the end an empty last cell. A linear scan (a trailing-white-space regexp is quadratic).
+ */
+function trimKeepingTabs(raw) {
+  const blank = (ch) => ch !== '\t' && ch.trim() === '';
+  let a = 0;
+  let b = raw.length;
+  while (a < b && blank(raw[a])) a++;
+  while (b > a && blank(raw[b - 1])) b--;
+  return raw.slice(a, b);
 }
 
 const NO_SEPARATOR = '\u0000';
@@ -146,7 +160,7 @@ function palletsReason(text, error) {
  */
 export function parseTimetable(text) {
   const source = typeof text === 'string' ? text.replace(/^﻿/, '') : '';
-  const all = source.split(/\r\n|\r|\n/).map((raw, i) => ({ line: i + 1, text: raw.trim() })).filter((l) => l.text !== '');
+  const all = source.split(/\r\n|\r|\n/).map((raw, i) => ({ line: i + 1, text: trimKeepingTabs(raw) })).filter((l) => l.text.trim() !== '');
   const result = { rows: [], skipped: [], header: null, separator: null, omitted: 0 };
   if (all.length === 0) return result;
 
@@ -160,7 +174,7 @@ export function parseTimetable(text) {
   const sep = separator ? SEPARATOR_CHARS[separator] : NO_SEPARATOR;
 
   const skip = (entry, code, reason) => result.skipped.push({
-    line: entry.line, text: entry.text, reason, message: `row ${entry.line} ${reason}`, code,
+    line: entry.line, text: entry.text.trim(), reason, message: `row ${entry.line} ${reason}`, code,
   });
 
   for (let i = 0; i < data.length; i++) {
@@ -168,7 +182,7 @@ export function parseTimetable(text) {
     if (result.rows.length >= MAX_SCHEDULE_ROWS) {
       result.omitted = data.length - i;
       const reason = `only ${MAX_SCHEDULE_ROWS} rows fit in a timetable; this row and ${plural(result.omitted - 1, 'row', 'rows')} after it were left out`;
-      result.skipped.push({ line: entry.line, text: entry.text, reason, message: `from row ${entry.line} on, ${reason}`, code: 'too-many' });
+      result.skipped.push({ line: entry.line, text: entry.text.trim(), reason, message: `from row ${entry.line} on, ${reason}`, code: 'too-many' });
       break;
     }
     const fields = splitFields(entry.text, sep);

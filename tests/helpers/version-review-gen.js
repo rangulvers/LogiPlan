@@ -17,8 +17,6 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-/** Known defects are `todo` tests (they fail, the suite stays green); VER_REVIEW_STRICT=1 makes them ordinary tests. */
-export const STRICT = process.env.VER_REVIEW_STRICT === '1';
 /** The real-browser section is opt-in (it needs Playwright and takes about a minute): VER_REVIEW_BROWSER=1. */
 export const BROWSER = process.env.VER_REVIEW_BROWSER === '1';
 
@@ -247,6 +245,7 @@ class FElement extends FNode {
   getAttribute(k) { return this.attrs.has(k) ? this.attrs.get(k) : null; }
   hasAttribute(k) { return this.attrs.has(k); }
   removeAttribute(k) { this.attrs.delete(k); }
+  toggleAttribute(k, force) { const on = force === undefined ? !this.attrs.has(k) : Boolean(force); if (on) this.attrs.set(k, ''); else this.attrs.delete(k); return on; }
   get id() { return this.getAttribute('id') || ''; }
   set id(v) { this.setAttribute('id', v); }
   get className() { return this.getAttribute('class') || ''; }
@@ -381,7 +380,7 @@ export function installFakeDom({ host = 'logiplan.test', hostname = host.replace
  * Serve the site as scripts/build-site.mjs assembles it (a fake GITHUB_SHA, so the build is 'live') to headless Chromium on 127.0.0.1 and attack it from the
  * network side: a version.json that never answers, answers 404 / 500 / junk / HTML / a huge body / a connection reset / a hostile version, a CHANGELOG.md full of
  * markup, a slow one, a big one. For each: the app still starts, there is no page error, nothing from the files runs (`window.__pwned` stays unset), the chip
- * shows what it should. Returns { problems, notes }: `problems` are failures; `notes` are the places where a known defect (VER-REV-3, VER-REV-4) shows.
+ * shows what it should. Returns { problems, notes }: `problems` are failures; `notes` are observations that are not failures (empty since VER-REV-3 and VER-REV-4 were fixed).
  * @returns {Promise<{ problems: string[], notes: string[], log: object[] }>}
  */
 export async function runBrowserChecks() {
@@ -392,8 +391,10 @@ export async function runBrowserChecks() {
   const siteDir = path.join(dir, 'site');
   assembleSite({ out: siteDir, env: { GITHUB_SHA: SHA_A, GITHUB_REF_NAME: 'main', GITHUB_REPOSITORY: 'rangulvers/LogiPlan', SOURCE_DATE_EPOCH: '1791558480' } });
   const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json', '.svg': 'image/svg+xml', '.md': 'text/markdown; charset=utf-8' };
+  const served = []; // what the server really received (the browser adds cache headers below the level Playwright can see)
   const server = http.createServer((req, res) => {
     const rel = decodeURIComponent(new URL(req.url, 'http://x').pathname).replace(/\/$/, '/index.html');
+    served.push({ rel, url: req.url, headers: req.headers });
     try {
       const file = path.resolve(siteDir, `.${rel}`);
       if (!file.startsWith(siteDir + path.sep)) throw new Error('outside');
@@ -451,17 +452,48 @@ export async function runBrowserChecks() {
   try {
     // 127.0.0.1:PORT is not the live site (VER-REV-4)
     const where = await scenario('live build on 127.0.0.1', async () => {}, async (page) => (await facts(page))['Where it runs']);
-    if (where && /^Live site/.test(where)) (STRICT ? problems : notes).push(`VER-REV-4: a deployed build on ${origin} says "${where}"`);
+    if (where && /^Live site/.test(where)) problems.push(`VER-REV-4: a deployed build on ${origin} says "${where}"`);
 
-    // a version.json that never answers: the app starts, the chip is plain, the dialog opens
-    await scenario('version.json never answers', async (page) => { await page.route('**/version.json*', () => {}); }, async (page) => {
+    // what the page asks the network for: its own origin only, ONE version.json soon after start (a unique address, `cache: 'no-store'`), CHANGELOG.md only when the
+    // dialog is opened (and only once), and no more version.json requests when the tab "becomes visible" again within five minutes
+    const traffic = [];
+    const baseline = await scenario('start-up traffic', async (page) => { page.on('request', (r) => traffic.push({ url: r.url(), headers: r.headers() })); }, async (page) => {
+      await page.waitForTimeout(3500);
+      const ofKind = (re) => traffic.filter((r) => re.test(new URL(r.url).pathname));
+      const foreign = traffic.filter((r) => !r.url.startsWith(origin) && !/^(data|blob|about):/.test(r.url));
+      if (foreign.length) problems.push(`start-up traffic: requests to other origins: ${foreign.map((r) => r.url).slice(0, 3).join(', ')}`);
+      if (ofKind(/\/version\.json$/).length !== 1) problems.push(`start-up traffic: ${ofKind(/\/version\.json$/).length} requests for version.json within 3.5 s of the start, expected exactly 1`);
+      const asked = served.filter((r) => r.rel === '/version.json');
+      if (asked.length !== 1) problems.push(`start-up traffic: the server received ${asked.length} requests for version.json, expected 1`);
+      else {
+        // (Chromium sends no Cache-Control header for `cache: 'no-store'`: it simply does not use its HTTP cache. What reaches the server is the unique address.)
+        if (!/[?&]t=\d+/.test(asked[0].url)) problems.push(`start-up traffic: version.json carries no cache-busting query: ${asked[0].url}`);
+      }
+      if (ofKind(/CHANGELOG\.md$/).length) problems.push('start-up traffic: CHANGELOG.md was requested before anyone opened the dialog');
+      for (let i = 0; i < 3; i++) await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+      await page.waitForTimeout(300);
+      if (ofKind(/\/version\.json$/).length !== 1) problems.push(`start-up traffic: the throttle let ${ofKind(/\/version\.json$/).length} requests for version.json through after three visibility changes`);
+      for (let i = 0; i < 2; i++) {
+        await page.locator('.versionchip').click();
+        await page.locator('[data-role=about-news] .about__entry').first().waitFor();
+        await page.keyboard.press('Escape');
+        await page.locator('[role=dialog]').waitFor({ state: 'detached' });
+      }
+      if (ofKind(/CHANGELOG\.md$/).length !== 1) problems.push(`start-up traffic: CHANGELOG.md was requested ${ofKind(/CHANGELOG\.md$/).length} times for two openings of the dialog, expected 1`);
+      return { requests: traffic.length };
+    });
+
+    // a version.json that never answers: the app starts (as fast as without the check), the chip is plain, the dialog opens
+    const hang = await scenario('version.json never answers', async (page) => { await page.route('**/version.json*', () => {}); }, async (page) => {
       await page.waitForTimeout(3500);
       const state = await chip(page);
-      if (state.update || state.text !== 'v0.6.0') problems.push(`never answers: chip ${JSON.stringify(state)}`);
+      if (state.update || state.text.replace(/\s+/g, ' ') !== 'v0.6.0 a45ce49') problems.push(`never answers: chip ${JSON.stringify(state)}`);
       const f = await facts(page);
       if (f.Version !== '0.6.0') problems.push(`never answers: dialog ${JSON.stringify(f)}`);
       return state;
     });
+    const readyOf = (name) => log.find((e) => e.name === name)?.readyMs;
+    if (baseline && hang && readyOf('version.json never answers') - readyOf('start-up traffic') > 3000) problems.push(`never answers: the app needed ${readyOf('version.json never answers')} ms to start, ${readyOf('start-up traffic')} ms with a version.json that answers (the check must not hold up the start)`);
 
     const answers = {
       '404': [(r) => r.fulfill({ status: 404, body: 'nf' }), false, true],
@@ -493,7 +525,7 @@ export async function runBrowserChecks() {
     }, async (page) => {
       await page.waitForTimeout(2600);
       const state = await chip(page);
-      if (state.update) (STRICT ? problems : notes).push('VER-REV-3: the site serves an OLDER build of the same version and the chip says "Update"');
+      if (state.update) problems.push('VER-REV-3: the site serves an OLDER build of the same version and the chip says "Update"');
       return state;
     });
 
@@ -513,7 +545,7 @@ export async function runBrowserChecks() {
           text: news.innerText,
         };
       });
-      const extra = seen.tags.filter((t) => !['button', 'code', 'div', 'em', 'h4', 'li', 'path', 'span', 'strong', 'svg', 'ul'].includes(t));
+      const extra = seen.tags.filter((t) => !['button', 'code', 'div', 'em', 'h4', 'h5', 'li', 'p', 'path', 'span', 'strong', 'svg', 'ul'].includes(t));
       if (extra.length) problems.push(`hostile CHANGELOG.md: unexpected elements ${extra.join(', ')}`);
       const bad = seen.attrs.filter((a) => /^on|^href$|^src$|^srcdoc$|^style$/.test(a));
       if (bad.length) problems.push(`hostile CHANGELOG.md: unexpected attributes ${bad.join(', ')}`);

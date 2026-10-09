@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import {
   parseVersion, compareVersions, isNewer, bumpVersion, isCommitId, shortCommit, normalizeBuild, isReleaseBuild, normalizeRepositoryUrl, commitUrl,
   versionLabel, buildSummary, whereItRuns, formatBuildDate, parseDay, formatDay, parseChangelog, latestRelease, parseInline, readRemoteBuild, sameCommit,
-  updateVerdict, chipTooltip, chipAriaLabel, browserName, bugReportLine, CHANGELOG_LIMITS, MAX_TEXT,
+  updateVerdict, chipTooltip, chipAriaLabel, chipBuildId, chipText, updateNotice, hostName, browserName, bugReportLine, CHANGELOG_LIMITS, MAX_TEXT,
 } from '../js/version.js';
 
 const SHA = 'a45ce493dfd9ca7440743e6931042fca39642504';
@@ -349,14 +349,58 @@ test('the tooltip names the build and the day; it says so when an update is wait
   assert.equal(chipTooltip({ ...LIVE, builtAt: null }), 'Build a45ce49 – click for what is new');
   assert.equal(chipTooltip(DEV), 'Development build, not deployed – click for what is new');
   assert.equal(chipTooltip({ ...LIVE, commit: 'local', channel: 'local', builtAt: '2026-10-09T15:08:00Z' }, { timeZone: 'UTC' }), 'Local build, 9 Oct 2026 – click for what is new');
+  // an update: ONE "click", the number it brings (or the build when the number is the same), and what the planner has now
   const text = chipTooltip(LIVE, { timeZone: 'UTC', update: { version: '0.7.0' } });
-  assert.match(text, /^Update available \(v0\.7\.0\) – click to see what is new and to reload\. Build a45ce49, 9 Oct 2026/);
+  assert.equal(text, 'Update available (v0.7.0) – click for details and to reload. Your build: a45ce49, 9 Oct 2026');
+  assert.equal((text.match(/click/gi) || []).length, 1);
+  const same = chipTooltip(LIVE, { timeZone: 'UTC', update: { version: '0.6.0', commit: NEWER_SHA, shortCommit: 'b3c4d5e' } });
+  assert.equal(same, 'Update available (build b3c4d5e) – click for details and to reload. Your build: a45ce49, 9 Oct 2026', 'the same number is not called a version');
+  assert.ok(!/v0\.6\.0/.test(same));
+  assert.equal(chipTooltip(DEV, { update: { version: '0.7.0' } }), 'Update available (v0.7.0) – click for details and to reload. Your copy');
 });
 
-test('the spoken name of the chip says what it is and what it does', () => {
-  assert.equal(chipAriaLabel(LIVE), 'LogiPlan version 0.6.0. Show version information and what is new');
-  assert.equal(chipAriaLabel(DEV), 'LogiPlan version 0.6.0, development build. Show version information and what is new');
-  assert.equal(chipAriaLabel(LIVE, { update: { version: '0.7.0' } }), 'LogiPlan version 0.6.0. An update is available. Show version information and what is new');
+test('the chip shows the number and the id of the build; "dev" and "local" take the place of the id', () => {
+  assert.equal(chipBuildId(LIVE), 'a45ce49');
+  assert.equal(chipBuildId(DEV), '');
+  assert.equal(chipBuildId({ ...LIVE, commit: 'local', channel: 'local' }), '');
+  assert.equal(chipBuildId(undefined), '');
+  assert.equal(chipText(LIVE), 'v0.6.0 a45ce49');
+  assert.equal(chipText(LIVE, { update: {} }), 'v0.6.0 a45ce49 Update');
+  assert.equal(chipText(DEV), 'v0.6.0 dev');
+  assert.equal(chipText({ ...LIVE, commit: 'local', channel: 'local' }), 'v0.6.0 local');
+  // two deploys of one version number differ in what the chip shows
+  assert.notEqual(chipText(LIVE), chipText({ ...LIVE, commit: NEWER_SHA, shortCommit: 'b3c4d5e' }));
+});
+
+test('the spoken name of the chip starts with what the eye reads (label in name, WCAG 2.5.3) and then says what it does', () => {
+  assert.equal(chipAriaLabel(LIVE), 'v0.6.0 a45ce49. Show version information and what is new');
+  assert.equal(chipAriaLabel(DEV), 'v0.6.0 dev. Development build. Show version information and what is new');
+  assert.equal(chipAriaLabel({ ...LIVE, commit: 'local', channel: 'local' }), 'v0.6.0 local. Local build. Show version information and what is new');
+  assert.equal(chipAriaLabel(LIVE, { update: { version: '0.7.0' } }), 'v0.6.0 a45ce49 Update. An update is available. Show version information and what is new');
+  for (const [build, update] of [[LIVE, null], [LIVE, {}], [DEV, null], [{ ...LIVE, commit: 'local', channel: 'local' }, null], [undefined, null]]) {
+    const name = chipAriaLabel(build, { update });
+    for (const word of chipText(build, { update }).split(' ')) assert.ok(name.includes(word), `"${word}" is part of "${name}"`);
+    assert.ok(name.startsWith(chipText(build, { update })), 'and it starts with the visible text');
+  }
+  assert.ok(!/update/i.test(chipAriaLabel(LIVE)), 'nothing about an update while there is none');
+});
+
+test('updateNotice: a higher number is a new version, the same number a new build; it always names both builds', () => {
+  const remote = { version: '0.7.0', commit: NEWER_SHA, shortCommit: 'b3c4d5e' };
+  assert.deepEqual(updateNotice(LIVE, remote), {
+    kind: 'version', headline: 'A newer version is available', detail: 'Version 0.7.0 (build b3c4d5e) is on the site; this page is version 0.6.0.', short: 'v0.7.0',
+  });
+  assert.deepEqual(updateNotice(LIVE, { ...remote, version: '0.6.0' }), {
+    kind: 'build', headline: 'A newer build is available', detail: 'Build b3c4d5e of version 0.6.0 is on the site; this page is build a45ce49.', short: 'build b3c4d5e',
+  });
+  assert.equal(updateNotice(LIVE, { version: 'v1.0.0', commit: NEWER_SHA }).detail, 'Version 1.0.0 (build b3c4d5e) is on the site; this page is version 0.6.0.', 'the short id is made from the commit');
+  assert.equal(updateNotice(LIVE, { version: '0.7.0' }).detail, 'Version 0.7.0 is on the site; this page is version 0.6.0.', 'without an id nothing is invented');
+  assert.equal(updateNotice(LIVE, { version: '0.6.0' }).detail, 'A newer build of version 0.6.0 is on the site; this page is build a45ce49.');
+  for (const junk of [null, undefined, 5, 'x', [], { version: { x: 1 }, commit: ['a'] }, { version: '<b>', shortCommit: '<img>' }]) {
+    const n = updateNotice(LIVE, junk);
+    assert.equal(n.kind, 'build');
+    assert.ok(!/undefined|NaN|\[object|<|>/.test(JSON.stringify(n)), JSON.stringify(n));
+  }
 });
 
 test('browserName reads the common user agents and survives junk', () => {
@@ -376,4 +420,60 @@ test('the bug report line: version, build, build time in UTC, browser and sizes'
   assert.equal(bugReportLine(LIVE, { window: { width: NaN, height: 5 }, screen: { width: 800.4, height: 600.6 } }), 'LogiPlan v0.6.0 (a45ce49, built 2026-10-09 15:08 UTC), screen 800 x 601');
   assert.equal(bugReportLine(undefined), 'LogiPlan v0.0.0 (development build)');
   assert.ok(!/undefined|NaN|\[object/.test(bugReportLine(LIVE, { userAgent: 5, window: 'x', screen: [] })));
+});
+
+// ---- the fixes of the review: the verdict knows the build time, the host has no port, a zone has a name, a changelog line is read in linear time ------------------
+
+test('updateVerdict: for the SAME version number the build time says which deploy is newer; equal or missing times leave it to the commit', () => {
+  const mine = { ...LIVE, builtAt: '2026-10-09T15:08:00Z' };
+  const site = (builtAt, version = '0.6.0') => ({ version, commit: NEWER_SHA, builtAt });
+  assert.deepEqual([updateVerdict(mine, site('2026-10-10T08:00:00Z')).available, updateVerdict(mine, site('2026-10-10T08:00:00Z')).reason], [true, 'newer']);
+  assert.deepEqual([updateVerdict(mine, site('2026-10-01T00:00:00Z')).available, updateVerdict(mine, site('2026-10-01T00:00:00Z')).reason], [false, 'older'], 'an older deploy that finished last is no update');
+  assert.equal(updateVerdict(mine, site('2026-10-09T15:07:59Z')).reason, 'older', 'even one second older');
+  assert.equal(updateVerdict(mine, site('2026-10-09T15:08:00Z')).available, true, 'equal build times say nothing about the direction');
+  assert.equal(updateVerdict(mine, site('2026-10-09T17:08:00+02:00')).available, true, 'the same instant written with an offset');
+  assert.equal(updateVerdict(mine, site(undefined)).available, true, 'the site gives no build time: the commit decides');
+  assert.equal(updateVerdict(mine, site('soon')).available, true, 'a build time that is no date is not looked at');
+  assert.equal(updateVerdict({ ...mine, builtAt: null }, site('2026-10-01T00:00:00Z')).available, true, 'this build has none');
+  // a higher number wins whatever the times say; a lower number is a rollback and is not announced
+  assert.equal(updateVerdict(mine, site('2026-10-01T00:00:00Z', '0.7.0')).available, true);
+  assert.equal(updateVerdict(mine, site('2026-10-20T00:00:00Z', '0.5.0')).reason, 'older');
+});
+
+test('hostName drops the port and keeps everything else; whereItRuns calls a local host local with or without a port', () => {
+  for (const [host, name] of [['localhost:8080', 'localhost'], ['127.0.0.1:41234', '127.0.0.1'], ['[::1]:8080', '[::1]'], ['[::1]', '[::1]'], ['::1', '::1'], ['laptop.local:3000', 'laptop.local'],
+    ['Example.COM', 'example.com'], ['example.com:', 'example.com'], ['', ''], [undefined, ''], [null, ''], ['  localhost:80  ', 'localhost']]) {
+    assert.equal(hostName(host), name, String(host));
+  }
+  for (const host of ['localhost:8080', '127.0.0.1:8080', '127.0.0.1:41234', '[::1]:8080', 'laptop.local:3000', 'app.localhost:8080', 'localhost', 'LOCALHOST:3000']) {
+    assert.equal(whereItRuns(LIVE, host), 'Built site on this computer', host);
+  }
+  for (const host of ['rangulvers.github.io', 'logiplan.test:8080', 'localhost.evil.com:8080', 'xlocalhost:8080', 'example.com:3000']) assert.equal(whereItRuns(LIVE, host), 'Live site', host);
+  assert.equal(whereItRuns(DEV, 'rangulvers.github.io'), 'Local development');
+});
+
+test('a time zone is named when it has a name: EDT for New York, CEST for Berlin, the offset where no abbreviation exists', () => {
+  const at = '2026-10-09T15:08:00Z';
+  assert.equal(formatBuildDate(at, { timeZone: 'Europe/Berlin' }).local, '9 Oct 2026, 17:08 CEST');
+  assert.equal(formatBuildDate(at, { timeZone: 'America/New_York' }).local, '9 Oct 2026, 11:08 EDT');
+  assert.equal(formatBuildDate(at, { timeZone: 'America/Los_Angeles' }).zone, 'PDT');
+  assert.equal(formatBuildDate(at, { timeZone: 'UTC' }).local, '9 Oct 2026, 15:08 UTC');
+  assert.match(formatBuildDate(at, { timeZone: 'Asia/Tokyo' }).local, /^10 Oct 2026, 00:08 GMT\+9$/);
+  assert.equal(formatBuildDate('2026-01-09T15:08:00Z', { timeZone: 'America/New_York' }).zone, 'EST');
+});
+
+test('parseChangelog reads a long run of blanks in linear time (a regular expression like /\\s+$/ took 5 s for 80,000)', () => {
+  const t0 = performance.now();
+  for (const n of [20_000, 80_000, 390_000]) {
+    parseChangelog(`## [1.0.0]\n- a${' '.repeat(n)}b\n`);
+    parseChangelog(`## [1.0.0]${' '.repeat(n)}x\n`);
+    parseChangelog(`## [1.0.0] - 2026-01-01${' '.repeat(n)}\n### Added\n-${' '.repeat(n)}x\n${' '.repeat(n)}\n  more\n`);
+    parseChangelog(`${' '.repeat(n)}\n${'\t'.repeat(n)}`);
+  }
+  assert.ok(performance.now() - t0 < 1500, `took ${(performance.now() - t0).toFixed(0)} ms`);
+  // a line is cut at CHANGELOG_LIMITS.line before anything reads it, and the result is the same as before for every normal line
+  assert.equal(CHANGELOG_LIMITS.line, 2000);
+  const [entry] = parseChangelog(`## [1.0.0]\n- ${'x'.repeat(5000)}\n`);
+  assert.equal(entry.sections[0].items[0].length, CHANGELOG_LIMITS.item);
+  assert.deepEqual(parseChangelog('## [1.0.0]  \n- a   \n  b  \n')[0].sections[0].items, ['a b'], 'trailing blanks are dropped');
 });

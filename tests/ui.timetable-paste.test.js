@@ -213,3 +213,22 @@ test('M1-MODEL-REV-4: the parser stays linear on a long run of spaces (the dialo
   }
   assert.equal(parseTimeField('6:00' + ' '.repeat(5000) + 'Uhr'), h(6), 'and a long gap before Uhr is still read');
 });
+
+test('M1-MODEL-REV-9: an empty time cell before a tab says "has no arrival time", and the line is still read in linear time', () => {
+  const r = parseTimetable('\t24\n6:00\t12');
+  assert.equal(r.separator, 'tab');
+  assert.deepEqual(r.rows.map((x) => [x.at, x.pallets]), [[h(6), 12]]);
+  assert.equal(r.skipped.length, 1);
+  assert.equal(r.skipped[0].code, 'no-time');
+  assert.equal(r.skipped[0].message, 'row 1 has no arrival time');
+  assert.equal(r.skipped[0].text, '24', 'the stored text of a skipped line carries no leading tab');
+  // spaces around the tab are still ignored, a line of nothing but white space is an empty line, and a tab at the END is an empty pallets cell
+  assert.deepEqual(parseTimetable('  \t  \n  6:00 \t 5  ').rows.map((x) => [x.at, x.pallets]), [[h(6), 5]]);
+  assert.deepEqual(parseTimetable('6:00\t\n7:00\t\n').rows.map((x) => [x.at, x.pallets]), [[h(6), null], [h(7), null]]);
+  for (const text of [' \t '.repeat(30000) + '24', '\t'.repeat(60000) + '6:00', ' '.repeat(60000) + '\t24']) {
+    const t0 = process.cpuUsage();
+    parseTimetable(text);
+    const cpu = process.cpuUsage(t0);
+    assert.ok((cpu.user + cpu.system) / 1000 < 100, 'a long run of white space is parsed in linear time');
+  }
+});

@@ -195,6 +195,12 @@ function createPrimitives() {
   function onKeydown(e) {
     const top = stack[stack.length - 1];
     if (!top) return;
+    // the tail of the key press that OPENED the dialog (Enter held a little too long on the control) must not press the button that has the focus now:
+    // auto-repeat events of a key that was pressed before the dialog existed are ignored until a fresh press arrives
+    if (e.key === 'Enter') {
+      if (!e.repeat) top.heldEnter = false;
+      else if (top.heldEnter) { e.preventDefault(); e.stopPropagation(); return; }
+    }
     if (e.key === 'Escape') {
       e.preventDefault();
       e.stopPropagation();
@@ -245,13 +251,15 @@ function createPrimitives() {
    * Open a dialog.
    * @param {{ title: string, body: Node, actions?: Array<{ label: string, variant?: 'primary'|'danger'|'ghost', icon?: string,
    *   autofocus?: boolean, close?: boolean, disabled?: boolean, onClick?: (handle: object) => (void|boolean|Promise<void|boolean>) }>,
-   *   size?: 'sm'|'md'|'lg', leading?: Node, onClose?: (reason: 'action'|'dismiss'|'close') => void }} spec
+   *   size?: 'sm'|'md'|'lg', leading?: Node, settleMs?: number, onClose?: (reason: 'action'|'dismiss'|'close') => void }} spec
    *   An action closes the dialog after its onClick unless `close: false` or onClick returns false. `leading` sits at the
-   *   left of the button row. Escape, the backdrop and the close button dismiss.
+   *   left of the button row. Escape, the backdrop and the close button dismiss. `settleMs`: for that long after opening, a click on the
+   *   backdrop does not dismiss (the second click of a double click on a small control lands there).
    * @returns {{ close: () => void, el: HTMLElement, buttons: HTMLButtonElement[], isOpen: () => boolean }}
    */
-  function show({ title, body, actions = [], size = 'md', leading = null, onClose = null }) {
+  function show({ title, body, actions = [], size = 'md', leading = null, settleMs = 0, onClose = null }) {
     const opener = document.activeElement;
+    const armedAt = performance.now() + settleMs;
     const titleId = uid('dialog-title');
     let open = true;
     let reason = 'close';
@@ -268,11 +276,11 @@ function createPrimitives() {
       h('div', { class: 'modal__body' }, body),
       footer);
     const backdrop = h('div', { class: 'modal-backdrop' }, modal);
-    const entry = { modal, dismiss };
+    const entry = { modal, dismiss, heldEnter: true };
 
     // Only a press that starts AND ends on the backdrop closes: selecting text and releasing outside must not.
     let pressedBackdrop = false;
-    backdrop.addEventListener('pointerdown', (e) => { pressedBackdrop = e.target === backdrop; });
+    backdrop.addEventListener('pointerdown', (e) => { pressedBackdrop = e.target === backdrop && performance.now() >= armedAt; });
     backdrop.addEventListener('click', (e) => { if (pressedBackdrop && e.target === backdrop) dismiss(); pressedBackdrop = false; });
 
     function close() {

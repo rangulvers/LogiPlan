@@ -5,7 +5,8 @@
 //
 //   const watcher = createUpdateWatcher({ build: BUILD });
 //   watcher.subscribe((state) => ...);             // state: { available, remote: { version, shortCommit, builtAt } | null, checkedAt }
-//   watcher.start({ document, signal });          // one check soon after start, then when the tab becomes visible again (never more often than every 5 minutes)
+//   watcher.start({ document, signal });          // one check soon after start, then when the tab becomes visible again and every 30 minutes while it stays in front
+//                                                 // (never more often than every 5 minutes)
 //   await watcher.check({ force: true });         // for tests and a "check now" button
 //
 // Silent by design: a development build (it has nothing to compare with), a request that fails (offline, 404, a timeout), an answer that is not JSON or
@@ -22,16 +23,19 @@ export const CHECK_EVERY_MS = 5 * 60 * 1000;
 export const CHECK_TIMEOUT_MS = 10_000;
 /** The first check comes this long after start, so that it never competes with the start of the app. */
 export const START_DELAY_MS = 1500;
+/** A tab that stays in front asks again this often (quietly): a planner who keeps LogiPlan open all day learns of a deploy without switching tabs. */
+export const VISIBLE_EVERY_MS = 30 * 60 * 1000;
 /** A version.json is a few hundred bytes; anything larger than this many characters is not one. */
 export const MAX_BODY_CHARS = 20_000;
 
 /**
  * @param {{ build?: object, fetchFn?: Function, now?: () => number, url?: string, setTimer?: Function, clearTimer?: Function,
- *   startDelayMs?: number, timeoutMs?: number, everyMs?: number }} [opts]
+ *   startDelayMs?: number, timeoutMs?: number, everyMs?: number, repeatMs?: number }} [opts]
  */
 export function createUpdateWatcher({
   build = BUILD, fetchFn = globalThis.fetch ? globalThis.fetch.bind(globalThis) : null, now = () => Date.now(), url = 'version.json',
   setTimer = (fn, ms) => setTimeout(fn, ms), clearTimer = (id) => clearTimeout(id), startDelayMs = START_DELAY_MS, timeoutMs = CHECK_TIMEOUT_MS, everyMs = CHECK_EVERY_MS,
+  repeatMs = VISIBLE_EVERY_MS,
 } = {}) {
   const mine = normalizeBuild(build);
   const enabled = isReleaseBuild(mine) && typeof fetchFn === 'function';
@@ -80,14 +84,16 @@ export function createUpdateWatcher({
     if (!enabled || stopped) return Promise.resolve(snapshot());
     if (inflight) return inflight;
     const t = now();
-    if (!force && lastAttempt !== null && t - lastAttempt < everyMs) return Promise.resolve(snapshot());
+    // a clock that was set back (NTP step, a virtual machine resumed from a snapshot) makes the age of the last request negative: that counts as old, or
+    // the page would not look again until the clock had caught up
+    if (!force && lastAttempt !== null && t >= lastAttempt && t - lastAttempt < everyMs) return Promise.resolve(snapshot());
     lastAttempt = t;
     inflight = run().catch(() => snapshot()).finally(() => { inflight = null; });
     return inflight;
   }
 
   /**
-   * Check soon, and every time the tab becomes visible again. `doc` needs addEventListener, removeEventListener and visibilityState (the document).
+   * Check soon, every time the tab becomes visible again, and every 30 minutes while it stays in front. `doc` needs addEventListener, removeEventListener and visibilityState (the document).
    * Stops when `signal` aborts or stop() is called. Does nothing for a development build.
    */
   function start({ document: doc = globalThis.document, signal } = {}) {
@@ -95,8 +101,14 @@ export function createUpdateWatcher({
     const visible = () => doc.visibilityState !== 'hidden';
     const onVisible = () => { if (visible()) void check(); };
     doc.addEventListener('visibilitychange', onVisible);
-    const timer = setTimer(onVisible, startDelayMs);
-    const stopAll = () => { clearTimer(timer); doc.removeEventListener('visibilitychange', onVisible); stop(); };
+    // the first check after the start delay, then one every 30 minutes while the tab stays in front (a hidden tab waits for visibilitychange instead)
+    let timer = null;
+    const arm = (delay) => {
+      timer = setTimer(() => { timer = null; if (stopped) return; onVisible(); arm(repeatMs); }, delay);
+      if (delay === repeatMs && timer && typeof timer.unref === 'function') timer.unref(); // the tests' Node process is not kept alive for 30 minutes by this (a browser's id is a number)
+    };
+    arm(startDelayMs);
+    const stopAll = () => { if (timer !== null) clearTimer(timer); timer = null; doc.removeEventListener('visibilitychange', onVisible); stop(); };
     if (signal) { if (signal.aborted) stopAll(); else signal.addEventListener('abort', stopAll, { once: true }); }
     stopWatching = stopAll;
   }

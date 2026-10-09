@@ -3,7 +3,7 @@
 // never asks, and every failure (offline, 404, a timeout, junk, a huge body) is silent and leaves the last answer as it was.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createUpdateWatcher, CHECK_EVERY_MS, CHECK_TIMEOUT_MS, MAX_BODY_CHARS } from '../js/update-check.js';
+import { createUpdateWatcher, CHECK_EVERY_MS, CHECK_TIMEOUT_MS, MAX_BODY_CHARS, START_DELAY_MS, VISIBLE_EVERY_MS } from '../js/update-check.js';
 
 const SHA = 'a45ce493dfd9ca7440743e6931042fca39642504';
 const NEWER = 'b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6';
@@ -203,4 +203,55 @@ test('a broken subscriber cannot stop the others, and unsubscribe works', async 
   assert.deepEqual(heard, [true]);
   assert.deepEqual(never, []);
   off();
+});
+
+test('a tab that stays in front asks again every 30 minutes (quietly, and never faster than every 5), a hidden tab does not, and stop() ends it', async () => {
+  const { watcher, fetchFn, clock, timers } = make(LIVE, [body()], { startDelayMs: START_DELAY_MS });
+  const doc = new EventTarget();
+  doc.visibilityState = 'visible';
+  const flush = () => new Promise((resolve) => setImmediate(resolve));
+  /** The schedule: the timers that are not the 10 s timeout of a request. */
+  const schedule = () => timers.list.map((x, i) => ({ i, ms: x.ms, live: x.live })).filter((x) => x.ms !== CHECK_TIMEOUT_MS);
+  watcher.start({ document: doc });
+  assert.deepEqual(schedule().map((x) => x.ms), [START_DELAY_MS], 'start() arms the first check only');
+  timers.fire(schedule()[0].i);
+  await flush();
+  assert.equal(fetchFn.calls.length, 1, 'the first check');
+  assert.deepEqual(schedule().map((x) => x.ms), [START_DELAY_MS, VISIBLE_EVERY_MS], 'and the next one is 30 minutes away');
+  assert.equal(VISIBLE_EVERY_MS, 30 * 60 * 1000);
+  assert.ok(VISIBLE_EVERY_MS > CHECK_EVERY_MS);
+
+  clock.advance(VISIBLE_EVERY_MS);
+  timers.fire(schedule().at(-1).i);
+  await flush();
+  assert.equal(fetchFn.calls.length, 2, 'after 30 minutes in front: asked again');
+  assert.equal(schedule().length, 3, 'and the next one is armed');
+
+  doc.visibilityState = 'hidden';
+  clock.advance(VISIBLE_EVERY_MS);
+  timers.fire(schedule().at(-1).i);
+  await flush();
+  assert.equal(fetchFn.calls.length, 2, 'a hidden tab does not ask (it asks when it is shown again)');
+  assert.equal(schedule().length, 4, 'but keeps the schedule');
+
+  const last = schedule().at(-1);
+  watcher.stop();
+  assert.equal(timers.list[last.i].live, false, 'stop() cancels the next check');
+  timers.fire(last.i);
+  await flush();
+  assert.equal(fetchFn.calls.length, 2);
+});
+
+test('a clock that is set back does not silence the check: the age of the last request is then negative and counts as old', async () => {
+  const { watcher, fetchFn, clock } = make(LIVE, [body()]);
+  await watcher.check();
+  assert.equal(fetchFn.calls.length, 1);
+  clock.advance(60_000);
+  await watcher.check();
+  assert.equal(fetchFn.calls.length, 1, 'a minute later: still fresh');
+  clock.advance(-3_600_000); // NTP step, a virtual machine resumed from a snapshot
+  await watcher.check();
+  assert.equal(fetchFn.calls.length, 2, 'the clock is an hour BEFORE the last request: ask again');
+  await watcher.check();
+  assert.equal(fetchFn.calls.length, 2, 'and the throttle works from the new time');
 });

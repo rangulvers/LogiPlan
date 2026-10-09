@@ -79,6 +79,15 @@ await withBrowser(async ({ browser, url, errors }) => {
   const waitSim = (page, seconds) => page.waitForFunction((s) => window.__logiplan.runner.time >= s, seconds, { timeout: 120000 });
   const mark = (page) => page.evaluate(() => { window.__before = window.__logiplan.runner.sim; });
   const swapped = (page, timeout = 60000) => page.waitForFunction(() => window.__logiplan.runner.sim !== window.__before && !window.__logiplan.runner.priming, null, { timeout });
+  /**
+   * Like `swapped`, and gives back the state of the runner at the very moment the new simulation was seen, read in the page in the same callback. A second round trip to
+   * the test process is no measure of "right after the swap": at 1200x the simulation runs 120 s in 0.1 s of wall time, and on a busy machine a round trip takes that long.
+   */
+  const swappedState = async (page, timeout = 60000) => (await page.waitForFunction(() => {
+    const r = window.__logiplan.runner;
+    if (r.sim === window.__before || r.priming) return false;
+    return { time: r.time, warm: r.warm, baseline: r.baseline !== null && r.baseline !== undefined };
+  }, null, { timeout })).jsonValue();
   const card = (page) => page.locator('[data-panel=impact]');
   const hint = (page) => page.locator('[data-panel=impact-hint]');
 
@@ -449,9 +458,8 @@ await withBrowser(async ({ browser, url, errors }) => {
     await start(page, 'two-lines', { tabName: 'results', seconds: 1500 });
     await mark(page);
     await addForklifts(page, 2, 'Add forklifts');
-    await swapped(page);
-    const cold = await page.evaluate(() => ({ time: window.__logiplan.runner.time, warm: window.__logiplan.runner.warm, baseline: window.__logiplan.runner.baseline }));
-    ok(cold.time < 120 && cold.warm === null && cold.baseline === null, `cold restart with the switch off (${cold.time.toFixed(0)} s)`);
+    const cold = await swappedState(page);
+    ok(cold.time < 120 && cold.warm === null && cold.baseline === false, `cold restart with the switch off (${cold.time.toFixed(0)} s)`);
     // back on through the UI; the next edit is warm again
     await page.locator('[data-tab=simulate]').click();
     await page.getByLabel('Keep results warm after edits').focus();
