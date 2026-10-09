@@ -8,7 +8,11 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { EXAMPLES } from '../js/model/examples.js';
+import { EXAMPLES as ALL_EXAMPLES } from '../js/model/examples.js';
+import { legacyExamples } from './helpers/golden.js';
+
+/** The three legacy examples: the catalogue also holds the warehouse examples since M1 (trucks, schema 2), which have their own tests (sim.examples.warehouse.test.js). */
+const EXAMPLES = legacyExamples(ALL_EXAMPLES);
 import { GRID_LIMITS } from '../js/model/defaults.js';
 import * as L from '../js/model/layout.js';
 import { Simulation } from '../js/sim/engine.js';

@@ -18,8 +18,9 @@
 //   ... -- --test-reporter=spec                      everything after `--` goes to `node --test` unchanged
 //
 // Re-balance after tests were added or became slower: run `npm run test:timings` on a quiet machine, move the slowest fast files into
-// a heavy shard (keep the shards about equally long), update the seconds in the comments. The seconds are CPU seconds of one file run
-// alone (median of three runs, 4 cores, 2026-10-08); they are for the reviewer, nothing reads them.
+// a heavy shard (keep the shards about equally long), update the seconds in the comments. The seconds are the wall time of one file run
+// alone (4 cores, 2026-10-09); they are for the reviewer, nothing reads them. Milestone M1 added 5 heavy files (~130 s) to what were two shards of
+// ~170 s each, so the whole files now go into four shards of 46 to 77 s: the verdict of a pull request waits for the slowest shard (the dock review, 77 s), not for 180 s.
 import { spawn, spawnSync } from 'node:child_process';
 import { appendFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
@@ -57,33 +58,39 @@ const slice = (file, which) => {
  * Whole files are in exactly one shard, a sliced file is in as many shards as it has slices (its patterns + 1).
  */
 export const HEAVY_SHARDS = Object.freeze([
-  // 1-3: the engine review in three slices (about 50 to 60 s each here), see SLICED_FILES; each has a runner to itself.
+  // 1-3: the engine review in three slices (about 28, 34 and 68 s here), see SLICED_FILES; each has a runner to itself.
   slice('sim.engine.review.test.js', 0),
   slice('sim.engine.review.test.js', 1),
   slice('sim.engine.review.test.js', 'rest'),
-  // 4-5: whole files, ~94 CPU s each (median of three runs of each file alone), biggest first.
+  // 4-7: whole files (shard 4: 77 s, 5: 55 s, 6: 57 s, 7: 46 s as the shard command measured them on four idle cores, 2026-10-09, with the warehouse milestone M1 in),
+  // packed biggest first. A shard that is a slice of a file cannot hold other files (the name pattern would filter them too), so shards 1-3 hold only the engine review.
   whole(
-    'ui.runner.warm.review.test.js', // 30.4  warm restart, attacked
-    'sim.experiments.test.js', //       12.1  sweeps and variant comparison
-    'model.review.test.js', //          10.5
-    'sim.traffic.fuzz1.test.js', //      9.1  seeded traffic fuzz, 8 files of the same kind
-    'sim.traffic.fuzz3.test.js', //      9.0
-    'sim.traffic.fuzz2.test.js', //      8.7
-    'sim.traffic.fuzz7.test.js', //      7.6
-    'sim.traffic.fuzz6.test.js', //      7.1
-    'm0.review.test.js', //             ~10  the adversarial review of milestone M0 (warehouse seams): digests of the pre-M0 tree, hostile documents, stand-in sanitizers; its expensive checks are opt-in (M0_REVIEW_HEAVY=1)
-    'model.ops-trucks.fuzz.test.js', // ~13  M1: 4,000 documents with ops and calendar junk (the fast checks of the same keys are in model.ops-trucks.test.js)
-    'sim.trucks.fuzz.test.js', //       ~51  M1: 200 random plants with trucks, every invariant on every tick, report.ops, dt and fork independence at scale (A1.3, A1.4, A1.8, A1.9)
+    'sim.docks.review.test.js', //      ~77  the dock book attacked: 200 random plants x 20 min, 36 tests
   ),
   whole(
-    'sim.integration.test.js', //       27.4  examples end to end, performance bound
-    'sim.docks.integration.test.js', // 23.6
-    'sim.docks.review.test.js', //      ~75  the dock book attacked: 200 random plants x 20 min, 36 tests (measured by its reviewer, not by test:timings)
-    'sim.traffic.fuzz4.test.js', //      9.3
-    'sim.logistics.review.test.js', //   9.1
-    'sim.largegrid.test.js', //          8.8  320 x 320 cells, performance bound
-    'sim.traffic.fuzz5.test.js', //      7.8
-    'sim.traffic.fuzz8.test.js', //      7.5
+    'sim.trucks.fuzz.test.js', //       48.6  M1: 200 random plants with trucks, every invariant on every tick, report.ops, dt and fork independence at scale (A1.3, A1.4, A1.8, A1.9)
+    'ui.runner.warm.review.test.js', // 29.0  warm restart, attacked
+    'm0.review.test.js', //              6.9  the adversarial review of milestone M0 (warehouse seams): digests of the pre-M0 tree, hostile documents, stand-in sanitizers; its expensive checks are opt-in (M0_REVIEW_HEAVY=1)
+  ),
+  whole(
+    'sim.integration.test.js', //       24.8  examples end to end (the five of them since M1), performance bound
+    'sim.docks.integration.test.js', // 22.1
+    'model.ops-trucks.fuzz.test.js', // 15.6  M1: 4,000 documents with ops and calendar junk (the fast checks of the same keys are in model.ops-trucks.test.js)
+    'sim.examples.warehouse.test.js', // 14.3 (52 CPU s on worker threads) M1: Dock lab and Warehouse: first day, 8 variants x 5 seeds x 8 simulated hours (A1.14, A1.16, the tips)
+    'sim.experiments.test.js', //       12.9  sweeps and variant comparison
+  ),
+  whole(
+    'sim.traffic.fuzz1.test.js', //      8.6  seeded traffic fuzz, 8 files of the same kind
+    'sim.traffic.fuzz2.test.js', //      9.5
+    'sim.traffic.fuzz3.test.js', //      8.9
+    'sim.traffic.fuzz4.test.js', //      8.3
+    'sim.traffic.fuzz5.test.js', //      7.6
+    'sim.traffic.fuzz6.test.js', //      7.6
+    'sim.traffic.fuzz7.test.js', //      7.7
+    'sim.traffic.fuzz8.test.js', //      8.7
+    'model.review.test.js', //           8.5
+    'sim.logistics.review.test.js', //   6.8
+    'sim.largegrid.test.js', //          6.2  320 x 320 cells, performance bound
   ),
 ]);
 export const SHARD_COUNT = HEAVY_SHARDS.length;

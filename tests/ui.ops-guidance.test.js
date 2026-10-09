@@ -103,6 +103,38 @@ test('Add dock doors: one undo step, the station selected, the numbers in the to
   assert.equal(store.getState().layout.schema, 1);
 });
 
+test('Add dock doors on a station with one dock (the Starter): two doors, and the plant says at once what the second door does and does not do (doors-exceed-docks)', () => {
+  const one = plant({ docks: 1 });
+  const h1 = harness(one.layout);
+  assert.equal(L.docksOf(one.layout, one.src.id).length, 1);
+  assert.equal(addDockDoors(h1.ctx, one.src.id), true);
+  assert.equal(stationOf(h1.store.getState().layout, one.src.id).ops.trucks.doors, 2, 'one door would be the bottleneck of the Starter: its 10 minutes of check-in and check-out would be dead time for the only dock');
+  const issue = validateLayout(h1.store.getState().layout).find((i) => i.code === 'doors-exceed-docks');
+  assert.ok(issue, 'a warning, not an error');
+  assert.equal(issue.severity, 'warning');
+  assert.match(issue.message, /^“Goods receiving” has 2 doors but only 1 road cell touches it\./);
+  assert.match(issue.message, /only lets one more truck check in or out while the others are unloaded/);
+  assert.match(issue.hint, /give the station a second dock, ideally on its own side road/);
+});
+
+test('Add dock doors on a Goods out: after a run the trucks carry what the plant shipped; without a run (or with too few pallets) the default 48 an hour', () => {
+  const { layout, sink } = plant();
+  const first = harness(layout);
+  assert.equal(addDockDoors(first.ctx, sink.id), true);
+  assert.equal(stationOf(first.store.getState().layout, sink.id).ops.trucks.interArrival.mean, 1800);
+  assert.match(first.toasts[0].text, /That is 48 pallets an hour: if the plant ships less, trucks leave without a full load\.$/);
+  const ran = harness(layout);
+  ran.ctx.runner.kpis = () => ({ throughput: { bySink: { [sink.id]: { name: 'Dispatch', count: 17, perHour: 20.4 } } } });
+  assert.equal(addDockDoors(ran.ctx, sink.id), true);
+  const trucks = stationOf(ran.store.getState().layout, sink.id).ops.trucks;
+  assert.deepEqual([trucks.pallets.mean, Math.round(trucks.interArrival.mean)], [24, Math.round(24 * 3600 / 20.4)]);
+  assert.match(ran.toasts[0].text, /^Dispatch now loads trucks: 2 doors, 24 pallets per truck, about one truck every 70\.6 min\. That is the same 20\.4 pallets an hour that reached it in the last run\.$/);
+  const few = harness(layout);
+  few.ctx.runner.kpis = () => ({ throughput: { bySink: { [sink.id]: { name: 'Dispatch', count: 3, perHour: 4 } } } });
+  addDockDoors(few.ctx, sink.id);
+  assert.equal(stationOf(few.store.getState().layout, sink.id).ops.trucks.interArrival.mean, 1800, 'three pallets in the window say nothing about a rate');
+});
+
 test('doors-too-few: the Fix "Use 6 doors" is one undo step and the warning is gone afterwards (A1.12)', () => {
   const { layout, src } = plant({ docks: 8 });
   L.updateStation(layout, src.id, { ops: { trucks: { ...defaultTrucks(), doors: 4, mode: 'rate', interArrival: { kind: 'const', mean: 600, spread: 0 }, pallets: { kind: 'const', mean: 26, spread: 0 } } } });

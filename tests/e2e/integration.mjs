@@ -155,7 +155,7 @@ await withBrowser(async ({ browser, url, errors }) => {
     ok(await page.evaluate(() => document.getElementById('app').dataset.state) === 'ready', 'the app reports ready');
     ok(await page.evaluate(() => !document.querySelector('[data-region=loading]')), 'the loading message is gone');
     eq(await page.title(), 'Untitled plant – LogiPlan', 'document title follows the plant name');
-    const cards = await dialog.getByRole('button', { name: /Starter|Two production|Congestion/ }).count();
+    const cards = await dialog.getByRole('button', { name: /Starter|Two production|Congestion|Dock lab|Warehouse: first day/ }).count();
     eq(cards, EXAMPLES.length, 'one card per example');
     ok(await dialog.getByRole('button', { name: 'Create empty plant' }).isVisible(), 'empty plant offered');
     ok(await page.evaluate(() => document.activeElement && document.activeElement.closest('[role=dialog]') !== null), 'focus is inside the welcome dialog');
@@ -229,7 +229,10 @@ await withBrowser(async ({ browser, url, errors }) => {
           const d = cx.getImageData(Math.round(px * ctx.renderer.dpr), Math.round(py * ctx.renderer.dpr), 1, 1).data;
           return 0.299 * d[0] + 0.587 * d[1] + 0.114 * d[2];
         };
-        const road = Object.keys(l.roads).map((k) => k.split(',').map(Number)).find(([x, y]) => !l.stations.some((s2) => x >= s2.x - 1 && x <= s2.x + s2.w && y >= s2.y - 1 && y <= s2.y + s2.h));
+        // a straight piece of road: the centre of a rounded corner is drawn lighter (the corner of the loop of the warehouse examples is the first road cell)
+        const has = (x, y) => Object.prototype.hasOwnProperty.call(l.roads, `${x},${y}`);
+        const straight = (x, y) => (has(x - 1, y) && has(x + 1, y)) || (has(x, y - 1) && has(x, y + 1));
+        const road = Object.keys(l.roads).map((k) => k.split(',').map(Number)).find(([x, y]) => straight(x, y) && !l.stations.some((s2) => x >= s2.x - 1 && x <= s2.x + s2.w && y >= s2.y - 1 && y <= s2.y + s2.h));
         let empty = null;
         for (let y = 0; y < l.grid.rows && !empty; y++) for (let x = 0; x < l.grid.cols && !empty; x++) if (!taken.has(`${x},${y}`)) empty = [x, y];
         return { road: luma(...road), empty: luma(...empty) };

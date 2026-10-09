@@ -70,28 +70,53 @@ export function legacyPalletsPerHour(params) {
  * Goods out ('sink') has no existing rate: 24 pallets every 30 minutes (48 an hour), 2 doors, check-in and check-out 300 s, staging 4 per
  * door, a truck waits at most 3,600 s for its pallets. Any other type has no doors: null.
  *
+ * Options (what the screen knows and this pure function does not; the button passes them, see ui/guidance-ops.js addDockDoors):
+ *  * `shippedPerHour` (Goods out): the pallets an hour that reached the Goods out in the last run. A plant that ships 20 an hour gets trucks that carry
+ *    exactly that (24 pallets every 72 minutes, the same floor of 10 minutes between trucks as for a Goods in) instead of the default 48 an hour,
+ *    which would leave every truck short: the load of the plant stays unchanged, as for a Goods in. Without a run the default stands.
+ *    (A `docks` option that took the doors down to the number of road cells was tried and dropped: on the Starter, with one dock, one door means
+ *    that the 10 minutes of check-in and check-out are dead time for the dock, and the single door saturates (gate queue of an hour, `doors-bottleneck`)
+ *    where two doors run with an empty gate. The warning `doors-exceed-docks` is the milder message and says what the second door does.)
+ *
  * @param {{ type: string, params?: object }|object|string} station a layout station; or the type name when `params` follows; or the `params` of a
  *   Goods in on their own (then the type is 'source', or the type name given as the second argument)
- * @param {object|string} [params] the station's `params` when the first argument is a type name
+ * @param {object|string} [params] the station's `params` when the first argument is a type name; when the first argument is a station, an options object
+ * @param {{ shippedPerHour?: number }} [options]
  * @returns {object|null} a sanitized trucks block, or null for a type that cannot have doors
  */
-export function convertToDoors(station, params) {
+export function convertToDoors(station, params, options) {
   let type;
   let p;
-  if (typeof station === 'string') { // (type, params)
+  let opts = isObj(options) ? options : null;
+  if (typeof station === 'string') { // (type, params, options)
     type = station;
     p = params;
-  } else if (isObj(station) && Object.hasOwn(station, 'type')) { // (station)
+  } else if (isObj(station) && Object.hasOwn(station, 'type')) { // (station, options)
     type = station.type;
     p = station.params;
+    if (opts === null && isObj(params)) opts = params;
   } else if (isObj(station)) { // (params) of a Goods in, or (params, type)
     type = typeof params === 'string' ? params : 'source';
     p = station;
   }
   if (type !== 'source' && type !== 'sink') return null;
   const block = defaultTrucks();
+  const shipped = opts ? finite(opts.shippedPerHour, 0) : 0;
   if (type === 'sink') {
     block.interArrival.mean = OUT_TRUCK_GAP;
+    if (shipped > 0) {
+      let pallets = PALLETS_PER_TRUCK;
+      let gap = (pallets * 3600) / shipped;
+      if (gap < MIN_TRUCK_GAP) {
+        pallets = Math.min(PALLETS_MAX, Math.ceil((MIN_TRUCK_GAP * shipped) / 3600 - 1e-9));
+        gap = (pallets * 3600) / shipped;
+      } else if (gap > GAP_MAX) {
+        pallets = Math.max(PALLETS_MIN, Math.floor((GAP_MAX * shipped) / 3600));
+        gap = (pallets * 3600) / shipped;
+      }
+      block.pallets.mean = pallets;
+      block.interArrival.mean = clamp(gap, GAP_MIN, GAP_MAX);
+    }
   } else {
     const old = isObj(p) && isObj(p.interArrival) ? p.interArrival : {};
     const g = finite(old.mean, 0);
@@ -149,14 +174,22 @@ const num1 = (n) => formatNumber(n, 1);
  * Copy 1 of 7.6, the toast after "Add dock doors": "{name} now receives trucks: {doors} doors, {pallets} pallets per truck, about one truck
  * every {gap}. That is the same {rate} pallets an hour as before, but they now arrive in bunches." For a Goods out (no `before`) the second
  * sentence names the load the defaults make instead of a "before".
- * @param {{ name: string, type?: string, trucks: object, before?: number }} info `before`: the pallets an hour of the legacy station
- *   (legacyPalletsPerHour); the sentence says "the same" when the new rate agrees with it to within 1 %, else it names both rates.
+ * @param {{ name: string, type?: string, trucks: object, before?: number, shipped?: number }} info `before`: the pallets an hour of the legacy station
+ *   (legacyPalletsPerHour); the sentence says "the same" when the new rate agrees with it to within 1 %, else it names both rates. `shipped`: a Goods
+ *   out whose trucks were sized to the pallets an hour the plant shipped in the last run (convertToDoors option); without it the defaults are a guess
+ *   and the toast says that the plant may ship less.
  * @returns {string}
  */
-export function dockDoorsToast({ name, type = 'source', trucks, before }) {
+export function dockDoorsToast({ name, type = 'source', trucks, before, shipped }) {
   const d = describeTrucks(trucks);
   const head = `${name} now ${type === 'sink' ? 'loads' : 'receives'} trucks: ${count(d.doors, 'door', 'doors')}, ${num1(d.palletsPerTruck)} pallets per truck, about one truck every ${formatDuration(d.gapSeconds)}.`;
-  if (type === 'sink' || !(before > 0)) return `${head} That is ${num1(d.palletsPerHour)} pallets an hour.`;
+  if (type === 'sink' && shipped > 0) {
+    return Math.abs(d.palletsPerHour - shipped) <= 0.01 * shipped
+      ? `${head} That is the same ${num1(shipped)} pallets an hour that reached it in the last run.`
+      : `${head} That is ${num1(d.palletsPerHour)} pallets an hour; ${num1(shipped)} an hour reached it in the last run.`;
+  }
+  if (type === 'sink') return `${head} That is ${num1(d.palletsPerHour)} pallets an hour: if the plant ships less, trucks leave without a full load.`;
+  if (!(before > 0)) return `${head} That is ${num1(d.palletsPerHour)} pallets an hour.`;
   const same = Math.abs(d.palletsPerHour - before) <= 0.01 * before;
   return same
     ? `${head} That is the same ${num1(before)} pallets an hour as before, but they now arrive in bunches.`

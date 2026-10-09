@@ -58,6 +58,21 @@ export function waitTone(seconds) {
 }
 
 /**
+ * The line under "Trucks served": how many trucks arrived, but only when that is more than were served (the others are still at the gate or a door). A truck that
+ * was already at a door when the warm-up ended is served in the window without having arrived in it, and "7 served, 6 arrived" reads like a mistake.
+ * Trucks that were turned away at a full gate or did not come at all are said, because they are the trucks that are neither served nor waiting.
+ */
+function servedNote(t, arrived, departed) {
+  const parts = [];
+  if (arrived !== null && (departed === null || arrived >= departed)) parts.push(`${whole(arrived)} arrived`);
+  const away = fin(t.turnedAway);
+  const missed = fin(t.noShow);
+  if (away !== null && away > 0) parts.push(`${whole(away)} turned away`);
+  if (missed !== null && missed > 0) parts.push(`${whole(missed)} did not come`);
+  return parts.join(', ');
+}
+
+/**
  * What the card of one station shows.
  * @param {object} station layout station with trucks
  * @param {object} trucks its `ops.trucks` block
@@ -77,8 +92,8 @@ export function doorModel(station, trucks, entry, layout, report = null) {
   const arrived = fin(t.arrived);
   const util = fin(e.doorUtilization);
   const metrics = [
-    { key: 'served', label: 'Trucks served', value: whole(departed), sub: arrived !== null ? `${whole(arrived)} arrived` : '', tone: 'neutral', hint: 'Trucks that finished at a door and left, since the warm-up ended.' },
-    { key: 'gateWait', label: 'Gate wait', value: dur(wait.mean), sub: fin(wait.p90) !== null ? `9 in 10 under ${dur(wait.p90)}` : '', tone: waitTone(wait.mean), hint: 'How long a truck waited at the gate for a free door.' },
+    { key: 'served', label: 'Trucks served', value: whole(departed), sub: servedNote(t, arrived, departed), tone: 'neutral', hint: 'Trucks that finished at a door and left, since the warm-up ended.' },
+    { key: 'gateWait', label: 'Gate wait', value: fin(wait.mean) !== null && wait.mean < 1 ? '0 s' : dur(wait.mean), sub: fin(wait.p90) !== null && wait.p90 >= 1 ? `9 in 10 under ${dur(wait.p90)}` : '', tone: waitTone(wait.mean), hint: 'How long a truck waited at the gate for a free door.' },
     { key: 'doorTime', label: 'Door time', value: dur(doorTime.mean), sub: fin(doorTime.p90) !== null ? `9 in 10 under ${dur(doorTime.p90)}` : '', tone: 'neutral', hint: 'How long a truck held a door: check-in, the work of the vehicles, check-out. It includes waiting for a free forklift, so more forklifts shorten it.' },
     { key: 'queue', label: 'Gate queue now', value: whole(queue.now), sub: fin(queue.max) !== null ? `most ${whole(queue.max)}` : '', tone: 'neutral', hint: 'Trucks waiting at the gate now, and the most at any moment.' },
   ];

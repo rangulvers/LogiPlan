@@ -614,6 +614,8 @@ await withBrowser(async ({ browser, url, errors }) => {
       eq((await layoutOf(page)).fleets[1].count, 0, 'the new fleet has no vehicles');
       await record('flow dedicated to an empty fleet', page, (q) => q.callouts.some((c) => /Nothing carries this flow/.test(c)));
       await tab(page, 'checks');
+      // the panel is visible a moment before its callouts are drawn: on a busy machine the first read found none
+      await noticed(page, (q) => q.callouts.some((c) => /restricted to .AGV 2., which has no vehicles/.test(c)), 'the Checks tab names it too', 4000);
       const checksText = (await problemsOf(page)).callouts.join(' | ');
       match(checksText, /restricted to .AGV 2., which has no vehicles/, 'the Checks tab names it too');
       match(checksText, /Add 2 vehicles/, 'with a fix button');

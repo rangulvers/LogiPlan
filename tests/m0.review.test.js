@@ -35,10 +35,13 @@ import * as INS from '../js/sim/insights.js';
 import { validateLayout } from '../js/model/validate.js';
 import { createStore } from '../js/store/store.js';
 import { Simulation } from '../js/sim/engine.js';
-import { EXAMPLES } from '../js/model/examples.js';
+import { EXAMPLES as ALL_EXAMPLES } from '../js/model/examples.js';
 import { createRng } from '../js/util/rng.js';
 import { bufferSize } from '../js/ui/render/jobs.js';
-import { dockLabLayout, dockKpisFile, readGolden, DOCK_SEED, DOCK_SECONDS } from './helpers/golden.js';
+import { dockLabLayout, dockKpisFile, legacyExamples, readGolden, DOCK_SEED, DOCK_SECONDS } from './helpers/golden.js';
+
+/** The three legacy examples: since milestone M1 the catalogue also holds the warehouse examples (trucks, schema 2), which this review of M0 does not mean. */
+const EXAMPLES = legacyExamples(ALL_EXAMPLES);
 
 const OLD_ROOT = H.oldTreeRoot();
 const M0_ROOT = H.m0TreeRoot();
@@ -97,7 +100,7 @@ const MATRIX = {
 
 test('M0-REV 1.1 behaviour: the three examples (4 seeds, dt 0.1 and 0.25, a what-if mid-run) reproduce the digests recorded from the pre-M0 tree', () => {
   const wrong = [];
-  for (const example of NEW.EXAMPLES) {
+  for (const example of legacyExamples(NEW.EXAMPLES)) {
     for (const seed of H.MATRIX_SEEDS) {
       for (const dt of H.MATRIX_DTS) {
         const key = H.matrixKey(example.id, seed, dt);
@@ -106,7 +109,7 @@ test('M0-REV 1.1 behaviour: the three examples (4 seeds, dt 0.1 and 0.25, a what
       }
     }
   }
-  assert.equal(Object.keys(MATRIX).length, NEW.EXAMPLES.length * H.MATRIX_SEEDS.length * H.MATRIX_DTS.length, 'the table covers the whole matrix');
+  assert.equal(Object.keys(MATRIX).length, legacyExamples(NEW.EXAMPLES).length * H.MATRIX_SEEDS.length * H.MATRIX_DTS.length, 'the table covers the whole matrix');
   assert.deepEqual(wrong, [], 'a legacy example gave other results than the pre-M0 tree');
 });
 
@@ -169,7 +172,7 @@ live('M0-REV 1.4 behaviour: plants of the other reviews (hostile, random, dock-d
 
 heavyLive('M0-REV 1.5 behaviour (heavy): 8 simulated hours of each example, two seeds, and a 160 x 160 plant with 100 vehicles, equal the pre-M0 tree', async () => {
   const wrong = [];
-  for (const example of NEW.EXAMPLES) {
+  for (const example of legacyExamples(NEW.EXAMPLES)) {
     for (const seed of [1, 2]) {
       const plan = { seed, seconds: 8 * 3600, steps: H.slicedSteps(8 * 3600, seed) };
       const difference = H.firstDifference(H.runPlan(OLD, example.build(), plan), H.runPlan(NEW, example.build(), plan));

@@ -19,7 +19,7 @@ import { OPS_KEYS, OPS_SANITIZERS, clampInt, clampNumber, mergeOps, numberOf, sa
 import { CALENDAR_KEYS, mergeCalendar, sanitizeCalendar, timeOfDay } from '../js/model/calendar.js';
 import { EXTENSION_BLOCKS, normalizeExtensions } from '../js/model/extensions.js';
 import { decodeShare, encodeShare, exportProject, importProject } from '../js/model/serialize.js';
-import { kpisFile, layoutFile, readGolden, shareFile } from './helpers/golden.js';
+import { kpisFile, layoutFile, legacyExamples, readGolden, shareFile } from './helpers/golden.js';
 
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const project = (layout, name = 'P', id = 'sc1') => ({ name, scenarios: [{ id, name: 'A', layout }], activeId: id });
@@ -41,7 +41,7 @@ function plant() {
 // A0.2: legacy layouts and share links are unchanged
 // ---------------------------------------------------------------------------------------------------------------------------
 
-for (const example of EXAMPLES) {
+for (const example of legacyExamples(EXAMPLES)) {
   test(`A0.2 ${example.id}: the recorded legacy layout is a fixed point of normalizeLayout, with schema 1`, () => {
     const text = readGolden(layoutFile(example.id));
     assert.equal(JSON.stringify(example.build()), text, 'the example still builds the recorded layout');
@@ -75,7 +75,7 @@ for (const example of EXAMPLES) {
 }
 
 test('A0.2: the golden KPI fixtures exist for both seeds of every example (the safety net is complete)', () => {
-  for (const example of EXAMPLES) for (const seed of [1, 2]) assert.ok(readGolden(kpisFile(example.id, seed)).length > 1000);
+  for (const example of legacyExamples(EXAMPLES)) for (const seed of [1, 2]) assert.ok(readGolden(kpisFile(example.id, seed)).length > 1000);
 });
 
 test('A0.2: createLayout and emptyLayout still stamp the base schema', () => {
@@ -133,7 +133,7 @@ const ROW_CASES = [
 test('A0.3 schemaNeeded: a legacy layout needs 1, whatever it holds besides the warehouse keys', () => {
   assert.equal(schemaNeeded(plant()), 1);
   assert.equal(schemaNeeded(createLayout()), 1);
-  for (const ex of EXAMPLES) assert.equal(schemaNeeded(ex.build()), 1, ex.id);
+  for (const ex of legacyExamples(EXAMPLES)) assert.equal(schemaNeeded(ex.build()), 1, ex.id);
   assert.equal(schemaNeeded({ ...plant(), schema: 99 }), 1, 'the stamp itself is not read: content decides');
 });
 

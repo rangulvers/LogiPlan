@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Performance baseline of the simulation: CPU seconds per simulated hour of the three example plants (docs/WAREHOUSE-DESIGN.md 10.5).
+// Performance baseline of the simulation: CPU seconds per simulated hour of the example plants (docs/WAREHOUSE-DESIGN.md 10.5).
 //
 //   node scripts/perf-baseline.mjs                      measure the tree this script lives in and print a table
 //   node scripts/perf-baseline.mjs --write              ... and record it in tests/fixtures/golden/perf-baseline.json
@@ -64,10 +64,11 @@ function timeOne(tree, example, seed, seconds) {
 async function measure(opts) {
   const trees = [];
   for (const root of opts.roots) trees.push({ root, tree: await loadTree(root), runs: new Map() });
-  const ids = trees[0].tree.EXAMPLES.map((e) => e.id);
+  // the examples every tree has (a pristine copy of an older commit lacks the examples that were added since: they are timed when one tree is measured)
+  const ids = trees[0].tree.EXAMPLES.map((e) => e.id).filter((id) => trees.every((t) => t.tree.EXAMPLES.some((e) => e.id === id)));
   const seconds = 3600 * opts.hours;
   // one untimed hour of each example per tree: the first run of fresh code is slower than all that follow
-  for (const t of trees) for (const ex of t.tree.EXAMPLES) timeOne(t.tree, ex, opts.seed, 3600);
+  for (const t of trees) for (const ex of t.tree.EXAMPLES.filter((e) => ids.includes(e.id))) timeOne(t.tree, ex, opts.seed, 3600);
   for (let round = 0; round < opts.runs; round++) {
     const order = round % 2 ? [...trees].reverse() : trees;
     for (const id of ids) {

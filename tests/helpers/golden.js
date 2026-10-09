@@ -32,6 +32,13 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 export const GOLDEN_DIR = path.join(ROOT, 'tests', 'fixtures', 'golden');
 export const GOLDEN_SEEDS = Object.freeze([1, 2]);
+/**
+ * The three LEGACY examples: the plants of the safety net (fixtures, share links, schema 1). EXAMPLES also holds the examples of the warehouse
+ * module ('dock-lab', 'warehouse-first-day': trucks, schema 2) since milestone M1; they have no fixtures here, and every test or script that means
+ * "the plants that must never change" takes its list through legacyExamples().
+ */
+export const LEGACY_EXAMPLE_IDS = Object.freeze(['starter', 'two-lines', 'congestion-lab']);
+export const legacyExamples = (examples) => examples.filter((e) => LEGACY_EXAMPLE_IDS.includes(e.id));
 /** Simulated seconds that are run, and the warm-up that is excluded from the KPIs (both fixed by the design, not read from the example). */
 export const GOLDEN_SECONDS = 3600;
 export const GOLDEN_WARMUP = 600;
@@ -123,7 +130,7 @@ export function goldenProject(example) {
 /** Everything the fixtures hold for the three examples, as { file name: text }, produced by the tree under test. */
 export async function captureGolden(tree) {
   const files = {};
-  for (const example of tree.EXAMPLES) {
+  for (const example of legacyExamples(tree.EXAMPLES)) {
     for (const seed of GOLDEN_SEEDS) files[kpisFile(example.id, seed)] = goldenKpisText(tree.Simulation, example, seed);
     files[layoutFile(example.id)] = JSON.stringify(example.build());
     files[shareFile(example.id)] = `${await tree.serialize.shareUrl(SHARE_BASE, goldenProject(example))}\n`;
