@@ -75,6 +75,9 @@ export const HEAVY_SHARDS = Object.freeze([
     'sim.detail.fingerprint.test.js', // ~9  (12)  S1.1: full-state fingerprint of 80 hostile plants with the collector on / off / on in the middle
     'sim.detail.fuzz.test.js', //       ~15  (19)  loaded-leg balance on 270 plants, audits every 120 s, properties of every query (no NaN, no share above 100 %)
     'sim.detail.perf.test.js', //       ~16  (18)  S1.5 with loose bounds: 500 x on the examples, +25 % over off on Two lines, the 320 x 320 plant, 3.5 MB, query times
+    // The reviews of the statistics (truth of the numbers and honesty of the sentences, neutrality / containment / cost of the collector): the fixed defects are regression tests now; their opt-in checks need STATS_TRUTH_HEAVY=1 / STATS_ENGINE_REVIEW_HEAVY=1.
+    'stats.truth.review.test.js', //     ~7  (10)  34 tests: every vehicle number against an independent per-tick observer, the fleet question against a real run with one vehicle less, 22 STAT-REV regressions
+    'stats.engine.review.test.js', //    ~9  (12)  32 tests: 1,400-run neutrality corpus at a smaller scale, a read-only view of the simulation, the runner, the ledger, 7 STAT-ENG-REV regressions
   ),
   whole(
     'sim.trucks.fuzz.test.js', //       48.6  M1: 200 random plants with trucks, every invariant on every tick, report.ops, dt and fork independence at scale (A1.3, A1.4, A1.8, A1.9)

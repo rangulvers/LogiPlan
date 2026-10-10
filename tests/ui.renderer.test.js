@@ -142,6 +142,17 @@ function fakeVehicle(id, x, y, extra = {}) {
   };
 }
 
+test('createView: the route layer is on by default and the dock has published nothing yet', () => {
+  const view = createView();
+  assert.equal(view.overlays.routes, true);
+  assert.equal(view.stats, null);
+  const { renderer, ctx } = setup(smallPlant(), { sim: { vehicles: [fakeVehicle('v1#1', 5, 4)] } });
+  renderer.view.selection = { kind: 'vehicle', ids: ['v1#1'] };
+  ctx.record = true;
+  renderer.render(1);
+  assert.ok(ctx.arcs.length > 0, 'a selected vehicle is drawn with its ring without any collector, dock or route');
+});
+
 // ---- robustness ---------------------------------------------------------------------------------------------------
 
 test('renderer: renders nothing but the background for a null layout and survives every call', () => {
@@ -800,7 +811,8 @@ test('fuzz: random layouts, simulations, views and cameras never make the render
       heading: odd(), prevHeading: odd(), prevX: odd(), battery: odd(), visible: pickOf([true, false, undefined]), load: pickOf([[], [{}], null, undefined]),
       tv: pickOf([null, undefined, { length: odd(), width: odd(), waiting: pickOf([true, false]), disabled: pickOf([true, false]) }]),
     }));
-    const sim = pickOf([null, {}, { vehicles }, {
+    const detailJunk = pickOf([undefined, null, { failed: true }, { vehicleIndex: () => -1 }, { failed: false, version: NaN, vehicleIndex: () => -1 }]); // the route layer meets a missing, failed or empty collector
+    const sim = pickOf([null, {}, { vehicles }, { vehicles, detail: detailJunk, graph: pickOf([undefined, null, { cols: odd(), cellSize: odd() }]) }, {
       vehicles, stations: layout.stations.map((st) => ({ id: st.id, state: pickOf(['busy', 'down', 7, undefined]), fill: odd(), fillLabel: pickOf(['1/2', null, 5]),
         yard: odd(), consumed: odd(), slots: odd(), chargers: odd(), machines: pickOf([undefined, [], [{ state: 'busy', progress: odd() }], Array.from({ length: 30 }, () => ({ state: 'down' }))] ),
         parked: pickOf([undefined, [fakeVehicle('p', 0, 0)], [null]]), charging: pickOf([undefined, [fakeVehicle('c', 0, 0)]]) })),
@@ -810,9 +822,10 @@ test('fuzz: random layouts, simulations, views and cameras never make the render
     camera.zoomAt(pickOf([0.1, 1, 3, 10]), odd(), odd());
     camera.pan(odd(), odd());
     renderer.view = {
-      selection: pickOf([undefined, { kind: 'station', ids: ['A', 'zzz', null] }, { kind: 'obstacle', ids: ['o1'] }, { kind: 'label', ids: ['l1'] }, { kind: 'cell', ids: [odd(), '1,1'] }, { kind: 'fleet', ids: [] }]),
+      selection: pickOf([undefined, { kind: 'vehicle', ids: ['f#0'] }, { kind: 'vehicle', ids: ['f#1', 'zzz', null, 4] }, { kind: 'station', ids: ['A', 'zzz', null] }, { kind: 'obstacle', ids: ['o1'] }, { kind: 'label', ids: ['l1'] }, { kind: 'cell', ids: [odd(), '1,1'] }, { kind: 'fleet', ids: [] }]),
       hover: pickOf([null, { kind: 'station', id: 'B' }, { kind: 'cell', cell: [odd(), odd()] }, { kind: 'vehicle', id: 'f#0' }, { kind: 'flow', id: 'f1' }]),
-      overlays: { grid: odd(), studs: odd(), flows: odd(), docks: odd(), heat: pickOf(['off', 'traffic', 'waiting', 7]), ids: odd(), labels: odd() },
+      overlays: { grid: odd(), studs: odd(), flows: odd(), docks: odd(), heat: pickOf(['off', 'traffic', 'waiting', 7]), ids: odd(), labels: odd(), routes: odd() },
+      stats: pickOf([undefined, null, 7, { open: true, window: 'start', focus: null }, { open: true, window: 'last30', focus: { id: 'round', pinned: true } }, { open: odd(), window: odd(), focus: odd() }]),
       ghost: pickOf([null, { kind: 'station', type: pickOf(types), rect: { x: odd(), y: odd(), w: odd(), h: odd() }, valid: odd() }, { kind: 'obstacle', rect: { x: 1, y: 1, w: 2, h: 2 }, valid: true }]),
       paintPreview: pickOf([null, { cells: [[odd(), odd()], [1, 1]], oneWay: odd(), dir: odd() }]),
       flowPreview: pickOf([null, { fromId: 'A', toPoint: [odd(), odd()] }]), marquee: pickOf([null, { x: odd(), y: odd(), w: odd(), h: odd() }]), resizeHandles: odd(),

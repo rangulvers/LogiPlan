@@ -266,7 +266,7 @@ function deleteWithUndo(ctx, label, mutator, message) {
   ctx.toast(message, { kind: 'info', action: { label: 'Undo', onClick: () => { if (ctx.store.getState().layout === after) ctx.store.undo(); } } });
 }
 
-const NOUN = { station: 'station', obstacle: 'obstacle', label: 'label', cell: 'road cell', flow: 'flow', fleet: 'fleet' };
+const NOUN = { station: 'station', obstacle: 'obstacle', label: 'label', cell: 'road cell', flow: 'flow', fleet: 'fleet', vehicle: 'vehicle' };
 
 function deletedMessage(kind, ids, layout) {
   if (kind !== 'station') return `Deleted ${plural(ids.length, NOUN[kind])}.`;
@@ -622,13 +622,25 @@ function describeFleet(id) {
   };
 }
 
+/** A vehicle has no form of its own: its fleet's summary, titled with the vehicle ("AGVs 1"), and a jump to the Fleet tab (the numbers are in the Statistics dock). */
+export function describeVehicle(id) {
+  const at = id.lastIndexOf('#');
+  const fleetId = id.slice(0, at);
+  const number = id.slice(at + 1);
+  const ofFleet = describeFleet(fleetId);
+  return (layout) => {
+    const info = ofFleet(layout);
+    return { ...info, kind: 'Vehicle', title: `${getFleet(layout, fleetId).name} ${number}`, rows: [['Fleet', info.title], ...info.rows] };
+  };
+}
+
 function multiView(ctx, kind, ids) {
   const { store } = ctx;
   const layout = store.getState().layout;
   const breakdown = kind === 'station'
     ? STATION_TYPE_ORDER.map((t) => [t, ids.filter((id) => getStation(layout, id)?.type === t).length]).filter(([, n]) => n)
     : [];
-  const tab = { flow: ['flows', 'Edit in Flows tab'], fleet: ['fleet', 'Edit in Fleet tab'] }[kind];
+  const tab = { flow: ['flows', 'Edit in Flows tab'], fleet: ['fleet', 'Edit in Fleet tab'], vehicle: ['fleet', 'Edit the fleet in the Fleet tab'] }[kind];
   const el = pad(
     h('div', { class: 'row' }, h('strong', null, `${plural(ids.length, NOUN[kind])} selected`)),
     breakdown.length ? h('div', { class: 'row row--wrap' }, breakdown.map(([t, n]) => h('span', { class: `chip chip--${t}` }, h('span', { class: `swatch tone-${t}` }), `${n} ${typeName(t, n)}`))) : null,
@@ -870,6 +882,8 @@ function planFor(ctx, state, memory) {
     return { signature: `flow:${id}`, create: () => summaryView(ctx, { describe: describeFlow(id), tab: 'flows', buttonLabel: 'Edit in Flows tab' }) };
   } else if (kind === 'fleet' && getFleet(layout, id)) {
     return { signature: `fleet:${id}`, create: () => summaryView(ctx, { describe: describeFleet(id), tab: 'fleet', buttonLabel: 'Edit in Fleet tab' }) };
+  } else if (kind === 'vehicle' && getFleet(layout, id.slice(0, id.lastIndexOf('#')))) {
+    return { signature: `vehicle:${id}`, create: () => summaryView(ctx, { describe: describeVehicle(id), tab: 'fleet', buttonLabel: 'Edit the fleet in the Fleet tab' }) };
   }
   return { signature: 'plant', create: () => plantView(ctx, memory) };
 }

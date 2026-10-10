@@ -606,7 +606,7 @@ await withBrowser(async ({ browser, url, errors }) => {
       await tab(page, 'fleet');
       await click(page, page.locator('#panel-fleet').getByRole('button', { name: 'Add fleet' }).first(), 'Add fleet');
       eq((await layoutOf(page)).fleets.map((f) => f.name), ['AGV', 'AGV 2'], 'a second fleet');
-      const mine = page.locator('#panel-fleet .card', { hasText: 'AGV 2' }).first();
+      const mine = page.locator('#panel-fleet .card[aria-label="Fleet AGV 2"]'); // (not by its text: the first fleet's list of vehicles has a button "AGV 2" too)
       await click(page, mine.getByText('Only this fleet').first(), 'Only this fleet (first flow)');
       eq((await layoutOf(page)).flows[0].fleetId, 'v2', 'the first flow is dedicated to the new fleet');
       const fewer = mine.getByRole('button', { name: /Decrease|Fewer/i }).first();

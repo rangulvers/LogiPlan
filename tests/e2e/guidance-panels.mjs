@@ -650,7 +650,7 @@ await withBrowser(async ({ browser, url, errors }) => {
     await page.getByRole('button', { name: 'Help' }).first().click();
     await dialog.waitFor();
     const tabs = dialog.locator('[role=tab]');
-    eq(await tabs.allInnerTexts(), ['Quick start', 'Tools & shortcuts', 'How vehicles find work', 'Trucks and dock doors', 'How the simulation works', 'Tips'], 'a first-class page of the Help');
+    eq(await tabs.allInnerTexts(), ['Quick start', 'Tools & shortcuts', 'How vehicles find work', 'Trucks and dock doors', 'Statistics of an item', 'How the simulation works', 'Tips'], 'a first-class page of the Help');
     await tabs.nth(2).click();
     const help = dialog.locator('[data-help=vehicles]');
     await help.waitFor();
@@ -678,7 +678,7 @@ await withBrowser(async ({ browser, url, errors }) => {
     // the other pages mention it too
     await tabs.nth(0).click();
     ok((await dialog.innerText()).includes('every free vehicle serves every flow'), 'the quick start says it as well');
-    await tabs.nth(5).click();
+    await tabs.nth(6).click(); // the tips page is the last of seven since the statistics page was added
     ok((await dialog.innerText()).includes('Adding a second Goods in?'), 'the tips page too');
     await closeDialogs(page);
     await context.close();

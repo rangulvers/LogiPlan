@@ -388,7 +388,7 @@ export function createFakeDetail(fixture) {
     afterTickSafe: () => true, reset() {}, detach() {},
     vehicleIndex: (id) => fixture.vehicles.findIndex((v) => v.id === id),
     windowOf: (kind = 'start') => ({ ...fixture.windows[wk({ kind })] }),
-    legCoverage: () => ({ rows: fixture.detail.legs.rows, cap: fixture.detail.legs.cap, wrapped: fixture.detail.legs.count > fixture.detail.legs.cap, since: fixture.detail.windowStart }),
+    legCoverage: () => ({ rows: fixture.detail.legs.rows, cap: fixture.detail.legs.cap, wrapped: fixture.detail.legs.count > fixture.detail.legs.cap, since: fixture.detail.legs.since ?? fixture.detail.windowStart }), // a test that wants a wrapped log writes legs.since (the time from which the log is complete)
     // vehicles
     timeSplit: (i, w) => copy(vq(i, w)?.timeSplit ?? emptySplit),
     counts: (i, w) => copy(vq(i, w)?.counts ?? { trips: 0, loaded: 0, empty: 0, park: 0, qty: 0 }),
@@ -406,7 +406,7 @@ export function createFakeDetail(fixture) {
     visitsTo: (i, w) => copy(sq(i, w)?.visitsTo ?? { visits: 0, meanApproach: null, meanDockQueue: null, byVehicle: [] }),
     loadedRoutes: ({ from = -1, to = -1 } = {}, w) => copy(fixture.queries[wk(w)].loadedRoutes.filter((r) => (from < 0 || r.from === from) && (to < 0 || r.to === to))),
     busiestRoutes: (w) => copy(fixture.queries[wk(w)].busiestRoutes),
-    cellUse: () => ({ legs: 0, byFlow: [] }),
+    cellUse: () => ({ legs: 0, byFlow: [] }), chargeStopsAt: () => [],
     pickWait: hist('pickWait'), yardWait: hist('yardWait'), sinkLead: hist('sinkLead'),
     pool: {
       get size() { return Object.keys(fixture.paths).length; },

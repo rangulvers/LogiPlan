@@ -6,6 +6,8 @@
 //   runner.play() -> Promise<boolean>     runner.pause()     runner.toggle() -> Promise<boolean>
 //   runner.step(seconds = 1) -> Promise<number>     runner.reset()     runner.setSpeed(x) -> number
 //   runner.kpis() / runner.insights()     latest results (cached 250 ms), null while there is no simulation
+//   runner.detail()                       the optional statistics collector of the displayed simulation (sim.detail, js/sim/detail.js) or null; switched on for every
+//                                         simulation the runner builds or pre-rolls while store.ui.detail is not false (the paired control run never has one)
 //   runner.priming / runner.primeProgress / runner.warm     warm restart state (see below)
 //   runner.simShift     { dx, dy } cells the plan's content has moved since the displayed simulation was built (the plan grew on its left or top), or null
 //   runner.baseline / runner.keepBaseline() / runner.dismissBaseline()     the "before" numbers of the change-impact card
@@ -241,6 +243,7 @@ export function createRunner(options = {}) {
   let warmInfo = null; // { preRoll } of the displayed simulation, null after a cold start
   let simShift = null; // { dx, dy }: cells the plan's content moved since the displayed simulation was built (growing on the left or top), else null
   let seenLayout = store.getState().layout; // the layout of the last store notification, to tell how far the content moved
+  let detailWanted = store.getState().ui.detail !== false; // store.ui.detail as last seen: the statistics collector of the simulations (see attachDetail)
   const cache = { kpis: null, insights: null };
   const handlers = Object.fromEntries(EVENTS.map((name) => [name, new Set()]));
 
@@ -349,6 +352,31 @@ export function createRunner(options = {}) {
     if (had) emit('rebuild', { reason, sim: null });
   }
 
+  /**
+   * Turn the statistics collector on for a simulation the runner built (preference ui.detail, default on). Stand-ins without the method (tests) are left alone;
+   * a collector that cannot start must not stop the run. The paired control run of the impact card never calls this: only the simulation on screen has one.
+   */
+  function attachDetail(simulation) {
+    if (store.getState().ui.detail === false || typeof simulation.enableDetail !== 'function') return;
+    try {
+      simulation.enableDetail();
+    } catch (err) {
+      reportError(err, { phase: 'detail' });
+    }
+  }
+
+  /** The preference ui.detail was switched while simulations exist: the collector starts (its window begins now) or stops on the displayed one and the one being primed. */
+  function syncDetail(state) {
+    const wanted = state.ui.detail !== false;
+    if (wanted === detailWanted) return;
+    detailWanted = wanted;
+    for (const target of [sim, priming && priming.sim]) {
+      if (!target) continue;
+      if (wanted) attachDetail(target);
+      else if (typeof target.disableDetail === 'function') target.disableDetail();
+    }
+  }
+
   /** Build a fresh simulation from the store's layout (a cold start). Returns it, or null (after reporting) if construction failed. */
   function buildSim(reason) {
     const layout = store.getState().layout;
@@ -361,6 +389,7 @@ export function createRunner(options = {}) {
       dropSim(reason);
       return null;
     }
+    attachDetail(next);
     endStep();
     forgetEdits();
     sim = next;
@@ -438,6 +467,7 @@ export function createRunner(options = {}) {
       dropSim('structural');
       return;
     }
+    attachDetail(next); // before the pre-roll: the collector of the replacement starts with it and swaps in with it
     const target = primeSeconds(layout.settings.warmup);
     const window = target - layout.settings.warmup;
     // the old plant under the what-if settings of the new one: only the edits differ
@@ -633,6 +663,7 @@ export function createRunner(options = {}) {
   }
 
   const unsubscribe = store.subscribe((state, info) => {
+    syncDetail(state);
     if (state.layout !== seenLayout) followShift(info, state.layout);
     if (destroyed || !sim || !info.layoutChanged) return;
     if (layoutChangeKind(builtFrom, state.layout) === 'structural') {
@@ -947,6 +978,8 @@ export function createRunner(options = {}) {
     setSpeed,
     kpis,
     insights,
+    /** The statistics collector of the displayed simulation (sim.detail), or null: off, not started yet, or dropped after a failure (sim.detailError says why). */
+    detail: () => (sim && sim.detail) || null,
     keepBaseline,
     dismissBaseline,
     on(name, fn) {

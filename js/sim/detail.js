@@ -38,7 +38,9 @@
 //   state    windowStart (s), version (bumps on every leg close and bucket close: the overlay redraws when it changes), notices [{ t, text }], whatIf [{ t, key, from, to }]
 //            (runtime settings changed), failed, error, memoryBytes, nV, nS, bCount (buckets closed), legs.count / legs.size / legs.cap
 //   engine   afterTickSafe(dt, fresh) -> boolean (false = failed, the engine drops it); reset(t); detach()
-//   windows  windowOf(kind); legCoverage() -> { rows, cap, wrapped, since }   (`since` = start of the oldest kept leg: the window text says "last N trips" when `wrapped`)
+//   windows  windowOf(kind); legCoverage() -> { rows, cap, wrapped, since }   once the ring of legs has wrapped, every leg that STARTED at or after `since` (the latest time at which a dropped leg
+//            was filed) is still in it; the leg queries below count from max(w.t0, since), so a caller divides what they return by the time since then, not by the whole window, and says
+//            "the last N trips since H:MM" when `wrapped`
 //
 //   vehicles
 //     timeSplit(i, w)  -> { seconds, driving, waiting, dockQueue, loading, unloading, idle, parked, charging, broken, drivingLoaded, drivingEmpty, drivingDepot }   seconds
@@ -51,7 +53,8 @@
 //                         Groups by (kind, from, to) sorted by trips; `pathId` the usual (most frequent DRAWABLE) path, `pathShare` its share of the drawn trips, `undrawn` the
 //                         trips with no path (zero length, pool full), `disturbed` the relocated legs (not variants); times are means over the COMPLETE legs
 //     roundOf(i, w, jobs = 2) -> { jobs: [{ from, to }], count, of, share } | null   the usual round (needs 3 occurrences)
-//     queuesOf(i, w)   -> [{ station, seconds, legs, dockNode }]   dock queue by destination station, legs that started in the window
+//     queuesOf(i, w)   -> [{ station, seconds, legs, dockNode }]   dock queue by destination station of the closed, complete legs that started in the window (an open leg and a partial leg are not
+//                         in it: the TOTAL of a window is timeSplit().dockQueue, exact; this says where, in proportion)
 //     hotspots(i, n)   -> { cells: [{ node, seconds }], total, folded }   SINCE START only; without the dock-queue seconds; total = all waiting seconds booked by this vehicle
 //     idleSpots(i, n)  -> [{ node, seconds }]   since start only: where it stood without a job
 //     metresToGo(i)    -> number | null   live
@@ -61,7 +64,10 @@
 //     visitsTo(i, w)   -> { visits, meanApproach, meanDockQueue, byVehicle: [{ veh, visits }] }
 //     loadedRoutes({ from?, to? }, w) -> [{ from, to, trips, meanTime, meanWait, pathId, share, drawn, undrawn, disturbed, variants, metres }]   as routesOf, all vehicles: `share` = that of the usual
 //                         path among the DRAWN trips; relocated, zero-length and pool-full legs are trips but not variants (drawn + undrawn = trips)
-//     busiestRoutes(w, n) -> { total, routes: [{ from, to, trips, metres, share, pathId }] }   by loaded metres of the drawable paths        cellUse(nodes, w) -> { legs, byFlow: [{ key, n }] }   key = 'loaded|<flow index>' | 'empty|<flow index>' | 'depot|65535'
+//     busiestRoutes(w, n) -> { total, routes: [{ from, to, trips, metres, share, pathId }] }   by loaded metres of the drawable paths
+//     cellUse(nodes, w) -> { legs, byFlow: [{ key, n }] }   key = 'loaded|<flow index>' | 'empty|<flow index>' | 'depot|65535'; answered from an index of the paths by cell (built on the first call,
+//                         extended by the next ones: the poll never pays for it; 8 bytes per cell of a path)
+//     chargeStopsAt(d, w) -> [{ veh, t0, minutes, b0, b1 }]   the charge sessions that ended in the window at depot (station index) d; a session records the depot it charged at
 //     pickWait, yardWait: Map(station index -> LogHist { n, sum, max, percentile(p) });  sinkLead: Map(station index -> SampleSet)
 //     pool.nodes(pathId) -> Int32Array of road cells;  pool.len[pathId] steps;  pool.start[pathId]
 //
@@ -125,6 +131,7 @@ class PathPool {
     this.byHash = new Map();
     this.overflow = 0; // legs that found the pool full (they keep path -1: counted, not drawn)
     this.bytes = 0;
+    this.head = null; this.next = null; this.pid = null; this.entries = 0; this.indexed = 0; // the cell index (see indexPaths), built on demand
   }
 
   get size() { return this.start.length; }
@@ -162,6 +169,50 @@ class PathPool {
     return id;
   }
 
+  /**
+   * Make sure every interned path is in the cell index (built on the first road-cell query, never by the poll: a plant that nobody clicks a road cell on pays nothing). The index is
+   * three typed arrays: `head[node]` the newest entry of that cell, `next[entry]` the one before it, `pid[entry]` the path. A path of n steps adds n + 1 entries (8 bytes each);
+   * paths interned later are added by the next call, so a query never decodes a path twice.
+   */
+  indexPaths() {
+    if (this.head === null) { this.head = new Int32Array(this.graph.nodeCount).fill(-1); this.next = new Int32Array(0); this.pid = new Int32Array(0); this.entries = 0; this.indexed = 0; }
+    if (this.indexed >= this.start.length) return;
+    const cols = this.graph.cols;
+    const step = [-cols, 1, cols, -1];
+    const head = this.head;
+    let need = this.entries;
+    for (let id = this.indexed; id < this.start.length; id++) need += this.len[id] + 1;
+    if (need > this.next.length) { // one allocation for what is to be indexed now, with a quarter of room for the paths of the next call
+      const size = Math.ceil(need * 1.25) + 1024;
+      const nn = new Int32Array(size); nn.set(this.next.subarray(0, this.entries)); this.next = nn;
+      const pp = new Int32Array(size); pp.set(this.pid.subarray(0, this.entries)); this.pid = pp;
+    }
+    const next = this.next; const pid = this.pid;
+    let at = this.entries;
+    for (let id = this.indexed; id < this.start.length; id++) {
+      const n = this.len[id]; const dirs = this.dirs[id];
+      let node = this.start[id];
+      for (let k = 0; k <= n; k++) {
+        if (node >= 0 && node < head.length) { next[at] = head[node]; pid[at] = id; head[node] = at; at++; }
+        if (k < n) node += step[(dirs[k >> 2] >> ((k & 3) * 2)) & 3];
+      }
+    }
+    this.entries = at; this.indexed = this.start.length;
+  }
+
+  /** The ids of the paths that pass any of `nodes` (a Set). Builds or extends the cell index first. */
+  pathsThrough(nodes) {
+    this.indexPaths();
+    const out = new Set();
+    for (const nd of nodes) {
+      if (!Number.isInteger(nd) || nd < 0 || nd >= this.head.length) continue;
+      for (let e = this.head[nd]; e >= 0; e = this.next[e]) out.add(this.pid[e]);
+    }
+    return out;
+  }
+
+  get indexBytes() { return this.head === null ? 0 : this.head.byteLength + this.next.byteLength + this.pid.byteLength; }
+
   /** The cells of path `id` (decoded on demand; the UI asks for at most a dozen at a time). */
   nodes(id) {
     if (!(id >= 0 && id < this.start.length)) return new Int32Array(0);
@@ -179,8 +230,9 @@ class PathPool {
 
 // ---- the leg log: a ring of rows, struct of arrays, growing by doubling up to its cap ----------------------------------------------
 
+// `span` = close time - start time (the `dur` column leaves a breakdown's repair out): t0 + span is when the leg was filed, which is what the ring needs to know about a row it overwrites.
 const LEG_COLUMNS = [['veh', Uint16Array], ['kind', Uint8Array], ['from', Uint16Array], ['to', Uint16Array], ['flow', Uint16Array], ['path', Int32Array], ['t0', Float64Array],
-  ['dur', Float32Array], ['wait', Float32Array], ['dockWait', Float32Array], ['qty', Uint16Array], ['flags', Uint8Array]];
+  ['dur', Float32Array], ['wait', Float32Array], ['dockWait', Float32Array], ['qty', Uint16Array], ['flags', Uint8Array], ['span', Float32Array]];
 
 class LegLog {
   constructor(cap, start = LEG_START) {
@@ -188,24 +240,26 @@ class LegLog {
     this.rows = Math.min(this.cap, Math.max(1, start)); // rows allocated now
     for (const [name, Type] of LEG_COLUMNS) this[name] = new Type(this.rows);
     this.count = 0; // legs filed since the last clear (including those the ring has dropped)
+    this.lostUntil = 0; // the latest time at which a leg that the ring has dropped was filed: every leg that STARTED after it is still here (0: nothing was dropped)
   }
 
-  get bytes() { return this.rows * 36; }
+  get bytes() { return this.rows * 40; }
   get size() { return Math.min(this.count, this.cap); }
   /** Storage row of the k-th kept leg, oldest first. */
   at(k) { return this.count <= this.cap ? k : (this.count + k) % this.cap; }
-  clear() { this.count = 0; }
+  clear() { this.count = 0; this.lostUntil = 0; }
   grow() {
     const rows = Math.min(this.cap, this.rows * 2);
     for (const [name, Type] of LEG_COLUMNS) { const a = new Type(rows); a.set(this[name]); this[name] = a; }
     this.rows = rows;
   }
 
-  push(veh, kind, from, to, flow, path, t0, dur, wait, dockWait, qty, flags) {
+  push(veh, kind, from, to, flow, path, t0, dur, wait, dockWait, qty, flags, span = 0) {
     if (this.count >= this.rows && this.rows < this.cap) this.grow();
     const i = this.count % this.rows;
+    if (this.count >= this.rows) { const filed = this.t0[i] + this.span[i]; if (filed > this.lostUntil) this.lostUntil = filed; } // the ring overwrites its oldest row
     this.veh[i] = veh; this.kind[i] = kind; this.from[i] = from; this.to[i] = to; this.flow[i] = flow; this.path[i] = path;
-    this.t0[i] = t0; this.dur[i] = dur; this.wait[i] = wait; this.dockWait[i] = dockWait; this.qty[i] = qty > 0xffff ? 0xffff : qty; this.flags[i] = flags;
+    this.t0[i] = t0; this.dur[i] = dur; this.wait[i] = wait; this.dockWait[i] = dockWait; this.qty[i] = qty > 0xffff ? 0xffff : qty; this.flags[i] = flags; this.span[i] = span;
     this.count++;
   }
 }
@@ -215,8 +269,10 @@ class LegLog {
 class HotTable {
   constructor(nVeh) {
     this.keys = new Int32Array(nVeh * HOT_SLOTS).fill(-1);
-    this.secs = new Float32Array(nVeh * HOT_SLOTS);
-    this.other = new Float32Array(nVeh);
+    // Float64: `hotQ` and `hotStray` add `dt` to a cell EVERY tick and hotspots() subtracts hotQ from the (float64) running streak of `hot`; a float32 sum of 0.05 s steps drifts by
+    // 5e-5 to 2e-4 of itself, which showed up as phantom seconds on a cell where the vehicle only queued (tests/stats.engine.review.test.js STAT-ENG-REV-4). 100 vehicles: 38 KB per table.
+    this.secs = new Float64Array(nVeh * HOT_SLOTS);
+    this.other = new Float64Array(nVeh);
     this.last = new Int32Array(nVeh);
   }
 
@@ -308,7 +364,8 @@ export class Detail {
     this.kindOf = Uint8Array.from(lg.stations, (st) => (st.type === 'process' ? K_PROCESS : 0));
     this.isSource = Uint8Array.from(lg.stations, (st) => (st.type === 'source' ? 1 : 0));
     this.legs = new LegLog(opts.legCap || LEG_CAP, opts.legStart || LEG_START);
-    this.pool = new PathPool(sim.graph, opts.pathCap || PATH_CAP);
+    // a path is a property of the road graph, not of the fleet: the pool survives a restart, so a path id handed out before (the overlay caches the shapes by id) keeps its meaning
+    if (!this.pool) this.pool = new PathPool(sim.graph, opts.pathCap || PATH_CAP);
     this.hot = new HotTable(n);
     this.hotStray = new HotTable(n); // waiting seconds of a vehicle that is NOT in a driving state (broken, idle after a repair): booked by traffic's nodeWait, not part of the Waiting tile
     this.hotQ = new HotTable(n); // the part of the waiting that was a queue for a dock, by cell: the cell rows of "where it waits" are hot - hotQ
@@ -334,7 +391,7 @@ export class Detail {
     this.oPath = new Int32Array(n).fill(-1); this.oT0 = new Float64Array(n); this.oWait = new Float64Array(n); this.oDockWait = new Float64Array(n);
     this.oQty = new Uint16Array(n); this.oFlags = new Uint8Array(n); this.oHasRoute = new Uint8Array(n);
     this.oPaused = new Float64Array(n); this.pauseAt = new Float64Array(n).fill(-1); this.oTele = new Int32Array(n);
-    this.charges = { cap: CHARGE_CAP, veh: new Uint16Array(CHARGE_CAP), t0: new Float64Array(CHARGE_CAP), dur: new Float32Array(CHARGE_CAP), b0: new Float32Array(CHARGE_CAP), b1: new Float32Array(CHARGE_CAP), count: 0 };
+    this.charges = { cap: CHARGE_CAP, veh: new Uint16Array(CHARGE_CAP), t0: new Float64Array(CHARGE_CAP), dur: new Float32Array(CHARGE_CAP), b0: new Float32Array(CHARGE_CAP), b1: new Float32Array(CHARGE_CAP), dep: new Uint16Array(CHARGE_CAP).fill(NONE16), count: 0 }; // dep: the station index of the depot it charged at
     this.cT0 = new Float64Array(n); this.cB0 = new Float32Array(n);
     this.base = new Float64Array(n * 4); // window start: trips, loaded / empty / park metres
     this.qty = new Float64Array(n); // loads carried in the window (loaded legs that ended)
@@ -368,7 +425,7 @@ export class Detail {
   get memoryBytes() {
     let b = this.legs.bytes + this.pool.bytes + this.vRing.byteLength + this.sRing.byteLength;
     for (const v of [this.hot.keys, this.hot.secs, this.hotStray.keys, this.hotStray.secs, this.hotQ.keys, this.hotQ.secs, this.idleHot.keys, this.idleHot.secs, this.split, this.starvedBy, this.sInt, this.sEv]) b += v.byteLength;
-    return b + this.charges.cap * 22;
+    return b + this.charges.cap * 24 + this.pool.indexBytes;
   }
 
   // ---- containment -----------------------------------------------------------------------------------------------------------------
@@ -493,7 +550,7 @@ export class Detail {
       path = -2; flags |= FLAG.ZERO;
     }
     const dur = Math.max(0, t1 - this.oT0[i] - this.oPaused[i]);
-    this.legs.push(i, this.oKind[i], this.oFrom[i], this.oTo[i], this.oFlow[i], path, this.oT0[i], dur, this.oWait[i], this.oDockWait[i], this.oQty[i], flags);
+    this.legs.push(i, this.oKind[i], this.oFrom[i], this.oTo[i], this.oFlow[i], path, this.oT0[i], dur, this.oWait[i], this.oDockWait[i], this.oQty[i], flags, Math.max(0, t1 - this.oT0[i]));
     if (this.oKind[i] === 1) { this.legsLoaded[i]++; if (!(flags & FLAG.PARTIAL)) this.qty[i] += this.oQty[i]; }
     this.version++;
   }
@@ -505,7 +562,7 @@ export class Detail {
     const to = ord ? (this.stIndex.get(kind === 1 ? ord.to : ord.from) ?? NONE16) : NONE16;
     const flow = ord ? (this.flowIndex.get(ord.flowId) ?? NONE16) : NONE16;
     const qty = ord && kind === 1 ? ord.qty : 0;
-    this.legs.push(i, kind, from, to, flow, -2, t, 0, 0, 0, qty, FLAG.ZERO);
+    this.legs.push(i, kind, from, to, flow, -2, t, 0, 0, 0, qty, FLAG.ZERO, 0);
     if (kind === 1) { this.qty[i] += qty; this.legsLoaded[i]++; }
     this.version++;
   }
@@ -533,7 +590,7 @@ export class Detail {
 
   endCharge(i, vr, t) {
     const c = this.charges; const k = c.count % c.cap;
-    c.veh[k] = i; c.t0[k] = this.cT0[i]; c.dur[k] = t - this.cT0[i]; c.b0[k] = this.cB0[i]; c.b1[k] = vr.battery; c.count++;
+    c.veh[k] = i; c.t0[k] = this.cT0[i]; c.dur[k] = t - this.cT0[i]; c.b0[k] = this.cB0[i]; c.b1[k] = vr.battery; c.dep[k] = this.depotIdx[i] >= 0 ? this.depotIdx[i] : NONE16; c.count++;
   }
 
   // ---- the poll ------------------------------------------------------------------------------------------------------------------
@@ -724,13 +781,19 @@ export class Detail {
     return { kind: 'last30', t0, seconds: now - t0, row: jb % RING, zero: jb === 0 };
   }
 
-  /** What the leg log still holds: `wrapped` when the ring dropped the oldest legs (the window text then says "the last N trips"), `since` the start of the oldest kept leg. */
+  /**
+   * What the leg log still holds. `wrapped`: the ring dropped its oldest legs. `since`: every leg that STARTED at or after this time is still in the log (the window text says
+   * "the last N trips since 3:12" when `wrapped`); it is the latest time at which a dropped leg was filed, never earlier than the window start. Every query that reads the legs
+   * (routesOf, roundOf, queuesOf, loadedRoutes, visitsTo, busiestRoutes, cellUse) counts the legs that started in the window AND after `since`, so a caller divides the legs it
+   * gets by the time since `max(w.t0, since)`, not by the whole window.
+   */
   legCoverage() {
     const L = this.legs; const wrapped = L.count > L.cap;
-    let since = this.windowStart;
-    if (wrapped) { since = Infinity; for (let k = 0; k < L.size; k++) since = Math.min(since, L.t0[L.at(k)]); }
-    return { rows: L.size, cap: L.cap, wrapped, since };
+    return { rows: L.size, cap: L.cap, wrapped, since: wrapped ? Math.max(this.windowStart, L.lostUntil) : this.windowStart };
   }
+
+  /** The earliest start time (minus a rounding margin) of the legs a query may count in window `w`: the window start, or where the leg log is complete from when it wrapped. */
+  legFrom(w) { return Math.max(w.t0, this.legs.lostUntil) - 1e-9; }
 
   vrow(i, w, s) { return w.zero ? 0 : this.vRing[w.row * this.nV * VF + i * VF + s]; }
 
@@ -785,10 +848,10 @@ export class Detail {
   /** Where vehicle `i` stood in the queue for a dock, by station: seconds (legs that started in the window) and the dock cell its usual path ended at. */
   queuesOf(i, w = this.windowOf('start')) {
     if (!this.vOk(i)) return [];
-    const L = this.legs; const by = new Map();
+    const L = this.legs; const lt = this.legFrom(w); const by = new Map();
     for (let k = 0; k < L.size; k++) {
       const r = L.at(k);
-      if (L.veh[r] !== i || L.t0[r] < w.t0 - 1e-9 || (L.flags[r] & FLAG.PARTIAL) || L.to[r] === NONE16) continue;
+      if (L.veh[r] !== i || L.t0[r] < lt || (L.flags[r] & FLAG.PARTIAL) || L.to[r] === NONE16) continue;
       const g = by.get(L.to[r]) || { station: L.to[r], seconds: 0, legs: 0, ends: new Map() };
       g.seconds += L.dockWait[r]; g.legs++;
       if (L.path[r] >= 0 && L.dockWait[r] > 0) g.ends.set(L.path[r], (g.ends.get(L.path[r]) || 0) + L.dockWait[r]);
@@ -826,10 +889,10 @@ export class Detail {
   /** The legs of vehicle `i` in the window grouped by (kind, origin, destination): trips, metres, times, usual path and its share. */
   routesOf(i, w = this.windowOf('start'), kinds = [1]) {
     if (!this.vOk(i)) return [];
-    const L = this.legs; const groups = new Map();
+    const L = this.legs; const lt = this.legFrom(w); const groups = new Map();
     for (let k = 0; k < L.size; k++) {
       const r = L.at(k);
-      if (L.veh[r] !== i || !kinds.includes(L.kind[r]) || L.t0[r] < w.t0 - 1e-9) continue;
+      if (L.veh[r] !== i || !kinds.includes(L.kind[r]) || L.t0[r] < lt) continue;
       const key = (L.kind[r] * 65536 + L.from[r]) * 65536 + L.to[r];
       let g = groups.get(key);
       if (g === undefined) groups.set(key, (g = { kind: L.kind[r], from: L.from[r], to: L.to[r], flow: L.flow[r], trips: 0, full: 0, dur: 0, wait: 0, dockWait: 0, qty: 0, paths: new Map(), disturbed: 0 }));
@@ -867,7 +930,7 @@ export class Detail {
    */
   roundOf(i, w = this.windowOf('start'), jobs = 2) {
     if (!this.vOk(i) || !(jobs >= 1)) return null;
-    const L = this.legs; const seen = new Map(); let of = 0; let run = [];
+    const L = this.legs; const lt = this.legFrom(w); const seen = new Map(); let of = 0; let run = [];
     const flush = () => {
       for (let k = 0; k + jobs <= run.length; k++) {
         of++;
@@ -880,7 +943,7 @@ export class Detail {
     };
     for (let k = 0; k < L.size; k++) {
       const r = L.at(k);
-      if (L.veh[r] !== i || L.t0[r] < w.t0 - 1e-9) continue;
+      if (L.veh[r] !== i || L.t0[r] < lt) continue;
       if (L.kind[r] >= 2) { flush(); continue; } // to a charger or to park: the round starts over
       if (L.kind[r] === 1 && L.from[r] !== NONE16 && L.to[r] !== NONE16) run.push(L.from[r] * 65536 + L.to[r]);
     }
@@ -911,10 +974,10 @@ export class Detail {
    * relocated leg, a zero-length leg and a leg that found the path pool full are trips but not variants: `drawn` + `undrawn` = `trips`, `variants` counts drawable paths only.
    */
   loadedRoutes({ from = -1, to = -1 } = {}, w = this.windowOf('start')) {
-    const L = this.legs; const groups = new Map();
+    const L = this.legs; const lt = this.legFrom(w); const groups = new Map();
     for (let k = 0; k < L.size; k++) {
       const r = L.at(k);
-      if (L.kind[r] !== 1 || L.t0[r] < w.t0 - 1e-9 || (from >= 0 && L.from[r] !== from) || (to >= 0 && L.to[r] !== to) || L.from[r] === NONE16) continue;
+      if (L.kind[r] !== 1 || L.t0[r] < lt || (from >= 0 && L.from[r] !== from) || (to >= 0 && L.to[r] !== to) || L.from[r] === NONE16) continue;
       const key = L.from[r] * 65536 + L.to[r];
       let g = groups.get(key);
       if (g === undefined) groups.set(key, (g = { from: L.from[r], to: L.to[r], trips: 0, full: 0, dur: 0, wait: 0, disturbed: 0, paths: new Map() }));
@@ -936,10 +999,10 @@ export class Detail {
   /** Visits to a station by vehicle, from the legs that ended there. */
   visitsTo(st, w = this.windowOf('start')) {
     if (!this.sOk(st)) return { visits: 0, meanApproach: null, meanDockQueue: null, byVehicle: [] };
-    const L = this.legs; const by = new Map(); let n = 0; let dur = 0; let dockWait = 0;
+    const L = this.legs; const lt = this.legFrom(w); const by = new Map(); let n = 0; let dur = 0; let dockWait = 0;
     for (let k = 0; k < L.size; k++) {
       const r = L.at(k);
-      if (L.to[r] !== st || L.kind[r] > 1 || L.t0[r] < w.t0 - 1e-9) continue;
+      if (L.to[r] !== st || L.kind[r] > 1 || L.t0[r] < lt) continue;
       n++; dur += L.dur[r]; dockWait += L.dockWait[r]; by.set(L.veh[r], (by.get(L.veh[r]) || 0) + 1);
     }
     return { visits: n, meanApproach: n ? dur / n : null, meanDockQueue: n ? dockWait / n : null, byVehicle: [...by].map(([veh, c]) => ({ veh, visits: c })).sort((a, b) => b.visits - a.visits) };
@@ -950,10 +1013,10 @@ export class Detail {
    * and a leg with no room in the path pool are trips with no metres). `total` = the metres of all routes, `share` that of a route in it.
    */
   busiestRoutes(w = this.windowOf('start'), top = 4) {
-    const L = this.legs; const groups = new Map();
+    const L = this.legs; const lt = this.legFrom(w); const groups = new Map();
     for (let k = 0; k < L.size; k++) {
       const r = L.at(k);
-      if (L.kind[r] !== 1 || L.t0[r] < w.t0 - 1e-9 || L.from[r] === NONE16) continue;
+      if (L.kind[r] !== 1 || L.t0[r] < lt || L.from[r] === NONE16) continue;
       const key = L.from[r] * 65536 + L.to[r];
       let g = groups.get(key);
       if (g === undefined) groups.set(key, (g = { from: L.from[r], to: L.to[r], trips: 0, metres: 0, paths: new Map() }));
@@ -967,20 +1030,25 @@ export class Detail {
     return { total, routes: all.slice(0, top).map((g) => ({ from: g.from, to: g.to, trips: g.trips, metres: g.metres, share: total ? g.metres / total : 0, pathId: usual(g) })) };
   }
 
-  /** Legs (loaded, empty and drives to a depot) whose logged path touches any of `nodes`, by kind and flow: key 'loaded|<flow index>', 'empty|<flow index>' or 'depot|65535'. For a selected cell or stretch. */
+  /**
+   * Legs (loaded, empty and drives to a depot) whose logged path touches any of `nodes`, by kind and flow: key 'loaded|<flow index>', 'empty|<flow index>' or 'depot|65535'. For a selected
+   * cell or stretch. The paths through the cells come from the pool's cell index (built on the first call, extended by the next ones), so a call costs one pass over the leg log, not
+   * a decoding of every path (37 to 60 ms on every call on a full log of the 100-vehicle plant before the index; now the first call builds the index, about 40 ms for 16,000 paths of 150 cells, and the next ones take about 1 ms).
+   */
   cellUse(nodes, w = this.windowOf('start')) {
-    const L = this.legs; const want = new Set(nodes); const touch = new Map(); const byFlow = new Map();
+    const L = this.legs; const lt = this.legFrom(w); const byFlow = new Map();
+    const through = this.pool.pathsThrough(nodes);
     let legs = 0;
-    for (let k = 0; k < L.size; k++) {
-      const r = L.at(k);
-      if (L.t0[r] < w.t0 - 1e-9) continue;
-      const pid = L.path[r];
-      let hit = touch.get(pid);
-      if (hit === undefined) { hit = false; if (pid >= 0) for (const nd of this.pool.nodes(pid)) if (want.has(nd)) { hit = true; break; } touch.set(pid, hit); }
-      if (!hit) continue;
-      legs++;
-      const key = `${L.kind[r] === 1 ? 'loaded' : L.kind[r] === 0 ? 'empty' : 'depot'}|${L.flow[r]}`; // a drive to a charger or to park has no flow (65535)
-      byFlow.set(key, (byFlow.get(key) || 0) + 1);
+    if (through.size > 0) {
+      for (let k = 0; k < L.size; k++) {
+        const r = L.at(k);
+        if (L.t0[r] < lt) continue;
+        const pid = L.path[r];
+        if (pid < 0 || !through.has(pid)) continue;
+        legs++;
+        const key = `${L.kind[r] === 1 ? 'loaded' : L.kind[r] === 0 ? 'empty' : 'depot'}|${L.flow[r]}`; // a drive to a charger or to park has no flow (65535)
+        byFlow.set(key, (byFlow.get(key) || 0) + 1);
+      }
     }
     return { legs, byFlow: [...byFlow].map(([key, n]) => ({ key, n })).sort((a, b) => b.n - a.n || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0)) };
   }
@@ -1004,6 +1072,14 @@ export class Detail {
       arrivals: cnt(0, st.arrivals), produced: cnt(1, st.produced), consumed: cnt(2, st.consumed),
       orders: ev(0), bufferWait: ev(0) > 0 ? ev(1) / ev(0) : null, pallets: ev(2), yardWait: ev(2) > 0 ? ev(3) / ev(2) : null, intakeWait: ev(2) > 0 ? ev(4) / ev(2) : null,
     };
+  }
+
+  /** The charge sessions that ended inside the window at depot `d` (a station index), all vehicles: [{ veh, t0, minutes, b0, b1 }]. For the depot page: stops per hour, mean stop length. */
+  chargeStopsAt(d, w = this.windowOf('start')) {
+    const c = this.charges; const out = [];
+    if (!this.sOk(d)) return out;
+    for (let k = 0; k < Math.min(c.count, c.cap); k++) if (c.dep[k] === d && c.t0[k] + c.dur[k] >= w.t0 - 1e-9) out.push({ veh: c.veh[k], t0: c.t0[k], minutes: c.dur[k] / 60, b0: c.b0[k], b1: c.b1[k] });
+    return out;
   }
 
   chargeStops(i, w = this.windowOf('start')) {

@@ -50,6 +50,11 @@
 //    scenarios) clears the selection; commit / undo / redo keep the ids that still exist.
 //  * A 'cell' selection id is the road cell key "cx,cy" ([cx, cy] arrays are accepted and stored as keys); it exists while
 //    that cell is a road. Unknown selection kinds select nothing.
+//  * A 'vehicle' selection id is "<fleetId>#<n>", the id of the simulation's vehicle (docs/ENTITY-INSIGHTS-DESIGN.md 3.1); it exists while the fleet
+//    exists and 1 <= n <= the fleet's count, so it survives a warm restart (the layout does not change) and an edit that keeps the vehicle. When an
+//    edit (commit, undo, redo) removes the vehicle but not its fleet, the selection falls back to that fleet instead of being dropped.
+//  * `detail` (default true: collect the statistics of clicked items, the optional collector js/sim/detail.js) and `statsDock` ('data' | 'always' |
+//    'never': when a click opens the Statistics dock) are view preferences like `warmRestart`: saved with the session, not part of the plant.
 //  * Scenarios: names are unique (case-insensitive; a clash gets a number: "B" -> "B 2"), at most MAX_SCENARIOS (the limit
 //    of serialize.js). addScenario and duplicateScenario make the new scenario active and return its id (null at the limit).
 //    Ids are never reused while a document lives ("sc4" after "sc3" was deleted), so caches keyed by scenario id (experiment
@@ -58,7 +63,7 @@
 //    silently is worse than a button that does nothing (use newProject to start over).
 //  * dirty: true after any change to project content, false after loadProject / newProject / markClean(). It is saved with
 //    the autosave, so a restored session that had unsaved work still counts as dirty.
-//  * Persistence writes exportProject(project) plus a "session" member { ui: { theme, overlays, rightTab, warmRestart, toolOptions }, dirty } under one
+//  * Persistence writes exportProject(project) plus a "session" member { ui: { theme, overlays, rightTab, warmRestart, toolOptions, detail, statsDock }, dirty } under one
 //    key, 400 ms (trailing) after the last change that matters but at the latest PERSIST_MAX_WAIT_MS after the first unsaved
 //    change (continuous editing still saves); selection, tool and ephemeral flags are never saved. Call persist() on
 //    pagehide to flush. Storage may be missing or throw (quota, privacy mode): the store keeps working and exposes the
@@ -93,19 +98,22 @@ export const PERSIST_MAX_WAIT_MS = 5000;
 export const NOTIFY_CHAIN_LIMIT = 1000;
 /** Scenarios per project (the limit of serialize.js, so a saved project always loads completely). */
 export const MAX_SCENARIOS = 100;
-/** Kinds a selection may have. */
-export const SELECTION_KINDS = Object.freeze(['station', 'flow', 'fleet', 'obstacle', 'label', 'cell']);
+/** Kinds a selection may have. A 'vehicle' id is "<fleetId>#<n>" (the id of the simulation's vehicle): it exists while the fleet does and 1 <= n <= its count. */
+export const SELECTION_KINDS = Object.freeze(['station', 'flow', 'fleet', 'obstacle', 'label', 'cell', 'vehicle']);
+/** When the statistics dock opens on a click (ui.statsDock): once the simulation has measured long enough, always, or never. */
+export const STATS_DOCK_MODES = Object.freeze(['data', 'always', 'never']);
 
 const NAME_MAX = 80;
 const HEAT_MODES = ['off', 'traffic', 'waiting'];
 const THEMES = ['auto', 'light', 'dark'];
-const OVERLAY_FLAGS = ['grid', 'studs', 'flows', 'docks', 'jobs', 'ids', 'labels'];
-const PREF_KEYS = ['theme', 'overlays', 'rightTab', 'warmRestart', 'toolOptions'];
+const OVERLAY_FLAGS = ['grid', 'studs', 'flows', 'docks', 'jobs', 'ids', 'labels', 'routes'];
+const PREF_KEYS = ['theme', 'overlays', 'rightTab', 'warmRestart', 'toolOptions', 'detail', 'statsDock'];
 /** Draw modes of the stroke tools (the same list as ui/editor/strokes.js DRAW_MODES: the store may not import from ui/). */
 const DRAW_MODES = ['smart', 'straight', 'free'];
 const UNSAFE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 const CELL_KEY_RE = /^\d+,\d+$/;
 const SCENARIO_ID_RE = /^sc(\d+)$/;
+const VEHICLE_ID_RE = /^([A-Za-z0-9_-]{1,32})#([1-9]\d{0,5})$/;
 
 const frozen = Object.freeze;
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -145,11 +153,13 @@ function defaultUi() {
     tool: 'select',
     toolOptions: frozen({ factor: 0.5, kind: 'wall', drawMode: 'smart' }),
     selection: NO_SELECTION,
-    overlays: frozen({ grid: true, studs: true, flows: true, docks: false, jobs: true, heat: 'off', ids: false, labels: true }),
+    overlays: frozen({ grid: true, studs: true, flows: true, docks: false, jobs: true, heat: 'off', ids: false, labels: true, routes: true }),
     rightTab: 'properties',
     theme: 'auto',
     followSim: false,
     warmRestart: true,
+    detail: true, // collect the statistics of clicked items (Simulate tab): the optional collector of the simulation, js/sim/detail.js
+    statsDock: 'data', // when a click opens the Statistics dock: 'data' (the simulation has measured), 'always' or 'never'
   });
 }
 
@@ -162,13 +172,24 @@ function cellId(id) {
 /** Does the selectable thing exist in the layout? */
 function existenceTest(kind, layout) {
   if (kind === 'cell') return (key) => Object.hasOwn(layout.roads, key);
+  if (kind === 'vehicle') {
+    const counts = new Map(layout.fleets.map((f) => [f.id, f.count]));
+    return (id) => {
+      const m = typeof id === 'string' ? VEHICLE_ID_RE.exec(id) : null;
+      return m !== null && counts.has(m[1]) && Number(m[2]) <= counts.get(m[1]);
+    };
+  }
   const list = { station: layout.stations, flow: layout.flows, fleet: layout.fleets, obstacle: layout.obstacles, label: layout.labels }[kind];
   const ids = new Set(list.map((item) => item.id));
   return (id) => ids.has(id);
 }
 
-/** A selection reduced to what exists in `layout`: valid kind, unique ids, nothing selected when nothing is left. */
-function cleanSelection(selection, layout) {
+/**
+ * A selection reduced to what exists in `layout`: valid kind, unique ids, nothing selected when nothing is left. With `pruning` (an edit
+ * of the plant, not a new choice), vehicles that no longer exist fall back to their fleets when those still exist: a fleet cut to fewer
+ * vehicles keeps the planner on the item instead of dropping the selection (the shell says so in a toast).
+ */
+function cleanSelection(selection, layout, pruning = false) {
   const kind = isObj(selection) && SELECTION_KINDS.includes(selection.kind) ? selection.kind : null;
   if (!kind) return NO_SELECTION;
   const raw = Array.isArray(selection.ids) ? selection.ids : (selection.ids == null ? [] : [selection.ids]);
@@ -181,7 +202,13 @@ function cleanSelection(selection, layout) {
     seen.add(id);
     ids.push(id);
   }
-  return ids.length ? frozen({ kind, ids: frozen(ids) }) : NO_SELECTION;
+  if (ids.length) return frozen({ kind, ids: frozen(ids) });
+  if (kind === 'vehicle' && pruning) {
+    const fleets = new Set(layout.fleets.map((f) => f.id));
+    const back = [...new Set(raw.map((id) => (typeof id === 'string' ? VEHICLE_ID_RE.exec(id) : null)).filter((m) => m !== null && fleets.has(m[1])).map((m) => m[1]))];
+    if (back.length) return frozen({ kind: 'fleet', ids: frozen(back) });
+  }
+  return NO_SELECTION;
 }
 
 function mergeOverlays(current, patch) {
@@ -212,7 +239,11 @@ function mergeUi(current, patch, layout) {
         break;
       case 'followSim':
       case 'warmRestart':
+      case 'detail':
         if (typeof value === 'boolean') set(key, value);
+        break;
+      case 'statsDock':
+        if (STATS_DOCK_MODES.includes(value)) set(key, value);
         break;
       case 'toolOptions':
         if (isObj(value)) {
@@ -225,7 +256,7 @@ function mergeUi(current, patch, layout) {
         if (isObj(value)) set(key, mergeOverlays(current.overlays, value));
         break;
       case 'selection':
-        set(key, cleanSelection(value, layout));
+        set(key, cleanSelection(value, layout, value === current.selection)); // the very same object: the plan was edited under the selection (publish 'prune')
         break;
       default:
         set(key, value);

@@ -21,6 +21,7 @@ import { dist } from '../js/model/defaults.js';
 import { layoutFromAscii } from './helpers/ascii.js';
 import { checkInvariants, createWorld, injectLoads } from './helpers/logistics-invariants.js';
 import { createAuditor } from './helpers/engine-review-gen.js';
+import { DETAIL_IMPORT, DETAIL_OWNERS, detailStrays, stripComments as _stripComments } from './helpers/detail-ledger.js';
 
 const OFF = dist('const', 0);
 const starter = () => EXAMPLES.find((e) => e.id === 'starter').build();
@@ -309,35 +310,23 @@ const jsFiles = () => {
   walk(JS_ROOT);
   return out.map((file) => ({ rel: path.relative(JS_ROOT, file).split(path.sep).join('/'), source: readFileSync(file, 'utf8') }));
 };
-/** Source without comments (line comments and block comments); good enough for the files of this repository, which have no `//` inside a string that matters here. */
-const stripComments = (source) => source.split('\n').map((l) => l.replace(/(^|[^:'"`])\/\/.*$/, '$1')).join('\n').replace(/\/\*[\s\S]*?\*\//g, '');
-
-/** The files that may read the collector: its own, the engine that polls it, the runner that turns it on, the dock and its model/view (stats-*.js), the route overlay. */
-const DETAIL_OWNERS = (rel) => rel === 'sim/detail.js' || rel === 'sim/engine.js' || rel === 'ui/runner.js' || /^ui\/panels\/stats-[\w-]+\.js$/.test(rel) || rel === 'ui/render/routes.js';
-/**
- * What counts as a read of the collector outside its owners: a property `detail` of a simulation or a runner (`sim.detail`, `this.sim.detail`, `runner.sim.detail`, `rt.detail`), the
- * runner's accessor `x.detail()`, and the names that exist only for the seam. (`state.ui.detail` is the preference "Collect statistics for clicked items" and `insight.detail`,
- * `item.detail`, `notice.detail` are texts: neither is the collector.)
- */
-const DETAIL_READ = /\b(?:sim|simulation|runner|engine|rt|live)\s*\.\s*detail\b|\.detail\s*\(|\bsim\w*\.detail\b/;
-const SEAM_NAMES = /\b(?:enableDetail|disableDetail|dropDetail|detailError|afterTickSafe)\b/;
+const stripComments = _stripComments;
 
 test('ledger of the readers of the collector: only detail.js, engine.js, runner.js, the stats-*.js panels and render/routes.js touch it', () => {
+  // the rules are tests/helpers/detail-ledger.js (shared with the review that attacks them): the seam names, an import of detail.js in any quote or as import(), and a property
+  // `detail` read in any form (x.detail, this.detail, x['detail'], const { detail } = x) unless the receiver is a known text (an insight, a notice, the preference ui.detail ...)
   const strays = [];
   let owners = 0;
   for (const { rel, source } of jsFiles()) {
-    const code = stripComments(source);
-    if (DETAIL_OWNERS(rel)) { if (DETAIL_READ.test(code) || SEAM_NAMES.test(code)) owners++; continue; }
-    if (SEAM_NAMES.test(code)) strays.push(`${rel}: names the collector's seam (enableDetail, disableDetail, dropDetail, detailError)`);
-    const m = code.match(DETAIL_READ);
-    if (m) strays.push(`${rel}: reads the collector (${m[0]})`);
+    if (DETAIL_OWNERS(rel)) { if (/\.detail\b|\b(?:enableDetail|disableDetail|dropDetail|detailError|afterTickSafe)\b/.test(stripComments(source))) owners++; continue; }
+    for (const stray of detailStrays(rel, source)) strays.push(`${rel}: ${stray}`);
   }
-  assert.deepEqual(strays, [], 'only detail.js, engine.js, runner.js, ui/panels/stats-*.js and ui/render/routes.js may touch sim.detail: hand the data over instead (a prop, a frame field)');
-  assert.ok(owners >= 2, 'the owners are found (engine.js and detail.js at least), or the patterns above are wrong');
+  assert.deepEqual(strays, [], 'only detail.js, engine.js, runner.js, ui/panels/stats-*.js and ui/render/routes.js may touch sim.detail: hand the data over instead (a prop, a frame field); a text called detail goes into TEXT_RECEIVERS / TEXT_READS of tests/helpers/detail-ledger.js');
+  assert.ok(owners >= 2, 'the owners are found (engine.js and detail.js at least), or the patterns are wrong');
 });
 
 test('ledger of the readers: the engine is the only core file that knows the collector, and js/sim never imports ui or store', () => {
-  const importers = jsFiles().filter(({ source }) => /from '\.\/detail\.js'|from '\.\.\/sim\/detail\.js'/.test(source)).map(({ rel }) => rel);
+  const importers = jsFiles().filter(({ source }) => DETAIL_IMPORT.test(stripComments(source))).map(({ rel }) => rel);
   assert.deepEqual(importers, ['sim/engine.js']);
   for (const { rel, source } of jsFiles()) if (rel === 'sim/detail.js') assert.doesNotMatch(source, /from '\.\.\/(ui|store)\//, 'js/sim imports nothing from ui or store');
 });
@@ -367,7 +356,7 @@ const LEDGER = {
   'ev.leadTime': [T.num, 'nonnull'], 'ev.station': [T.obj, 'nonnull'], 'ev.station.id': [T.str, 'nonnull'], 'ev.stationId': [T.str, 'nonnull'], 'ev.order': [T.obj, 'nonnull'], 'ev.order.from': [T.str, 'nonnull'],
   'ev.order.loads': [T.arr, 'nonnull'], 'ev.vehicle': [T.obj, 'nonnull'], 'ev.waitForPickup': [T.num, 'nonnull'], 'ev.truck.id': [T.num, 'nonnull'], 'ev.t': [T.num, 'nonnull'],
   // the logistics layer, the graph and the simulation
-  'lg.vehicles': [T.arr], 'lg.stations': [T.arr], 'lg.flows': [T.arr], 'this.lg.docks': [T.obj], 'this.graph.cols': [T.int], 'this.graph.edges': [T.arr], 'this.graph.stationsAt': [(v) => v instanceof Map],
+  'lg.vehicles': [T.arr], 'lg.stations': [T.arr], 'lg.flows': [T.arr], 'this.lg.docks': [T.obj], 'this.graph.cols': [T.int], 'this.graph.nodeCount': [T.int], 'this.graph.edges': [T.arr], 'this.graph.stationsAt': [(v) => v instanceof Map],
   'this.sim.time': [T.num], 'this.sim.settings': [T.obj], 'sim.graph': [T.obj], 'sim.logistics': [T.obj], 'sim.traffic': [T.obj], 'sim.time': [T.num], 'sim.on': [T.fn],
 };
 const CHAIN_TAIL = /\.(?:length|indexOf|get|map)$/;
@@ -413,7 +402,7 @@ test('ledger of the simulation internals: every chain exists on a live plant wit
     };
     for (const name of ['loadCompleted', 'orderPickedUp', 'orderDelivered', ...(captureTrucks ? ['truckReady', 'truckDeparted'] : [])]) sim.on(name, onPayload);
     note('sim.graph', sim.graph); note('sim.logistics', sim.logistics); note('sim.traffic', sim.traffic); note('sim.on', sim.on);
-    note('this.graph.cols', sim.graph.cols); note('this.graph.edges', sim.graph.edges); note('this.graph.stationsAt', sim.graph.stationsAt); note('this.lg.docks', lg.docks); assert.equal(typeof lg.docks.waitsForDock, 'function', 'DockBook.waitsForDock (a pure read the collector calls for every held-up vehicle)');
+    note('this.graph.cols', sim.graph.cols); note('this.graph.nodeCount', sim.graph.nodeCount); note('this.graph.edges', sim.graph.edges); note('this.graph.stationsAt', sim.graph.stationsAt); note('this.lg.docks', lg.docks); assert.equal(typeof lg.docks.waitsForDock, 'function', 'DockBook.waitsForDock (a pure read the collector calls for every held-up vehicle)');
     note('traffic.waitNodeOf', sim.traffic.waitNodeOf);
     for (const key of ['demandFactor', 'speedFactor', 'processFactor']) assert.equal(typeof sim.settings[key], 'number', `settings.${key}`);
     for (const key of ['dispatch', 'routing']) assert.equal(typeof sim.settings[key], 'string', `settings.${key}`);

@@ -4,9 +4,9 @@ import { createHash } from 'node:crypto';
 
 const COLUMNS = (d) => {
   const L = d.legs;
-  return [L.veh, L.kind, L.from, L.to, L.flow, L.path, L.t0, L.dur, L.wait, L.dockWait, L.qty, L.flags, d.split, d.hot.keys, d.hot.secs, d.hot.other, d.hotStray.keys, d.hotStray.secs, d.hotQ.keys, d.hotQ.secs,
+  return [L.veh, L.kind, L.from, L.to, L.flow, L.path, L.t0, L.dur, L.wait, L.dockWait, L.qty, L.flags, L.span, d.split, d.hot.keys, d.hot.secs, d.hot.other, d.hotStray.keys, d.hotStray.secs, d.hotQ.keys, d.hotQ.secs,
     d.idleHot.keys, d.idleHot.secs, d.vRing, d.sRing, d.ringT, d.ringN, d.sInt, d.sEv, d.starvedBy, d.depotSecs, d.legsLoaded, d.batMin, d.bktMin, d.curNode, d.curSecs, d.curIdle, d.curIdleSecs, d.base, d.qty, d.credit,
-    d.open, d.oKind, d.oFrom, d.oTo, d.oFlow, d.oPath, d.oT0, d.oWait, d.oDockWait, d.oFlags, d.oPaused, d.pauseAt, d.charges.veh, d.charges.t0, d.charges.dur, d.charges.b0, d.charges.b1];
+    d.open, d.oKind, d.oFrom, d.oTo, d.oFlow, d.oPath, d.oT0, d.oWait, d.oDockWait, d.oFlags, d.oPaused, d.pauseAt, d.charges.veh, d.charges.t0, d.charges.dur, d.charges.b0, d.charges.b1, d.charges.dep];
 };
 
 /** Hex digest (16 characters) of the recorded state of `d`. Typed arrays are hashed by their live part; the summaries of the histograms by value. */

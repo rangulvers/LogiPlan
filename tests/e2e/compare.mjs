@@ -66,6 +66,7 @@ await withBrowser(async ({ page, context, url, errors, shot }) => {
   /** Every visible text of `root` against its effective background: the lowest contrast ratio and where. */
   const worstContrast = async (root) => {
     await page.mouse.move(2, 2); // a hovered control has a hover background: measure the resting state
+    await page.evaluate(() => Promise.allSettled(document.getAnimations().map((a) => a.finished))); // a theme switch starts 100 ms colour transitions: measure the colours at rest, not half way
     return contrastOf(root);
   };
   const contrastOf = (root) => page.evaluate((selector) => {
@@ -226,7 +227,9 @@ await withBrowser(async ({ page, context, url, errors, shot }) => {
     let last = -1;
     const deadline = Date.now() + 120000;
     while (await cmp('progress').isVisible() && Date.now() < deadline) {
-      const value = Number(await cmp('progress').getByRole('progressbar').getAttribute('aria-valuenow'));
+      const now = await cmp('progress').getByRole('progressbar').getAttribute('aria-valuenow', { timeout: 2000 }).catch(() => null);
+      if (now === null) break; // the run finished between the two calls: the bar is gone
+      const value = Number(now);
       ok(value >= last, `progress never goes back (${last} -> ${value})`);
       last = value;
       seen.add(value);

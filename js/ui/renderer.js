@@ -15,6 +15,9 @@
 //        connect { role, anchorId, valid: Set, over, overStatus, snap, verb } | null: highlight where a flow may end
 //        flowPreview { fromId, toPoint } or, when the anchor receives, { toId, fromPoint }
 //        overlays.jobs (default on): vehicle -> target lines and "n waiting" badges while a simulation runs (render/jobs.js)
+//        overlays.routes (default on): the route layer of a selected vehicle (render/routes.js), drawn while view.stats.open
+//        stats { open, window, focus } | null: published by the Statistics dock: `open` = the dock is shown (compact too), `window` 'start' | 'last30', `focus` = { id, pinned } | null,
+//                                 the row of the dock's trip list the planner points at (render/routes.js dims the other routes to 28 %)
 //   renderer.resize()                         call when the canvas box changes (handles devicePixelRatio)
 //   renderer.render(alpha)                    draw a frame; alpha 0..1 interpolates vehicle poses between ticks
 //   renderer.hitTest(px, py)                  what is under a screen point
@@ -23,8 +26,8 @@
 //   renderer.stats = { frames, staticBuilds }  diagnostics (tests, perf HUD)
 //
 // Layers, bottom to top: background, cached static layer (baseplate, studs, grid, obstacles, roads),
-// heatmap, dock notches, flows, station bricks, flow markers, labels, vehicles, deadlock rings, hover /
-// selection / ghost / previews, heat legend and scale bar. See render/*.js for the pieces.
+// heatmap, dock notches, flows, station bricks, flow markers, labels, routes of the selected vehicle, job lines, vehicles, rings / badges / chips
+// of the route layer, deadlock rings, hover / selection / ghost / previews, heat legend and scale bar. See render/*.js for the pieces.
 //
 // Conventions chosen where the spec leaves room (also listed in the final report):
 //   * view.flowPreview.toPoint and view.marquee are in WORLD METRES; add `space: 'screen'` to the marquee
@@ -51,6 +54,7 @@ import {
 import { drawHover, drawSelection, drawGhost, drawPaintPreview, drawMarquee, itemRectPx, handleRect } from './render/interaction.js';
 import { drawConnectHandle, drawConnectTargets, hitConnectHandle } from './render/connecting.js';
 import { drawJobLines, drawWaitingBadges } from './render/jobs.js';
+import { routesFor, drawRoutes, drawRouteMarks, flowTheme, jobsSim } from './render/routes.js';
 import { drawExtension, drawEdgeChips, hitExtendChip } from './render/extend.js';
 import { distToCurve, hitHandle, pointInRect } from './render/geometry.js';
 import { plantBounds, MIN_ZOOM, MAX_ZOOM, DEFAULT_ZOOM } from './camera.js';
@@ -74,7 +78,8 @@ export function createView() {
     selection: { kind: null, ids: [] },
     hover: null,
     tool: 'select',
-    overlays: { grid: true, studs: true, flows: true, docks: false, jobs: true, heat: 'off', ids: false, labels: true },
+    overlays: { grid: true, studs: true, flows: true, docks: false, jobs: true, heat: 'off', ids: false, labels: true, routes: true },
+    stats: null,
     ghost: null,
     paintPreview: null,
     flowPreview: null,
@@ -120,7 +125,7 @@ function createFrame() {
     zoom: DEFAULT_ZOOM, dpr: 1, cs: 2, tx: 0, ty: 0, ox: 0, oy: 0, w: 0, h: 0, simDx: 0, simDy: 0,
     vis: { x0: 0, y0: 0, x1: 0, y1: 0 }, alpha: 1, now: 0,
     selKind: null, selIds: EMPTY, hoverKind: null, hoverId: null, hoverVehicle: null, selFleet: null,
-    showIds: false, idFont: '', reducedMotion: false, coarse: false, hand: 1,
+    showIds: false, idFont: '', reducedMotion: false, coarse: false, hand: 1, covered: 0, routes: null,
     pose: new Float64Array(3), size: { length: 1.2, width: 0.66 }, poseBuf: new Float64Array(0), brick: {},
     curvePx: { ax: 0, ay: 0, qx: 0, qy: 0, bx: 0, by: 0 }, tmpA: [0, 0], tmpB: [0, 0],
     stationCache: { src: null, len: -1, map: null }, flowCache: { src: null, len: -1, map: null },
@@ -192,11 +197,34 @@ function setupFrame(fr, r, alpha, now) {
   fr.reducedMotion = r._motion.matches === true;
   fr.coarse = r._coarse.matches === true;
   fr.hand = handSide(fr);
+  fr.covered = coveredAtBottom(r, view);
   applyInteraction(fr, view, true);
   fr.showIds = fr.overlays.ids === true;
   fr.idFont = idFontOf(fr.theme);
   return fr;
 }
+
+/**
+ * How far the Statistics dock reaches up into the canvas (CSS px), 0 when it is closed or unknown. The dock is an overlay of the stage and publishes its height as the
+ * custom property --dock-covered on it (js/ui/panels/stats-dock.js); the key of the route layer sits above it. Read only while the dock is open.
+ */
+function coveredAtBottom(r, view) {
+  if (!view.stats || view.stats.open !== true) {
+    r._covered = 0;
+    r._coveredAt = -COVERED_EVERY;
+    return 0;
+  }
+  if (r.stats.frames - r._coveredAt >= COVERED_EVERY) { // the dock changes its height rarely: reading the property every few frames keeps the frame free of string work
+    r._coveredAt = r.stats.frames;
+    const stage = r.canvas && r.canvas.parentElement;
+    const style = stage && stage.style;
+    const raw = style && typeof style.getPropertyValue === 'function' ? style.getPropertyValue('--dock-covered') : '';
+    const px = raw ? parseFloat(raw) : 0;
+    r._covered = Number.isFinite(px) && px > 0 ? px : 0;
+  }
+  return r._covered;
+}
+const COVERED_EVERY = 8;
 
 /** The move of the simulation's world against the plan, in metres (see Renderer.simShift); both 0 when it has not moved. */
 function applySimShift(fr, r) {
@@ -290,6 +318,8 @@ export class Renderer {
     this._heat = createHeatState();
     this._fr = createFrame();
     this._alpha = 1;
+    this._covered = 0; // how far the Statistics dock reaches into the canvas (px), read every few frames while it is open
+    this._coveredAt = -COVERED_EVERY;
     this._timer = null;
     this._destroyed = false;
     this.theme = theme;
@@ -498,14 +528,40 @@ function drawLayers(ctx, fr, heat, forceHeat) {
   } else heat.count = 0;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   drawDocks(ctx, fr);
-  if (fr.overlays.flows !== false) drawFlows(ctx, fr);
-  drawStations(ctx, fr);
-  drawFlowMarkers(ctx, fr);
+  // the route layer of a selected vehicle (render/routes.js): null when nothing is shown; while it shows the flow arrows recede to 35 % (they are drawn with a copy of the theme)
+  const routes = fr.sim ? routesFor(fr) : null;
+  const theme = fr.theme;
+  const receded = flowTheme(fr, routes);
+  try {
+    fr.theme = receded;
+    if (fr.overlays.flows !== false) drawFlows(ctx, fr);
+    fr.theme = theme;
+    drawStations(ctx, fr);
+    fr.theme = receded;
+    drawFlowMarkers(ctx, fr);
+  } finally {
+    fr.theme = theme;
+  }
   drawLabels(ctx, fr);
   if (!fr.sim) return;
-  if (!moved) drawJobLines(ctx, fr); // under the vehicles, so a vehicle sits on top of the line that starts at it
+  // the routes lie on the roads of the simulation: when the plan moved under it (moved) they are drawn in the simulation's own frame, like the vehicles
+  if (routes !== null) {
+    if (moved) inSimFrame(fr, () => drawRoutes(ctx, fr, routes));
+    else drawRoutes(ctx, fr, routes);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  if (!moved) { // under the vehicles, so a vehicle sits on top of the line that starts at it; while the route layer shows only the selected vehicle keeps its line
+    const sim = fr.sim;
+    fr.sim = jobsSim(fr, routes);
+    try {
+      drawJobLines(ctx, fr);
+    } finally {
+      fr.sim = sim;
+    }
+  }
   inSimFrame(fr, () => drawVehicles(ctx, fr));
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  if (fr.selKind === 'vehicle') inSimFrame(fr, () => drawRouteMarks(ctx, fr, routes)); // rings, badges, chips, the ring on the selected vehicle and the key: above the vehicles
   drawWaitingBadges(ctx, fr);
   if (!moved) drawDeadlocks(ctx, fr);
 }

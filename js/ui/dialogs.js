@@ -29,6 +29,7 @@ import { formatNumber } from '../util/format.js';
 import { numberField, textField, segmentedField, callout, uid } from './panels/fields.js';
 import { createVehiclesHelp } from './panels/jobs-view.js';
 import { createTrucksHelp } from './panels/trucks-help.js';
+import { createStatsHelp } from './panels/stats-help.js';
 import { openAbout } from './about.js';
 
 const plural = (n, one, many = `${one}s`) => `${formatNumber(n)} ${n === 1 ? one : many}`;
@@ -633,6 +634,8 @@ const KEY_TABLE = [
   [['Delete'], 'Delete the selection'],
   [['←', '↑', '→', '↓'], 'Move the selection by one cell (hold Shift for five)'],
   [['Esc'], 'Cancel what you are doing, then clear the selection'],
+  [['I'], 'Show or hide the statistics of the selected item (a click on an item opens them too, once the simulation has run a little)'],
+  [['[', ']'], 'Select the previous or next item of the same kind and show its statistics'],
   [['Space'], 'Play or pause the simulation (hold it and drag to pan)'],
   [['.'], 'Advance the simulation by one step'],
   [['+', '−'], 'Faster or slower simulation'],
@@ -740,6 +743,7 @@ function openHelp(dlg, { tab } = {}, onAbout = null) {
     { id: 'tools', label: 'Tools & shortcuts', content: toolsTab() },
     { id: 'vehicles', label: 'How vehicles find work', content: createVehiclesHelp() },
     { id: 'trucks', label: 'Trucks and dock doors', content: createTrucksHelp() },
+    { id: 'statistics', label: 'Statistics of an item', content: createStatsHelp() },
     { id: 'simulation', label: 'How the simulation works', content: simulationTab() },
     { id: 'tips', label: 'Tips', content: tipsTab() },
   ], tab, 'Help topics');

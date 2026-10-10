@@ -513,7 +513,7 @@ await withBrowser(async ({ page, url, errors, browser }) => {
     assert.deepEqual(await selection(), NONE, 'empty ground clears the selection');
     assert.equal(await page.evaluate(() => window.harness.placeVehicle(5, 12)), 'v1#1');
     await click([5, 12]);
-    assert.deepEqual(await selection(), sel('fleet', 'v1'), 'a vehicle selects its fleet');
+    assert.deepEqual(await selection(), sel('vehicle', 'v1#1'), 'a vehicle selects the vehicle (its statistics open in the dock; its fleet is one click away there)');
     assert.equal(await undoLabel(), null);
   });
 
@@ -1006,10 +1006,10 @@ await withBrowser(async ({ page, url, errors, browser }) => {
       const v = window.harness.renderer.sim.vehicles.find((x) => x.visible);
       const [sx, sy] = window.harness.camera.worldToScreen(v.x, v.y);
       const r = window.harness.canvas.getBoundingClientRect();
-      return { x: r.left + sx, y: r.top + sy, fleet: v.fleetId };
+      return { x: r.left + sx, y: r.top + sy, fleet: v.fleetId, id: v.id };
     });
     await page.mouse.click(spot.x, spot.y);
-    assert.deepEqual(await selection(), sel('fleet', spot.fleet), 'a click on a running vehicle selects its fleet');
+    assert.deepEqual(await selection(), sel('vehicle', spot.id), 'a click on a running vehicle selects the vehicle (its fleet is one click away in the Statistics dock)');
     await snap('29-running-fleet-selected-light');
     await page.evaluate(() => { window.__sim = window.harness.runner.sim; });
     await drag([[30, 4], [34, 4]]);

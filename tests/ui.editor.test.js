@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { Editor } from '../js/ui/editor.js';
 import { createStore } from '../js/store/store.js';
 import { Camera } from '../js/ui/camera.js';
-import { createLayout, paintRoadPath, addStation, addFlow, addObstacle, checkInvariants } from '../js/model/layout.js';
+import { createLayout, paintRoadPath, addStation, addFlow, addFleet, updateFleet, addObstacle, checkInvariants } from '../js/model/layout.js';
 import { hitHandle, pointInRect } from '../js/ui/render/geometry.js';
 import { createRng } from '../js/util/rng.js';
 
@@ -700,6 +700,87 @@ test('editor: a fleet selection is not deleted from the canvas; nothing selected
   const e = t.key('Delete');
   assert.equal(t.state().layout.fleets.length, 1);
   assert.equal(e.defaultPrevented, false, 'the key was not ours');
+});
+
+// ---- vehicles (a click selects the vehicle: its statistics open in the dock, docs/ENTITY-INSIGHTS-DESIGN.md 9.1 S1.6) ----------------------
+
+/** A plant with a fleet "AGVs" of three vehicles, and a fake renderer that finds vehicle v1#2 at cell [30, 18] and v1#3 at [34, 18] (the real hit test needs a simulation). */
+function plantWithVehicles() {
+  const layout = plant();
+  const fleet = addFleet(layout, 'agv');
+  updateFleet(layout, fleet.id, { name: 'AGVs', count: 3 });
+  const t = setup({ layout });
+  const inner = t.renderer.hitTest.bind(t.renderer);
+  const vehicles = { 'v1#2': [30, 18], 'v1#3': [34, 18] };
+  t.renderer.sim = { vehicles: [{ id: 'v1#2', name: 'AGVs 2', fleetId: 'v1' }, { id: 'v1#3', name: 'AGVs 3', fleetId: 'v1' }] };
+  t.renderer.hitTest = (px, py) => {
+    const hit = inner(px, py);
+    const found = Object.entries(vehicles).find(([, c]) => hit.cell[0] === c[0] && hit.cell[1] === c[1]);
+    return found ? { kind: 'vehicle', id: found[0], cell: hit.cell } : hit;
+  };
+  return t;
+}
+
+test('editor: a click on a vehicle selects that vehicle (not its fleet); Shift toggles it; a drag from it is a marquee', () => {
+  const t = plantWithVehicles();
+  t.mouse.click([30, 18]);
+  assert.deepEqual(t.state().ui.selection, { kind: 'vehicle', ids: ['v1#2'] });
+  t.mouse.click([34, 18], { shiftKey: true });
+  assert.deepEqual(t.state().ui.selection, { kind: 'vehicle', ids: ['v1#2', 'v1#3'] }, 'Shift adds the second vehicle');
+  t.mouse.click([30, 18], { shiftKey: true });
+  assert.deepEqual(t.state().ui.selection, { kind: 'vehicle', ids: ['v1#3'] }, 'and takes one away');
+  t.mouse.click([34, 18], { shiftKey: true });
+  assert.deepEqual(t.state().ui.selection, { kind: null, ids: [] }, 'the last one off: nothing selected');
+  t.mouse.click([30, 18]);
+  t.mouse.drag([[30, 18], [36, 22]]); // a drag from a vehicle selects what the marquee covers (nothing here), like a drag from empty ground
+  assert.deepEqual(t.state().ui.selection, { kind: null, ids: [] });
+  t.mouse.click([5, 4]);
+  t.mouse.click([30, 18]);
+  assert.deepEqual(t.state().ui.selection, { kind: 'vehicle', ids: ['v1#2'] }, 'a station selection is replaced by the vehicle');
+  t.mouse.click([5, 4], { shiftKey: true });
+  assert.deepEqual(t.state().ui.selection, { kind: 'station', ids: ['s1'] }, 'Shift across kinds replaces the selection, as before');
+});
+
+test('editor: a vehicle selection is not edited by Delete, Ctrl+D or the arrows', () => {
+  const t = plantWithVehicles();
+  t.mouse.click([30, 18]);
+  const before = t.state().layout;
+  const history = t.state().canUndo;
+  t.key('Delete');
+  t.key('Backspace');
+  t.key('ArrowRight');
+  assert.equal(t.state().layout, before, 'nothing deleted or moved');
+  assert.equal(t.state().layout.fleets[0].count, 3);
+  assert.equal(t.key('d', { ctrlKey: true }).defaultPrevented, true, 'Ctrl+D is still swallowed (it must not bookmark the page) ...');
+  assert.match(t.statuses.at(-1), /Select a station, wall or label first/, '... and says what it needs');
+  assert.equal(t.state().layout, before);
+  assert.equal(t.state().canUndo, history, 'no undo step was made');
+  assert.deepEqual(t.state().ui.selection, { kind: 'vehicle', ids: ['v1#2'] });
+  t.key('Escape');
+  assert.deepEqual(t.state().ui.selection, { kind: null, ids: [] }, 'Esc clears it (and closes the dock)');
+});
+
+test('editor: pointing at a vehicle says "Click for statistics" with the vehicle\u2019s name, from the simulation or else from the fleet', () => {
+  const t = plantWithVehicles();
+  t.mouse.move([30, 18]);
+  assert.match(t.statuses.at(-1), /Vehicle AGVs 2\. Click for statistics\.$/);
+  assert.deepEqual(t.renderer.view.hover, { kind: 'vehicle', id: 'v1#2' });
+  t.renderer.sim = null; // without a simulation the name comes from the fleet and the number of the id
+  t.mouse.move([34, 18]);
+  assert.match(t.statuses.at(-1), /Vehicle AGVs 3\. Click for statistics\.$/);
+  assert.doesNotMatch(t.statuses.at(-1), /select its fleet/);
+});
+
+test('editor: with "Statistics on click: Never" pointing at a vehicle does not promise statistics, it says what a click and the key I do', () => {
+  const t = plantWithVehicles();
+  t.store.setUi({ statsDock: 'never' });
+  t.mouse.move([30, 18]);
+  assert.match(t.statuses.at(-1), /Vehicle AGVs 2\. Click to select it, press I for its statistics\.$/);
+  assert.doesNotMatch(t.statuses.at(-1), /Click for statistics/);
+  t.store.setUi({ statsDock: 'always' });
+  t.mouse.move([34, 18]);
+  t.mouse.move([30, 18]);
+  assert.match(t.statuses.at(-1), /Vehicle AGVs 2\. Click for statistics\.$/);
 });
 
 // ---- flows --------------------------------------------------------------------------------------------------------
