@@ -311,10 +311,31 @@ export function schemaOracle(layout) {
  * A reference reading of pasted text, from 7.2 and nothing else. Lines end with \n, \r\n or \r; a BOM at the start is ignored; empty lines are
  * ignored (line numbers count them); the first non-empty line without a digit is a header; the separator is a tab if any data line has one, else a
  * semicolon if any has, else a comma when every data line has exactly two comma-separated fields and is not itself a decimal number, else there is one
- * column; fields are trimmed and double quotes removed. Time: H:MM, HH:MM, HH.MM (two digits before and after the point), HHMM, hours 0..23,
- * minutes 0..59, a trailing "h" or "Uhr" (any case) ignored. Pallets: an integer 1..200, "24,0" and "24.0" (also two zeros) accepted, empty = null.
+ * column; fields are trimmed and double quotes removed. Time (7.2 as amended after the review): H:MM, HH:MM, H:MM:00 and HH:MM:00 (seconds only when zero),
+ * HH.MM (two digits before and after the point), HHMM, hours 0..23, minutes 0..59, a trailing "h" or "Uhr" (any case) ignored; H.MM (one digit before the
+ * point) only with that suffix; 12-hour times with a colon and AM/PM (also a.m., any case, a space allowed), hours 1..12, 12 AM is midnight.
+ * Pallets: an integer 1..200, "24,0" and "24.0" (also two zeros) accepted, empty = null.
  * More than two columns, or a bad field, make the row a bad row. Returns { rows: [{ line, at, pallets }], bad: [{ line, why }], header }.
  */
+/** A time field by 7.2 (see pasteOracle): seconds after midnight, or null. Written from the sentence, not from parseTimeField. */
+function oracleTime(field) {
+  const f = field.trim();
+  const twelve = /^(.*?)\s*([ap])\.?\s*m\.?$/i.exec(f);
+  if (twelve) {
+    const m = /^(\d{1,2}):(\d\d)(?::00)?$/.exec(twelve[1].trim());
+    if (!m) return null;
+    const h = Number(m[1]);
+    const min = Number(m[2]);
+    if (h < 1 || h > 12 || min > 59) return null;
+    return ((h % 12) + (twelve[2].toLowerCase() === 'p' ? 12 : 0)) * 3600 + min * 60;
+  }
+  const suffix = /\s*(uhr|h)$/i.test(f);
+  const tf = f.replace(/\s*(uhr|h)$/i, '').trim();
+  const m = /^(\d{1,2}):(\d\d)(?::00)?$/.exec(tf) || /^(\d\d)\.(\d\d)$/.exec(tf) || (suffix ? /^(\d)\.(\d\d)$/.exec(tf) : null) || /^(\d\d)(\d\d)$/.exec(tf);
+  if (!m || Number(m[1]) > 23 || Number(m[2]) > 59) return null;
+  return Number(m[1]) * 3600 + Number(m[2]) * 60;
+}
+
 export function pasteOracle(text) {
   const out = { rows: [], bad: [], header: false };
   if (typeof text !== 'string') return out;
@@ -343,10 +364,7 @@ export function pasteOracle(text) {
   for (const l of data) {
     const fields = sep ? trimmedColumns(split(l.t, sep)) : [l.t.replace(/"/g, '').trim()];
     if (fields.length > 2) { out.bad.push({ line: l.n, why: 'columns' }); continue; }
-    const tf = fields[0].replace(/\s*(uhr|h)$/i, '').trim();
-    let at = null;
-    const m = /^(\d{1,2}):(\d\d)$/.exec(tf) || /^(\d\d)\.(\d\d)$/.exec(tf) || /^(\d\d)(\d\d)$/.exec(tf);
-    if (m && Number(m[1]) <= 23 && Number(m[2]) <= 59) at = Number(m[1]) * 3600 + Number(m[2]) * 60;
+    const at = oracleTime(fields[0]);
     if (at === null) { out.bad.push({ line: l.n, why: 'time' }); continue; }
     let pallets = null;
     if (fields.length === 2 && fields[1] !== '') {
@@ -362,7 +380,7 @@ export function pasteOracle(text) {
 
 const pad2 = (n) => String(n).padStart(2, '0');
 
-/** Spreadsheet text for a time of day in one of the notations of 7.2 (never the notations the design cuts: am/pm, seconds). */
+/** Spreadsheet text for a time of day in one of the notations of 7.2 as amended (seconds that are zero, 12-hour times, "6.30 Uhr"). */
 export function timeText(seconds, style) {
   const h = Math.floor(seconds / 3600);
   const m = Math.floor((seconds % 3600) / 60);
@@ -373,12 +391,19 @@ export function timeText(seconds, style) {
     case 3: return `${pad2(h)}${pad2(m)}`;
     case 4: return `${h}:${pad2(m)} Uhr`;
     case 5: return `${pad2(h)}:${pad2(m)}h`;
-    default: return `${pad2(h)}:${pad2(m)} UHR`;
+    case 6: return `${pad2(h)}:${pad2(m)} UHR`;
+    case 7: return `${h}:${pad2(m)}:00`;
+    case 8: return `${pad2(h)}:${pad2(m)}:00`;
+    case 9: {
+      const meridiem = [['AM', 'PM'], ['am', 'pm'], ['a.m.', 'p.m.']][m % 3][h < 12 ? 0 : 1];
+      return `${((h + 11) % 12) + 1}:${pad2(m)} ${meridiem}`;
+    }
+    default: return h < 10 ? `${h}.${pad2(m)} Uhr` : `${pad2(h)}.${pad2(m)}`;
   }
 }
-export const TIME_STYLES = 7;
+export const TIME_STYLES = 11;
 /** Fields that are not a time of day by 7.2 (each must end up as a bad row, never as a row with another meaning). */
-export const BAD_TIMES = Object.freeze(['25:70', '24:00', '-1:00', '6:5', 'noon', '6', '6:00:00', '1e3', '６：００', '٠٦:٠٠', '6;00', '99:99', '12:60', '6,00', '24.00', '00.60', '2400', '6:00 AM', '6:00pm', '12:00 noon', '5.5']);
+export const BAD_TIMES = Object.freeze(['25:70', '24:00', '-1:00', '6:5', 'noon', '6', '6:00:30', '6:00:5', '1e3', '６：００', '٠٦:٠٠', '6;00', '99:99', '12:60', '6,00', '24.00', '00.60', '2400', '13:00 PM', '0:30 AM', '12:60 PM', '6 AM', '6:00 xm', '12:00 noon', '5.5', '0.25', '0.75', '6.30']);
 /** Pallet fields that are not a whole number of pallets 1..200. */
 export const BAD_PALLETS = Object.freeze(['abc', '0', '201', '-5', '24,5', '1e1', '24 pallets', '999999', '24,', '1.000', '1 000', '1,000', "1'000", '24.50', '٢٤']);
 
@@ -419,21 +444,22 @@ export function pasteText(rng) {
 // ---------------------------------------------------------------------------------------------------------
 
 /**
- * The cells that Appendix B's sentence selects, applied literally: on each of the four sides of the station, two NEIGHBOURING cells of the strip that
- * touches it, both road cells, and the cells one step away from the station behind both are not road cells. (validate-ops.js adds one clause: the road
- * must be joined between the two cells.) Returns a Set of "x,y".
+ * The cells that Appendix B's sentence selects (as amended after M1-MODEL-REV-3), applied literally: on each of the four sides of the station, two
+ * NEIGHBOURING cells of the strip that touches it, both road cells. (The first version of the sentence added "and the cells one step away from the
+ * station behind both are not road cells"; a measurement showed that a second road behind the docks does not help. validate-ops.js adds one clause:
+ * the road must be joined between the two cells.) Returns a Set of "x,y".
  */
 export function literalLaneCells(layout, s) {
   const road = (x, y) => Object.hasOwn(layout.roads, `${x},${y}`);
   const cells = new Set();
-  const sides = [
-    { strip: Array.from({ length: s.w }, (_, i) => [s.x + i, s.y - 1]), away: [0, -1] },
-    { strip: Array.from({ length: s.w }, (_, i) => [s.x + i, s.y + s.h]), away: [0, 1] },
-    { strip: Array.from({ length: s.h }, (_, j) => [s.x - 1, s.y + j]), away: [-1, 0] },
-    { strip: Array.from({ length: s.h }, (_, j) => [s.x + s.w, s.y + j]), away: [1, 0] },
+  const strips = [
+    Array.from({ length: s.w }, (_, i) => [s.x + i, s.y - 1]),
+    Array.from({ length: s.w }, (_, i) => [s.x + i, s.y + s.h]),
+    Array.from({ length: s.h }, (_, j) => [s.x - 1, s.y + j]),
+    Array.from({ length: s.h }, (_, j) => [s.x + s.w, s.y + j]),
   ];
-  for (const { strip, away } of sides) {
-    const ok = strip.map(([x, y]) => road(x, y) && !road(x + away[0], y + away[1]));
+  for (const strip of strips) {
+    const ok = strip.map(([x, y]) => road(x, y));
     for (let i = 0; i + 1 < strip.length; i++) {
       if (ok[i] && ok[i + 1]) { cells.add(strip[i].join()); cells.add(strip[i + 1].join()); }
     }

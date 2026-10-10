@@ -42,11 +42,17 @@
 import { sanitizeOps } from '../../model/ops.js';
 import { makeClock } from '../../model/calendar.js';
 import { drawPallets, expandScheduleDay, expansionTime, scalePallets, truckGap } from '../../model/doors.js';
-import { EPS, MIN_GAP, YARD_LIMIT, atLeast } from './common.js';
+import { EPS, MIN_GAP, PRIORITY_AGING, YARD_LIMIT, atLeast } from './common.js';
 import { flushYard } from './stations.js';
 
 /** At most this many trucks wait at the gate (memory guard, like YARD_LIMIT); a further arrival is turned away and creates no pallets. */
 export const GATE_LIMIT = 200;
+/**
+ * The longest the remainder of a truck waits for a minimum batch that only a truck that has not docked yet could complete (s): the age at which the
+ * dispatcher already lets a waiting flow starve no longer (PRIORITY_AGING). When no door is free for such a truck and every truck at the doors waits
+ * for this batch alone, it does not wait at all (TruckDesk.supply).
+ */
+export const BATCH_WAIT = PRIORITY_AGING;
 
 const GATE = 'gate';
 const CHECKIN = 'checkin';
@@ -189,6 +195,42 @@ export class TruckDesk {
   capacity() {
     const demand = this.mode === 'schedule' && this.lg.runtime.demandFactor > 1 ? this.lg.runtime.demandFactor : 1;
     return this.stagingCap + this.doors * Math.max(1, Math.round(this.planMax * demand));
+  }
+
+  /**
+   * Goods in: how many pallets a minimum batch of `flow` may still wait for (what batchCeiling asks). The queue of the flow can count on its own
+   * unclaimed pallets, the yard (they move into the queues as vehicles make room) and the pallets of the trucks in check-in; the yard and the
+   * check-in pallets are shared with the other flows of the station, so this is an upper bound: it errs on the side of waiting, and every pallet
+   * that goes elsewhere lowers it again (a dispatch round follows each flush of the yard).
+   *
+   * More pallets can only come from a truck that has not docked yet, and that one needs a door and has to come in time:
+   *  * a door is free: the next truck may still complete the batch (trucks of one or two pallets and a batch of three), so the batch keeps waiting,
+   *    but only for BATCH_WAIT: after that the remainder goes (the last truck of a timetable would otherwise keep its door all night);
+   *  * no door is free: the next truck cannot dock before one of the trucks at the doors leaves. As long as one of them can leave without this flow
+   *    - it is in check-in or check-out, or it has pallets somewhere else (other flows, on their way to a drop) - the batch keeps waiting, as before.
+   *    When every truck at the doors waits for nothing but the unclaimed pallets of this flow the batch can never be completed (with one door the
+   *    remainder of a truck would block the door for ever), and the remainder goes at once.
+   * @param {number} age s the oldest ready pallet of the flow has waited
+   * @returns {number} Infinity when the batch may keep waiting, and on a Goods out (nothing leaves it)
+   */
+  supply(st, flow, age) {
+    if (this.role !== 'in') return Infinity;
+    const docked = this.docked;
+    const link = flow.outLink;
+    const queue = link.queue;
+    if (age < BATCH_WAIT) {
+      if (docked.length < this.doorsOpen()) return Infinity;
+      // all doors are held: is there a truck that leaves without the batch? (docked.length <= 32, so a count per truck is cheap)
+      const waiting = new Map();
+      for (let i = link.claimed; i < queue.length; i++) if (queue[i].tk >= 0) waiting.set(queue[i].tk, (waiting.get(queue[i].tk) || 0) + 1);
+      for (let i = 0; i < docked.length; i++) {
+        const truck = docked[i];
+        if (truck.state !== WORK || truck.left !== (waiting.get(truck.id) || 0)) return Infinity;
+      }
+    }
+    let n = queue.length - link.claimed + st.yardQ.length;
+    for (let i = 0; i < docked.length; i++) if (docked[i].state === CHECKIN) n += docked[i].pending.length;
+    return n;
   }
 
   /** One tick for the station at time t (before the dispatcher, after the vehicles' phase A). */

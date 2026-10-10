@@ -17,13 +17,18 @@ import { DAY_NAMES_LONG, SECONDS_PER_DAY, formatTimeOfDay, timeOfDay, usesTimeta
 import { isDayPlant } from '../day-plant.js';
 import { addStyles } from '../ops-styles.js';
 import { section } from './fields.js';
+import { whenSettled } from './time-input.js';
 
 /** "Run one day": 24 hours. */
 export const DAY_SECONDS = SECONDS_PER_DAY;
 /** "Run one week": 7 days. */
 export const WEEK_SECONDS = 7 * SECONDS_PER_DAY;
-/** What one simulated day costs on a plant of the size of the examples (WAREHOUSE-DESIGN 4.2: 9 to 43 s), as the words of the buttons say it. */
-export const DAY_COST_TEXT = 'roughly 10 to 40 seconds';
+/**
+ * What one simulated day costs on a plant of the size of the examples, as the words of the buttons say it. MEASURED (the design's 9 to 43 s of 4.2 predates the
+ * trucks): the Warehouse first-day example needs 2.4 s of wall time in the browser (load average 2.8) and 4.4 s of CPU in Node on a busy 4-core machine
+ * (load average 5), the Dock lab 2.9 s, Two production lines 6.2 s; one week took 10.9 s by hand.
+ */
+export const DAY_COST_TEXT = 'roughly 2 to 10 seconds';
 
 const CSS = `
 .clock-line{display:flex;flex-wrap:wrap;align-items:center;gap:var(--sp-2)}
@@ -31,20 +36,41 @@ const CSS = `
 .clock-run{display:flex;flex-wrap:wrap;gap:var(--sp-2)}
 `;
 
+/**
+ * The first truck of any timetable when it comes at least FIRST_TRUCK_GAP after the start of the clock (the plant then looks empty for that long, and at the default
+ * speed the planner watches it, UX-9): { at: time of day of that truck, wait: seconds from the start of the clock to it }; null when the first truck is soon after
+ * the start, or no timetable has a row.
+ */
+export const FIRST_TRUCK_GAP = 30 * 60;
+export function firstTruckAfterStart(layout) {
+  const start = layout && layout.calendar ? layout.calendar.startTod : 0;
+  let best = null;
+  for (const station of (layout && layout.stations) || []) {
+    const trucks = station.ops && station.ops.trucks;
+    if (!trucks || trucks.mode !== 'schedule' || !Array.isArray(trucks.schedule)) continue;
+    for (const row of trucks.schedule) {
+      const wait = (row.at - start + SECONDS_PER_DAY) % SECONDS_PER_DAY; // rows before the start come on the next day
+      if (best === null || wait < best.wait) best = { at: row.at, wait };
+    }
+  }
+  return best && best.wait >= FIRST_TRUCK_GAP ? best : null;
+}
+
 /** The settings patch of "Run one day" / "Run one week": the whole span, nothing discarded as warm-up. */
 export function runPatch(seconds) {
   return { duration: seconds, warmup: 0 };
 }
 
-/** What a run of `seconds` costs, in words: "roughly 10 to 40 seconds" for a day, seven times that for a week. */
+/** What a run of `seconds` costs, in words: DAY_COST_TEXT ("roughly 2 to 10 seconds", measured, see above) for a day, a longer span for a week. */
 export function runCostText(seconds) {
-  return seconds >= WEEK_SECONDS ? 'roughly 1 to 5 minutes' : DAY_COST_TEXT;
+  return seconds >= WEEK_SECONDS ? 'roughly 15 to 60 seconds' : DAY_COST_TEXT;
 }
 
 /** The text under the buttons (and in the toast): what a run of `seconds` does. */
 export function runText(seconds) {
   const span = seconds === DAY_SECONDS ? 'one day' : seconds === WEEK_SECONDS ? 'one week' : formatDuration(seconds);
-  return `Runs ${span} of the plant from the start of the clock, as fast as this computer can (${runCostText(seconds)} for a plant of this size), and then stops. Results cover the whole span.`;
+  return `Runs ${span} of the plant from the start of the clock, as fast as this computer can (${runCostText(seconds)} for a plant of this size), and then stops. Results cover the whole span. `
+    + `It also sets the run length of the plant to ${formatDuration(seconds)} with no warm-up, which later runs, comparisons and sweeps use too (Simulate tab).`;
 }
 
 /**
@@ -85,10 +111,11 @@ export function createClockSection(ctx, memory) {
   const day = h('select', { class: 'input input--sm', id: 'plant-clock-day', 'data-role': 'clock-day', 'aria-label': 'Weekday at the start of the simulation' },
     DAY_NAMES_LONG.map((name, i) => h('option', { value: String(i) }, name)));
   const edit = (what, patch) => store.commit(`Change clock ${what}`, (d) => updateCalendar(d, patch), { coalesce: `plant:clock:${what}` });
-  time.addEventListener('change', () => {
+  whenSettled(time, () => { // a time is stored when the planner is done typing it: every segment would restart the simulation (time-input.js)
+    const stored = store.getState().layout.calendar?.startTod ?? 0;
     const at = timeOfDay(time.value);
-    if (at === null) { time.value = formatTimeOfDay(store.getState().layout.calendar?.startTod ?? 0); return; }
-    edit('start time', { startTod: at });
+    if (at === null) { time.value = formatTimeOfDay(stored); return; }
+    if (at !== stored) edit('start time', { startTod: at });
   });
   day.addEventListener('change', () => { edit('start day', { startDay: Number(day.value) }); });
 
@@ -96,6 +123,11 @@ export function createClockSection(ctx, memory) {
   const day1 = h('button', { class: 'btn btn--sm', type: 'button', 'data-role': 'run-day', onclick: () => { void runSpan(ctx, DAY_SECONDS); } }, icon('play', { size: 14 }), 'Run one day');
   const week = h('button', { class: 'btn btn--sm', type: 'button', 'data-role': 'run-week', onclick: () => { void runSpan(ctx, WEEK_SECONDS); } }, icon('play', { size: 14 }), 'Run one week');
   const runNote = h('p', { class: 'field__hint' }, `${runText(DAY_SECONDS)} The week takes seven times as long.`);
+  const first = h('p', { class: 'field__hint', hidden: true, 'data-role': 'clock-first' });
+  const startAtFirst = h('button', { class: 'btn btn--sm btn--ghost', type: 'button', 'data-role': 'clock-start-at-first', onclick: () => { if (firstAt !== null) edit('start time', { startTod: firstAt }); } }, 'Start the clock there');
+  const firstText = h('span');
+  let firstAt = null; // the earliest truck of any timetable, when it comes well after the start of the clock
+  first.append(firstText, startAtFirst);
   const unused = h('p', { class: 'field__hint', hidden: true, 'data-role': 'clock-unused' }, 'No timetable uses this clock. ');
   const removeClock = h('button', {
     class: 'btn btn--sm btn--ghost', type: 'button', 'data-role': 'remove-clock',
@@ -105,7 +137,7 @@ export function createClockSection(ctx, memory) {
 
   const panel = section({ title, aside: '', open: memory.get(title) !== false },
     h('div', { class: 'clock-line', role: 'group', 'aria-label': 'Clock start' }, h('label', { class: 'field__label', for: 'plant-clock-time' }, 'Clock starts at'), time, h('label', { class: 'field__label', for: 'plant-clock-day' }, 'on'), day),
-    hint,
+    hint, first,
     h('div', { class: 'clock-run' }, day1, week), runNote, unused);
   panel.el.dataset.role = 'clock-section';
   panel.el.addEventListener('toggle', () => memory.set(title, panel.el.open));
@@ -122,6 +154,10 @@ export function createClockSection(ctx, memory) {
       if (document.activeElement !== day && day.value !== String(calendar.startDay)) day.value = String(calendar.startDay);
       panel.setAside(`${t} ${DAY_NAMES_LONG[calendar.startDay].slice(0, 3)}`);
       unused.hidden = usesTimetable(layout);
+      const gap = firstTruckAfterStart(layout);
+      firstAt = gap ? gap.at : null;
+      first.hidden = !gap;
+      if (gap) firstText.textContent = `The first truck of the timetables comes at ${formatTimeOfDay(gap.at)}, ${formatDuration(gap.wait)} after the clock starts, so a run begins with an empty plant. `;
       week.title = `Seven days of simulation, ${runCostText(WEEK_SECONDS)} for a plant of this size`;
       day1.title = `One day of simulation, ${runCostText(DAY_SECONDS)} for a plant of this size`;
       panel.el.dataset.dayPlant = String(isDayPlant(layout));

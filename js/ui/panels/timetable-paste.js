@@ -7,13 +7,17 @@
 //   Separator  a TAB if any data line has one, else a SEMICOLON if any has one, else a COMMA, but only when every data line has exactly one
 //              comma outside quotes and is not itself a decimal number ("24,0"; so "0600,24" is NOT split: it could be one number). With
 //              none of these every line is one column: a time and no pallets. Fields are trimmed; double quotes around a field are removed.
-//   Time       H:MM, HH:MM, HH.MM (two digits after the point), HHMM (exactly four digits), hours 0..23, minutes 0..59, with a trailing
-//              "h" or "Uhr" (any case, spaces allowed) ignored. Nothing else: no seconds, no "6 Uhr", no "6.5", no am/pm (a cut-line item).
+//   Time       H:MM, HH:MM, H:MM:00 and HH:MM:00 (seconds only when they are zero: database and warehouse-system exports write 06:00:00),
+//              HH.MM (two digits before and after the point), HHMM (exactly four digits), hours 0..23, minutes 0..59, with a trailing "h" or "Uhr" (any case,
+//              spaces allowed) ignored; H.MM (one digit before the point) only WITH that suffix ("6.30 Uhr"): a bare "0.25" is Excel's time as a fraction of a
+//              day (06:00), not 00:25, and is refused with a hint rather than guessed. 12-hour times of English Excel: "6:00 AM", "6:00:00 PM", "6 a.m. " forms
+//              with a colon, hours 1..12 ("12:00 AM" is midnight, "12:30 PM" is half past noon). Nothing else: no seconds other than zero, no "6 Uhr", no "6.5".
 //   Pallets    a whole number 1..200; "24,0", "24.0", "24,00" and "24.00" are accepted as 24; "24,5" and "1.000" are refused (never guessed);
 //              an empty or missing column means "draw the pallets from the distribution" (`pallets: null`).
 //   Header     the first non-empty line is skipped when it contains no digit ("Arrival;Pallets", "Ankunft<TAB>Paletten").
-//   Lines      \n, \r\n and \r end a line; empty lines are ignored (line numbers still count them); a UTF-8 BOM is ignored. Trailing empty
-//              columns ("6:00;24;") are ignored; a line with more than two columns is refused.
+//   Lines      \n, \r\n and \r end a line; empty lines are ignored (line numbers still count them); a UTF-8 BOM is ignored. White space at the ends of a
+//              line is ignored, but a TAB there is an empty cell ("<TAB>24" has no arrival time). Trailing empty columns ("6:00;24;") are ignored; a
+//              line with more than two columns is refused.
 //   Cap        a timetable holds MAX_SCHEDULE_ROWS (500) rows: from the 501st good row on nothing is read, and ONE skipped entry says so.
 
 import { MAX_SCHEDULE_ROWS, TRUCK_RANGES } from '../../model/ops.js';
@@ -43,6 +47,19 @@ function splitFields(line, sep, dropTrailing = true) {
   return fields;
 }
 
+/**
+ * A line without the white space at its ends, EXCEPT tabs: a tab at the start is the separator after an EMPTY first cell ("<TAB>24": a pallet count without an
+ * arrival time must say "has no arrival time", not "“24” is not a time"), one at the end an empty last cell. A linear scan (a trailing-white-space regexp is quadratic).
+ */
+function trimKeepingTabs(raw) {
+  const blank = (ch) => ch !== '\t' && ch.trim() === '';
+  let a = 0;
+  let b = raw.length;
+  while (a < b && blank(raw[a])) a++;
+  while (b > a && blank(raw[b - 1])) b--;
+  return raw.slice(a, b);
+}
+
 const NO_SEPARATOR = '\u0000';
 const SEPARATOR_CHARS = { tab: '\t', semicolon: ';', comma: ',' };
 /** A line that is one decimal number written with a comma ("24,0"): not a pair of columns. */
@@ -57,18 +74,55 @@ function detectSeparator(lines) {
   return commaPairs ? 'comma' : null;
 }
 
+const SUFFIX = /(?:uhr|h)$/i;
+const MERIDIEM = /([ap])\.?\s*m\.?$/i;
+
 /**
- * Seconds after midnight from a spreadsheet time ("6:00", "06:00", "06.00", "0600", "6:00 Uhr", "06:00h"), or null.
+ * Seconds after midnight from a spreadsheet time ("6:00", "06:00", "06:00:00", "06.00", "0600", "6:00 Uhr", "06:00h", "6.30 Uhr", "6:00 AM"), or null.
+ * (No pattern starts with optional white space: a field of many spaces must stay linear to parse, the dialog parses on every keystroke.)
  * @param {string} field
  * @returns {number|null}
  */
 export function parseTimeField(field) {
-  const s = String(field).trim().replace(/\s*(?:uhr|h)$/i, '').trim();
-  const m = /^(\d{1,2}):(\d{2})$/.exec(s) || /^(\d{1,2})\.(\d{2})$/.exec(s) || /^(\d{2})(\d{2})$/.exec(s);
-  if (!m) return null;
-  const hours = Number(m[1]);
-  const minutes = Number(m[2]);
-  return hours <= 23 && minutes <= 59 ? hours * 3600 + minutes * 60 : null;
+  let s = String(field).trim();
+  let meridiem = '';
+  const pm = MERIDIEM.exec(s);
+  if (pm) {
+    meridiem = pm[1].toLowerCase();
+    s = s.slice(0, pm.index).trim();
+  }
+  const suffix = !meridiem && SUFFIX.test(s);
+  if (suffix) s = s.replace(SUFFIX, '').trim();
+  let hours;
+  let minutes;
+  const colon = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(s);
+  if (colon) {
+    if (colon[3] !== undefined && colon[3] !== '00') return null;
+    hours = Number(colon[1]);
+    minutes = Number(colon[2]);
+  } else if (meridiem) {
+    return null;
+  } else {
+    const m = /^(\d{2})\.(\d{2})$/.exec(s) || (suffix ? /^(\d)\.(\d{2})$/.exec(s) : null) || /^(\d{2})(\d{2})$/.exec(s);
+    if (!m) return null;
+    hours = Number(m[1]);
+    minutes = Number(m[2]);
+  }
+  if (minutes > 59) return null;
+  if (meridiem) {
+    if (hours < 1 || hours > 12) return null;
+    hours = (hours % 12) + (meridiem === 'p' ? 12 : 0);
+  } else if (hours > 23) return null;
+  return hours * 3600 + minutes * 60;
+}
+
+/** A short hint for a time that was not read, when the text looks like a known spreadsheet notation, else ''. */
+export function timeHint(field) {
+  const s = String(field).trim();
+  if (/^\d{1,2}:\d{2}:\d{2}/.test(s)) return 'times are whole minutes, like 06:00';
+  if (/^\d*[.,]\d+$/.test(s) && Number(s.replace(',', '.')) < 1) return 'a number between 0 and 1 is Excel\u2019s time as a fraction of a day: format the column as hh:mm and copy it again';
+  if (/^\d[.,]\d{2}$/.test(s)) return 'write the hour with two digits (06.30) or with a colon (6:30)';
+  return '';
 }
 
 /**
@@ -106,7 +160,7 @@ function palletsReason(text, error) {
  */
 export function parseTimetable(text) {
   const source = typeof text === 'string' ? text.replace(/^﻿/, '') : '';
-  const all = source.split(/\r\n|\r|\n/).map((raw, i) => ({ line: i + 1, text: raw.trim() })).filter((l) => l.text !== '');
+  const all = source.split(/\r\n|\r|\n/).map((raw, i) => ({ line: i + 1, text: trimKeepingTabs(raw) })).filter((l) => l.text.trim() !== '');
   const result = { rows: [], skipped: [], header: null, separator: null, omitted: 0 };
   if (all.length === 0) return result;
 
@@ -120,7 +174,7 @@ export function parseTimetable(text) {
   const sep = separator ? SEPARATOR_CHARS[separator] : NO_SEPARATOR;
 
   const skip = (entry, code, reason) => result.skipped.push({
-    line: entry.line, text: entry.text, reason, message: `row ${entry.line} ${reason}`, code,
+    line: entry.line, text: entry.text.trim(), reason, message: `row ${entry.line} ${reason}`, code,
   });
 
   for (let i = 0; i < data.length; i++) {
@@ -128,7 +182,7 @@ export function parseTimetable(text) {
     if (result.rows.length >= MAX_SCHEDULE_ROWS) {
       result.omitted = data.length - i;
       const reason = `only ${MAX_SCHEDULE_ROWS} rows fit in a timetable; this row and ${plural(result.omitted - 1, 'row', 'rows')} after it were left out`;
-      result.skipped.push({ line: entry.line, text: entry.text, reason, message: `from row ${entry.line} on, ${reason}`, code: 'too-many' });
+      result.skipped.push({ line: entry.line, text: entry.text.trim(), reason, message: `from row ${entry.line} on, ${reason}`, code: 'too-many' });
       break;
     }
     const fields = splitFields(entry.text, sep);
@@ -144,7 +198,8 @@ export function parseTimetable(text) {
     if (at === null) {
       const comma = separator === null && fields[0].includes(',')
         ? ' (a comma between the columns only works when every row has exactly one; use a semicolon or a tab)' : '';
-      skip(entry, 'time', `${quoted(fields[0])} is not a time${comma}`);
+      const hint = comma || (timeHint(fields[0]) ? ` (${timeHint(fields[0])})` : '');
+      skip(entry, 'time', `${quoted(fields[0])} is not a time${hint}`);
       continue;
     }
     let pallets = null;

@@ -108,7 +108,8 @@ test('A1.3 / A1.4: 200 random plants with trucks keep every invariant on every t
   assert.ok(cover.rate >= 100 && cover.timetable >= 60, `rate ${cover.rate}, timetable ${cover.timetable}`);
   assert.ok(cover.goodsIn >= 150 && cover.goodsOut >= 150, `Goods in ${cover.goodsIn}, Goods out ${cover.goodsOut}`);
   assert.ok(cover.arrivals >= 5000, `arrivals ${cover.arrivals}`);
-  assert.ok(cover.departedIn >= 300 && cover.departedOut >= 300, `departed in ${cover.departedIn}, out ${cover.departedOut}`);
+  // (300 before the rows of a timetable got streams of their own, M1-SIM-REV-4: the draws changed, 287 to 310 depending on the draws; the bar is a sanity bar for the generator)
+  assert.ok(cover.departedIn >= 250 && cover.departedOut >= 300, `departed in ${cover.departedIn}, out ${cover.departedOut}`);
   assert.ok(cover.shortOut >= 100 && cover.fullOut >= 100, `outbound short ${cover.shortOut}, full ${cover.fullOut}`);
   assert.ok(cover.noShow >= 300 && cover.turnedAway >= 100, `no-shows ${cover.noShow}, turned away ${cover.turnedAway}`);
   assert.ok(cover.closing >= 20 && cover.staged >= 30 && cover.gateQueue >= 100, `closing ${cover.closing}, staged ${cover.staged}, gate queue ${cover.gateQueue}`);

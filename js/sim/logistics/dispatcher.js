@@ -13,7 +13,9 @@
 // served eventually.
 // batchMin is clamped to what can ever be gathered or delivered (vehicle capacity, batchMax, origin and
 // destination buffer sizes), so an over-ambitious batchMin cannot starve a flow for ever. maxWait = 0
-// means "wait for batchMin without a time limit".
+// means "wait for batchMin without a time limit". At a Goods in or Goods out with trucks it is also clamped to what the trucks can still
+// bring or take (stations.js batchCeiling), so the last pallets of a truck, or the last places of a truck being loaded, are not held back for a
+// batch that only a truck that cannot dock (no free door), or that does not come for a long time, could complete.
 // The docks of a trip are chosen by routing.js (a pickup dock must lead on to the drop, one-way traps come last).
 // A round also reports when it should run again (the next load becoming ready, a maxWait running out) and which
 // depots had a vehicle with work that could not leave.
@@ -23,7 +25,7 @@
 // tick that takes a fifth of a second.
 
 import { EPS, PRIORITY_AGING } from './common.js';
-import { flowCapacity, flowSpace, readyLoads, reserveInbound } from './stations.js';
+import { batchCeiling, flowCapacity, flowSpace, readyLoads, reserveInbound } from './stations.js';
 import { arrivalEdgeOf, isAvailable, leaveDepot, startLeg } from './vehicles.js';
 
 const TOL = 1e-6;
@@ -76,7 +78,7 @@ function collectDemand(lg, t, maxCapacity, round) {
       // the smallest worthwhile batch, unless the oldest load has waited long enough
       minBatch: expired
         ? 1
-        : Math.max(1, Math.min(c.batchMin, batchMax, flowCapacity(flow), flow.outLink.cap, flow.from.capacity ?? Infinity)),
+        : Math.max(1, Math.min(c.batchMin, batchMax, flowCapacity(flow), flow.outLink.cap, flow.from.capacity ?? Infinity, c.batchMin > 1 ? batchCeiling(flow, space, ready.age) : Infinity)),
     });
   }
   return out;

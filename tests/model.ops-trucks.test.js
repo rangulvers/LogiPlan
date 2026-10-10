@@ -274,7 +274,7 @@ test('A1.2 a legacy layout is schema 1, has no ops and no calendar, and every le
 // mergeOps and the mutators that touch ops
 // ---------------------------------------------------------------------------------------------------------------------------
 
-test('mergeOps: a partial patch keeps what it does not name (the mean of a gap keeps its kind and spread), arrays replace, null removes, junk changes nothing', () => {
+test('mergeOps: a partial patch keeps what it does not name (the mean of a gap keeps its kind and spread), arrays replace, null removes, a patch that is not an object changes nothing, junk keeps the current value', () => {
   const current = sanitizeOps('source', { trucks: { doors: 4, interArrival: { kind: 'exp', mean: 3000, spread: 0.5 }, schedule: [{ at: 100, pallets: 5 }, { at: 200, pallets: 6 }] } });
   const frozen = bytes(current);
   const merged = (patch) => mergeOps('source', current, patch);
@@ -290,7 +290,20 @@ test('mergeOps: a partial patch keeps what it does not name (the mean of a gap k
   assert.equal(bytes(merged('junk')), frozen, 'a patch that is not an object changes nothing');
   assert.equal(bytes(merged([1, 2])), frozen);
   assert.equal(bytes(merged(undefined)), frozen);
-  assert.equal(merged({ trucks: { doors: 'many' } }).trucks.doors, TRUCK_DEFAULTS.doors, 'junk in a patch takes the default (the loader rule), not the old value');
+  // junk in a patch keeps the CURRENT value (M1-MODEL-REV-1, the convention of mergeParams: an editor that commits NaN while the user clears a field must not
+  // reset the setting, and a junk schedule must not wipe the timetable); a null removes the key and the default fills it; a file has no current block at all
+  assert.equal(merged({ trucks: { doors: 'many' } }).trucks.doors, 4, 'junk in a patch keeps the old value, not the default');
+  assert.equal(merged({ trucks: { doors: NaN, checkIn: '' } }).trucks.checkIn, current.trucks.checkIn);
+  assert.equal(merged({ trucks: { mode: 'zzz' } }).trucks.mode, current.trucks.mode);
+  assert.deepEqual(merged({ trucks: { schedule: 'x' } }).trucks.schedule, current.trucks.schedule, 'a junk schedule does not wipe the timetable');
+  assert.deepEqual(merged({ trucks: { interArrival: { mean: 'x', kind: 'poisson' } } }).trucks.interArrival, current.trucks.interArrival, 'nor does a junk distribution');
+  assert.deepEqual(merged({ trucks: { interArrival: 'x' } }).trucks.interArrival, current.trucks.interArrival);
+  assert.equal(merged({ trucks: { doors: null } }).trucks.doors, TRUCK_DEFAULTS.doors, 'null switches the field off: the default');
+  assert.equal(merged({ trucks: { doors: 999 } }).trucks.doors, 32, 'a number out of range is clamped, it is not junk');
+  assert.equal(mergeOps('source', undefined, { trucks: { doors: 'many' } }).trucks.doors, TRUCK_DEFAULTS.doors, 'a block that did not exist takes the default for junk');
+  assert.equal(mergeOps('source', {}, { trucks: { doors: 'many' } }).trucks.doors, TRUCK_DEFAULTS.doors);
+  assert.equal(sanitizeOps('source', { trucks: { doors: 'many' } }, current).trucks.doors, 4, 'sanitizeOps takes the current block as its third argument');
+  assert.equal(sanitizeOps('source', { trucks: { doors: 'many' } }).trucks.doors, TRUCK_DEFAULTS.doors, 'and a file has none');
   assert.equal(merged(JSON.parse('{"trucks":{"doors":7,"__proto__":{"polluted":1}}}')).trucks.doors, 7);
   assert.equal({}.polluted, undefined);
   assert.equal(bytes(current), frozen, 'the current block is never modified');

@@ -16,7 +16,7 @@
 // or edits cannot fail an M0 test), 6.2 and 6.3. Every other check is unchanged.
 //
 // Tests named "DEFECT M0-REV-n" are real defects found by this review that are NOT fixed; they FAIL today (they are `todo`). The defects that
-// the fix pass repaired (1, 1b, 2, 3, 3b, 4) are ordinary tests now, named "M0-REV fixed n"; only M0-REV-5 (the numbers in a document) remains.
+// the fix pass repaired (1, 1b, 2, 3, 3b, 4) are ordinary tests now, named "M0-REV fixed n"; M0-REV-5 (the numbers in a document) is fixed since the M1 verification (Appendix C states the tree's numbers next to the dated first measurement).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
@@ -886,14 +886,16 @@ test('M0-REV 6.4 documents: the fixed shapes of 5.4 are the shapes the code crea
   assert.ok(arch.includes('pickedAt, deliveredAt, pickAt, dropAt, pickExtra, dropExtra }'));
 });
 
-defectHeavy('DEFECT M0-REV-5 (low, heavy): the numbers in Appendix C of the design for the dock bays (311, 155, 2) are not what the tree gives (310, 156, 1)', async () => {
+test('M0-REV fixed 5 (was a low defect): Appendix C of the design states what the tree gives for the dock bays (310, 156, 1) and the row (465, 0, ...), next to the dated first measurement (311, 155, 2)', async () => {
   const design = read('docs', 'WAREHOUSE-DESIGN.md');
-  const wanted = /`\[311,155,2\]` for the bays with it on/.test(design) ? [311, 155, 2] : null;
-  assert.ok(wanted, 'the document still states the numbers (if the text changed, update this test)');
-  const sim = new Simulation(dockLabLayout(L, 'bays'), { seed: 3 });
-  sim.advance(3 * 3600);
-  const src = sim.stations.find((s) => s.type === 'source');
-  assert.deepEqual(sim.logistics.docks.counters(src.id).map((d) => d.visits), wanted, 'Appendix C result of the bays with the dock book on');
+  assert.ok(/Result on 2026-10-08: `\[465,0,0,0,0,0\]` for the row with the dock book on or off; `\[311,155,2\]` for the bays with it on/.test(design), 'the dated first measurement is kept as history');
+  assert.ok(/gives `\[465,0,0,0,0,0\]` for the row and `\[310,156,1\]` for the bays \(seed 3, 3 simulated hours\)/.test(design), 'and the tree of M1 is stated next to it');
+  for (const [variant, wanted] of [['bays', [310, 156, 1]], ['row', [465, 0, 0, 0, 0, 0]]]) {
+    const sim = new Simulation(dockLabLayout(L, variant), { seed: 3 });
+    sim.advance(3 * 3600);
+    const src = sim.stations.find((st) => st.type === 'source');
+    assert.deepEqual(sim.logistics.docks.counters(src.id).map((d) => d.visits), wanted, `Appendix C result of the ${variant} with the dock book on`);
+  }
 });
 
 test('M0-REV 6.5 hygiene: the copy of the pre-M0 tree lives in the temp directory, outside the repository (nothing in the working tree is written)', () => {

@@ -1,8 +1,8 @@
 # LogiPlan warehouse module: definitive design and build plan
 
-Status: design for build, 2026-10-08. It replaces the three drafts in `docs/design/` (`warehouse-ops.md`, `warehouse-architecture.md`, `warehouse-ux.md`), which stay in the repository as background. Where this document and a draft differ, this document wins. Where this document and the code differ, the code is authoritative and this document needs a fix.
+Status: design for build, 2026-10-08. **Milestones M0 (foundations) and M1 (trucks and dock doors) are BUILT** (M0 merged as `a2af6d8`, M1 verified 2026-10-09; the milestone table in 9.0 has the status, 9.2 the as-built notes, the cut-line items that were dropped and the list of places where the code differs from this text). M2 to M6 are still design. It replaces the three drafts in `docs/design/` (`warehouse-ops.md`, `warehouse-architecture.md`, `warehouse-ux.md`), which stay in the repository as background. Where this document and a draft differ, this document wins. Where this document and the code differ, the code is authoritative and this document needs a fix.
 
-Written from a read of `docs/ARCHITECTURE.md`, `README.md`, the three drafts and the code in the working tree of 2026-10-08, including the uncommitted dock-choice work (`js/sim/logistics/docks.js`). Nothing in this document has been built. Numbers marked "measured" were measured on this machine while writing it (Node 22.22, 4 vCPUs, load average about 12, so timings are noisy); numbers marked "estimate" are judgement.
+Written from a read of `docs/ARCHITECTURE.md`, `README.md`, the three drafts and the code in the working tree of 2026-10-08, including the then uncommitted dock-choice work (`js/sim/logistics/docks.js`, merged since). The sections on M2 to M6 describe nothing that has been built; the sections on M0 and M1 have been amended to what was built (ARCHITECTURE.md 3.1, 4.10, 5.7 and 6.10 are the contract of the code). Numbers marked "measured" were measured on this machine while writing it (Node 22.22, 4 vCPUs, load average about 12, so timings are noisy); numbers marked "estimate" are judgement.
 
 Contents: 1 Summary for the product owner. 2 How the three drafts were judged. 3 Vision, principles, non-goals. 4 What the code does today. 5 The chosen model: data. 6 The chosen model: simulation. 7 The user interface. 8 Examples to ship. 9 Milestone plan. 10 Test strategy. 11 Risk register. 12 Decisions needed from the user. Appendices A to D.
 
@@ -12,7 +12,7 @@ Contents: 1 Summary for the product owner. 2 How the three drafts were judged. 3
 
 **What you asked.** At a goods-in or goods-out with one road and three docks, every vehicle drove to the same dock and waited while the others stood free. You want the warehouse module extended first, shifts, breaks and demand curves right behind it, and load types later. The floor-plan underlay waits.
 
-**The dock observation has two causes.** First, vehicles used to pick the cheapest dock, not a free one; an engineer is fixing that now (the "dock book", in the working tree, not released). Second, docks lined up in a row along one lane block each other, because a vehicle cannot drive past a parked one. We measured it on a test plant: with six docks in a row all 465 pallets used the first dock; with three separate short side roads the work was shared 311, 155 and 2. The plan adds a warning ("these docks lie in a row") and an example plant, "Dock lab".
+**The dock observation has two causes.** First, vehicles used to pick the cheapest dock, not a free one; an engineer is fixing that now (the "dock book", in the working tree, not released). Second, docks lined up in a row along one lane block each other, because a vehicle cannot drive past a parked one. We measured it on a test plant: with six docks in a row all 465 pallets used the first dock; with three separate short side roads the work was shared 311, 155 and 2 (on the tree of M1, with the dock book tuned since: 310, 156 and 1, Appendix C). The plan adds a warning ("these docks lie in a row") and an example plant, "Dock lab".
 
 **What you get, in this order.**
 1. *Foundations* (invisible, 2 to 3 days): every existing plant keeps giving exactly the same results.
@@ -129,7 +129,7 @@ Facts that shaped the design, each checked in the code. "Consequence" is what th
 | F5 | `rng.fork(label)` derives a stream from the seed and the label (`rng.js` 51) | New forks never change existing streams, so legacy runs stay identical. |
 | F6 | `layoutChangeKind` treats any difference outside name, notes, labels, obstacles and settings as `structural` (`layout.js` 528 to 540) | Edits to `ops`, `calendar`, `loadTypes` rebuild the simulation. Correct; no change needed. |
 | F7 | Warm restart pre-rolls 10 to 40 min from t = 0; the impact card compares 600 s windows with noise bands tuned on stationary plants (`runner.js` `primeSeconds`, ARCHITECTURE 6.4) | A day-shaped plant breaks both. Cold restart for plants with a daily clock (section 6.2.7). |
-| F8 | The dock book (`logistics/docks.js`, uncommitted, tasks 25 to 27 open) ranks the docks of a station by estimated time to start service, reserves docks, rebinds late, and keeps per-dock counters `{ visits, busy, wait }`; it is not yet in `Stats`, insights or the UI | M1 needs nothing from it except its counters. M3 needs `choose(..., { only })` and a service-time extra (section 9, M3). The golden fixture must be captured after task 27. |
+| F8 | The dock book (`logistics/docks.js`; merged since, and in `Stats`, insights and the UI as `report.stations[id].docks`, `dockSkew` and the dock insights) ranks the docks of a station by estimated time to start service, reserves docks, rebinds late, and keeps per-dock counters `{ visits, busy, wait }` | M1 needs nothing from it except its counters (used as they are for the dock share bars; M1 added no `ops.docks`). M3 needs `choose(..., { only })` and a service-time extra (section 9, M3). The golden fixture must be captured after task 27. |
 | F9 | `createLoad` returns `{ id, createdAt, origin, readyAt, claimed }`; `openOrder` has no hint fields (`logistics.js` 252, 274) | M0 fixes the shapes once (`ty`, `tk`, `at`, `slot` on loads; `pickAt`, `dropAt`, `pickExtra`, `dropExtra` on orders) so hidden classes stay stable. |
 | F10 | `params.capacity` of a storage is read in `stations.js` (`state`, `fill`, `fillLabel`, `flowSpace`, `flowCapacity`) and `dispatcher.js` line 79 | M0 introduces `st.capacity`, returning `params.capacity` for now; M3 returns the derived value for racks. |
 | F11 | `SCHEMA_VERSION = 1`; `normalizeLayout` stamps it, `checkInvariants` demands equality, `importProject` warns when a file is newer (`layout.js` 480, 698; `serialize.js` 49, 113) | The warning mechanism exists and is tested; the schema rule in 5.2 uses it. |
@@ -145,6 +145,8 @@ Scratch plant (not in the repository): a two-way loop, Goods in with docks on th
 |---|---|---|
 | Six dock cells in a row on the loop | 465, 0, 0, 0, 0, 0 | 465, 0, 0, 0, 0, 0 |
 | Three separate short side roads | 311, 155, 2 | 397, 0, 0 |
+
+(Measured on 2026-10-08 on the working tree of the time. On the merged tree of M1 the same recipe gives 465, 0, 0, 0, 0, 0 for the row and 310, 156, 1 for the three side roads; see Appendix C. The ratios, not the exact visits, are what the Dock lab and its tests rely on.)
 
 Reading: in this plant every vehicle reaches the row of docks from the same side. A farther dock can only be reached by driving past the nearer ones, which is impossible while one of them is occupied, and the dock book's estimate adds exactly that blocking delay, so it never prefers a farther dock. With separate side roads the dock book spreads the load as intended. A quick prototype of a "far end first" rule in a scratch script spread the visits over the row but did not change throughput in that plant, because the loop itself was the limit. Its value is unproven; it is a follow-up for the dock engineer, not a promise.
 
@@ -198,23 +200,24 @@ Implementation (new file `js/model/schema.js`, pure):
 ```jsonc
 "ops": { "trucks": {
   "doors": 2,                                                  // int 1..32
-  "checkIn": 300, "checkOut": 300,                             // s, 0..7200
+  "checkIn": 300, "checkOut": 300,                             // whole s, 0..7200
   "mode": "rate",                                              // "rate" | "schedule"
   "interArrival": { "kind": "normal", "mean": 2700, "spread": 0.3 },   // rate mode: time between trucks (Dist)
   "pallets": { "kind": "uniform", "mean": 24, "spread": 0.25 },        // pallets per truck (Dist), rounded, 1..200
   "schedule": [],                                              // schedule mode: <= 500 rows such as { "at": 21600, "pallets": 24 }, sorted by "at"; pallets null = draw from "pallets"
-  "jitter": 0,                                                 // s, 0..7200: a scheduled truck arrives at "at" + uniform(-jitter, +jitter)
+  "jitter": 0,                                                 // whole s, 0..7200: a scheduled truck arrives at "at" + uniform(-jitter, +jitter)
   "noShow": 0,                                                 // 0..0.5: chance that a scheduled truck does not come
-  "maxDwell": 3600,                                            // s, 0..86400, Goods out only: wait for pallets, then leave short (0 = until full)
+  "maxDwell": 3600,                                            // whole s, 0..86400, Goods out only: wait for pallets, then leave short (0 = until full)
   "staging": 4                                                 // int 0..50, Goods out only: pallets that may wait per door (0 = pure pull)
 } }
-"calendar": { "startTod": 0, "startDay": 0 }                   // int 0..86399; int 0..6 (0 = Monday); present once any truck station uses "schedule"
+"calendar": { "startTod": 0, "startDay": 0 }                   // int 0..86399; int 0..6 (0 = Monday); created when a truck station uses "schedule", and kept until updateCalendar(layout, null) removes it
 ```
 
 Meaning and interplay:
 - `Dist` is the existing time distribution (`const`, `normal`, `uniform`, `exp`; mean in the unit of the field, spread 0..1). `interArrival.mean` is clamped to 60..1,000,000 s here.
 - With `ops.trucks` on a **Goods in**, the legacy `params.interArrival` and `params.batch` are ignored (they stay in `params` so a station can go back); `params.outCap` is the **staging space per outgoing flow**; `params.startDelay` delays the first truck in rate mode.
-- With `mode: "schedule"` the sanitizer creates `calendar: { startTod: 0, startDay: 0 }` if missing (a plant with a timetable has a clock).
+- With `mode: "schedule"` the sanitizer creates `calendar: { startTod: 0, startDay: 0 }` if missing (a plant with a timetable has a clock). It does not remove the clock when the last timetable goes back to rate mode (the planner's start time survives the switch); the panel that switches back removes a clock that still has its default start in the same commit.
+- A junk value in a patch (`NaN`, `''`, a text where a number belongs) keeps the CURRENT value of the field, like the patches of `params`; a file, which has no current block, takes the default.
 - `maxDwell` and `staging` are kept on a Goods in for round trip but ignored.
 - The demand slider `demandFactor` scales **volume**: in rate mode the truck frequency (both directions), in schedule mode the pallets per truck (appointments do not move).
 
@@ -325,7 +328,7 @@ Milestones: the clock and the truck timetable arrive in M1; shifts, breaks, staf
 
 #### 6.2.1 Clock
 
-Without `layout.calendar` there is no clock and times are elapsed seconds, as today. With it: `c(t) = startTod + t`, `tod(t) = c mod 86400`, `day(t) = (startDay + floor(c / 86400)) mod 7` (0 = Monday). **`startTod` is the time of day at simulation time 0, which is the start of the warm-up**; the KPI window begins at `settings.warmup`. A plant with a clock is called a **day plant** in this document. The helper `makeClock(calendar)` returns `{ tod(t), day(t), label(t) }` (`"Mon 06:42"`).
+Without `layout.calendar` there is no clock and times are elapsed seconds, as today. With it: `c(t) = startTod + t`, `tod(t) = c mod 86400`, `day(t) = (startDay + floor(c / 86400)) mod 7` (0 = Monday). **`startTod` is the time of day at simulation time 0, which is the start of the warm-up**; the KPI window begins at `settings.warmup`. A plant with a clock and a truck timetable is called a **day plant** in this document (in M1 a clock exists for no other reason; a clock left behind after the last timetable went back to rate mode does not make a plant a day plant, `ui/day-plant.js isDayPlant`; M2 widens the definition when shifts and profiles use the clock). The helper `makeClock(calendar)` returns `{ tod(t), day(t), label(t) }` (`"Mon 06:42"`).
 
 #### 6.2.2 Staffing and the capacity timeline
 
@@ -362,11 +365,11 @@ tNext   = cNext - startTod
 
 #### 6.2.6 Truck schedules
 
-Each day (at start and at every midnight of the clock) the day's rows are expanded into a sorted due list: rows whose `days` contain the day, minus no-shows (a draw per row from the truck stream), moved by `uniform(-jitter, +jitter)` and never before time 0. Equal times keep row order. Pallets per truck: the row's `pallets`, else a draw from `pallets`; multiplied by `demandFactor` and rounded (at least 1). All draws come from `rng.fork('trucks')` of the station, so no existing stream changes.
+Each day (at start and at every midnight of the clock) the day's rows are expanded into a sorted due list: rows whose `days` contain the day, minus no-shows, moved by `uniform(-jitter, +jitter)` and never before time 0. Equal times keep row order. Pallets per truck: the row's `pallets`, else a draw from `pallets`; multiplied by `demandFactor` and rounded (at least 1). All draws come from `rng.fork('trucks')` of the station, so no existing stream changes, and every row that needs a random number has a stream of its own (`fork(day:at:n)` of that stream, `n` counting rows with the same time) whose first two draws are the no-show and the jitter, taken whether or not the settings use them: changing only the no-show chance, the jitter or the kind of the pallets distribution moves no other truck, and a row added to the timetable leaves the others where they were.
 
 #### 6.2.7 Restart policy, windows and day-long runs
 
-- **A day plant never warm-restarts.** A pre-roll of 10 to 40 minutes ends at a different time of day than the plant on screen, so after an edit the simulation restarts cold at `startTod`. `runner.js` `warmWanted()` returns false when `layout.calendar` exists. Plants with trucks in rate mode and no clock are stationary and keep warm restart and the impact card.
+- **A day plant never warm-restarts.** A pre-roll of 10 to 40 minutes ends at a different time of day than the plant on screen, so after an edit the simulation restarts cold at `startTod`. `runner.js` `warmWanted()` returns false when the plant on screen or the new plant is a day plant (a clock AND a truck timetable, `ui/day-plant.js`; in M1 a clock alone, left over from a timetable, does not count). Plants with trucks in rate mode are stationary and keep warm restart and the impact card.
 - **The impact card is replaced** for day plants by a one-line hint, "Time of day matters. Compare whole days", with an action that opens Experiments with the plant before the last edit (the runner remembers the layout it replaced) and the plant now, one whole day each after one warm-up day (`duration = 86400`, `warmup = 86400`).
 - **Windows.** `report.ops.day` accumulates in 96 quarter-hour bins (time of day), so a window of several days shows the average day. The Results section says how long was measured and warns below one whole day.
 - **Cost.** One simulated day is 864,000 ticks at `dt` 0.1. At today's speed that is about 9 to 43 seconds on a plant of the example size (4.2). M2 measures it on the reference example; if one simulated day costs more than 20 s of CPU time there, an idle fast-forward (skip ticks while nothing can happen, using the next-event times the components already know) is scheduled before M3 (R2). "Run one day" (`duration = 86400`, `warmup = 0`) and "Run one week" are buttons in the Shifts tab; the week warns about its cost.
@@ -389,7 +392,11 @@ State per truck: `{ id, at, plan, state: 'gate' | 'checkin' | 'work' | 'checkout
 4. **Unloading is emergent**: vehicles claim pallets through the normal dispatch; each pickup (`finishLoading`) decrements `left` of the load's truck (two lines). There is no unload-rate parameter; door time depends on how fast vehicles take pallets away, which is the interaction the planner must see.
 5. **Done** when `left == 0`: after `checkOut` the door is free; `freedAt = t`.
 
-The Goods in is `blocked` while a docked truck's pallets wait in the yard for staging space; the existing source insights apply to that state. Memory guard, like `YARD_LIMIT`: at most 200 trucks wait at the gate; a further arrival is counted in `trucks.turnedAway` and creates no pallets. With `demandFactor` 0 no truck arrives, as for sources today.
+The Goods in is `blocked` while a docked truck's pallets wait in the yard for staging space; the existing source insights apply to that state. Memory guard, like `YARD_LIMIT`: at most 200 trucks wait at the gate, and the pallets that exist but are not picked up yet (on trucks at the gate or at a door, in the yard) stay below `YARD_LIMIT`; a further arrival is counted in `trucks.turnedAway` and creates no pallets. With `demandFactor` 0 no truck arrives, as for sources today.
+
+**Events** (as built): `truckArrived`, `truckTurnedAway`, `truckNoShow`, `truckDocked`, `truckReady` (check-in over) and `truckDeparted`; ARCHITECTURE 5.7 has their payloads.
+
+**The minimum batch of a flow out of a Goods in.** A flow that waits for `batchMin` pallets would strand the last pallets of a truck (the batch could only be completed by a truck that has not docked yet, which cannot dock while the remainder holds the door). The dispatcher therefore lets the batch wait for further trucks while a door is free for them (at most 15 minutes after its oldest pallet was ready, `BATCH_WAIT`), and while some truck at a door can leave without it; when every truck at the doors waits for this batch alone, the remainder goes at once as a smaller batch.
 
 #### 6.3.3 Outbound trucks (Goods out)
 
@@ -398,7 +405,8 @@ A truck has a `plan` of pallets and takes a door as above. Pallets reach the Goo
 - `flowSpace(flow)` for a Goods out with trucks is `(stagingCap - staged) + sum over trucks at work that are not closing of (plan - loaded)`, minus the reservations already made (`inboundTotal`), never below 0, where `stagingCap = doors x staging`. Trucks still in check-in do not count: the dispatcher wakes when they finish. With `staging = 0` pallets are only fetched while a truck is ready to be loaded.
 - A delivered pallet is loaded onto the earliest-docked truck at work with room (FIFO); if none, it waits in `staged` (always `staged <= stagingCap`). When a truck finishes check-in it takes up to `plan` staged pallets at once. Loading is the moment `completeLoad` is called, so throughput, lead time and the conservation law keep their meaning (pallets in `staged` are live).
 - A truck leaves when full, or `maxDwell` after check-in with whatever it has (short), but never while reservations are outstanding (`inboundTotal > 0`): at `maxDwell` it is marked `closing`, stops counting in `flowSpace`, and leaves when `inboundTotal == 0` or it is full. Then `checkOut` and the door is free.
-- Counters: trucks served, trucks short, pallets short.
+- Counters: trucks departed, trucks short; pallets planned and pallets loaded (their ratio is `fillRate`).
+- A flow's minimum batch (a plan of 22 pallets with `batchMin` 4) is clamped to the space that is free now, so the last places of a truck are filled by a smaller trip instead of staying empty until `maxDwell` (or for ever with `maxDwell` 0).
 
 #### 6.3.4 The door check (Little's law)
 
@@ -406,7 +414,7 @@ A truck has a `plan` of pallets and takes a door as above. Pallets reach the Goo
 
 #### 6.3.5 Invariants (asserted on every tick of the fuzz plants)
 
-Docked trucks never exceed `doorsOpen`; the gate is FIFO; a pallet is on at most one truck; `loaded <= plan`; `left` equals the number of the truck's pallets not yet picked up; `flowSpace` is never negative; conservation including `pending` and `staged`; no `NaN` in any `report.ops` value.
+Docked trucks never exceed `doorsOpen`; the gate is FIFO; a pallet is on at most one truck; `loaded <= plan`; `left` equals the number of the truck's pallets not yet picked up; the places promised to orders on their way never exceed the free staging space plus the room of the trucks at work, and `flowSpace` is exactly what is left of them (never negative); the door is free exactly `checkOut` after the last pickup / the last pallet / the end of the wait; the counters add up (`arrived = gate + docked so far`, `at the doors = docked so far - departed`); conservation including `pending` and `staged`; no `NaN` in any `report.ops` value.
 
 ### 6.4 Storage: racks, aisles, slots
 
@@ -465,7 +473,7 @@ A **pick zone** is a workstation with `ops.pick`; its machines are the pickers, 
 | Milestone | Change | Where |
 |---|---|---|
 | M0 | none (fixed shapes, `st.capacity`) | `logistics.js`, `stations.js`, `dispatcher.js` line 79 |
-| M1 | `flowSpace` for a Goods out with trucks; `acceptLoads` loads onto trucks; `finishLoading` decrements `left`; `rescaleArrivals` rescales the next truck; truck events call `markDirty` | `stations.js`, `vehicles.js` (2 lines) |
+| M1 | `stepStation` hands a Goods in / Goods out with trucks to its desk instead of `stepSource`; `flowSpace` for a Goods out with trucks; `acceptLoads` loads onto trucks; `finishLoading` decrements `left`; `rescaleArrivals` rescales the next truck; the pallets of a truck call `markDirty` through `flushYard` (Goods in) and a truck ready to be loaded through `ready()` (Goods out); `collectDemand` clamps a minimum batch with `batchCeiling` | `stations.js`, `vehicles.js` (1 line), `dispatcher.js` (1 line) |
 | M2 | `isAvailable` (off duty); calendar breakpoints call `markDirty` | `vehicles.js`, `idle.js`, `logistics.js` |
 | M3 | `evaluate` (equipment); `assign` (aisle reservation, hints); `collectDemand` (batch limited to the aisle run); `legTarget` (hints); `DockBook.choose(only)` and service extra | `dispatcher.js`, `vehicles.js`, `docks.js` |
 | M4 | slot reservation; plan tokens in `flowSpace` | `racks.js`, `trucks.js` |
@@ -481,12 +489,14 @@ All new sections live under one namespace, `report.ops`, which exists only when 
 | Section | Contents | From |
 |---|---|---|
 | `ops.trucks[stationId]` | `name, role ('in' or 'out'), doors, trucks {arrived, docked, departed, short, noShow, turnedAway}, gateWait {mean, p90, max}, doorTime {mean, p90}, turnaround {mean, p90}, doorUtilization, gateQueue {mean, max, now}, doorsBusyNow, fillRate (out: pallets loaded over planned), gateQueueSeries` | M1 |
-| `ops.docks[stationId]` | per dock cell `{ cx, cy, visits, busy, wait }` and the share of visits, from `DockBook.counters` (not recounted) | task 26 |
+| `ops.docks[stationId]` | per dock cell `{ cx, cy, visits, busy, wait }` and the share of visits, from `DockBook.counters` (not recounted). **As built: not created.** Task 26 shipped the same data as `report.stations[id].docks` (with `dockSkew`), and the Doors card, the dock share bars and the dock insights read it there; `report.ops` holds only `trucks` | task 26 |
 | `ops.day` | 96 quarter-hour bins: throughput, WIP, gate wait, gate queue, doors busy, vehicles working, vehicles staffed, vehicles needed; `byHour` (24) and `byShift` derived; paid hours, productive hours | M2 |
 | `ops.storage[stationId]` | positions, usable, fill mean and max, fill by aisle, mean excursion, aisle hold time | M3 |
 | `ops.service` | on-time-in-full, trucks late, peak staged pallets | M4 |
 | `ops.types[typeId]` | throughput, lead time | M5 |
 | `ops.pick[stationId]` | lines per picker-hour, metres per line, face stock-outs | M6 |
+
+The window of every KPI (`report.ops` included) begins at `settings.warmup` and also restarts whenever the number of vehicles changes (`Stats._stale`, legacy behaviour).
 
 With a clock, workstation `utilization`, `starved`, `blocked`, `down` use **on-shift time** as denominator and fleet `shares` gain an `off` key, only for resources with a binding; without a binding the formulas and keys are unchanged.
 
@@ -500,7 +510,7 @@ New insight rules (`insights-ops.js`, thresholds as named constants at the top, 
 
 | Part | Cost per tick | Memory |
 |---|---|---|
-| Legacy plant after M0 | one pointer test per station (`st.trucks`), one per vehicle in `isAvailable` (`cal`), one per `Stats` call site | none |
+| Legacy plant after M1 | a pointer test (`st.trucks !== null`) at each station hook (`stepStation`, `flowSpace`, `flowCapacity`, `acceptLoads`, `rescaleArrivals`, `fill`, `fillLabel`), one per pickup (`finishLoading`), one `c.batchMin > 1` test per flow in `collectDemand` (`batchCeiling` returns at once for a flow between stations without trucks), one `ext` test per `Stats` call site (five). **No per-vehicle test**: `isAvailable` and `idle.js` are unchanged until M2 (the design once listed a `cal` test per vehicle; `StationRT.cal` exists, `VehicleRT` has no such field) | none |
 | Trucks (M1) | O(active trucks at this station), at most a few dozen: the gate head, the docked list | trucks are short-lived objects |
 | Calendar (M2) | one comparison per bound resource; a cursor step at breakpoints | a few hundred breakpoints |
 | Day statistics (M2) | about six additions into the current quarter-hour bin | 96 bins per series |
@@ -538,7 +548,7 @@ Expected increase for the reference warehouse example: under 5 % per tick over i
 | **Door check line** | live Little's-law sentence (6.3.4) with a button "Use N doors" |
 | Remove trucks | link; returns to the legacy fields (nothing was deleted) |
 
-**Paste from spreadsheet** (`timetable-paste.js`, a pure function `parseTimetable(text)` tested in Node). Separators: tab, else semicolon, else comma when every row has exactly one comma-separated pair that cannot be a decimal number. Times: `H:MM`, `HH:MM`, `HH.MM` (two digits after the point, at most 59), `HHMM`, with a trailing `h` or `Uhr` ignored (`am/pm` is a cut-line item). Pallets: integers, `24,0` accepted. A header row is skipped. The dialog shows a preview: good rows, and bad rows marked in place with line number and reason ("row 7 “25:70” is not a time"); **nothing is applied until "Use 12 rows"**. Semicolons and decimal commas are first-class because Excel exports them in German and many European locales.
+**Paste from spreadsheet** (`timetable-paste.js`, a pure function `parseTimetable(text)` tested in Node). Separators: tab, else semicolon, else comma when every row has exactly one comma-separated pair that cannot be a decimal number. Times: `H:MM`, `HH:MM`, either with seconds that are zero (`06:00:00`, the usual notation of warehouse-system and database exports; `06:00:30` stays refused), `HH.MM` (two digits before and after the point, at most 59), `HHMM`, with a trailing `h` or `Uhr` ignored (`6.30 Uhr` also reads with one digit before the point, a bare `6.30` does not); 12-hour times with a colon and AM/PM (`6:00 AM`, `6:00 pm`, `12:00 AM` is midnight) for English-locale Excel. A bare number below 1 (`0.25`, Excel's time cell shown as a day fraction, which is 06:00) is refused with a hint, never guessed.  Pallets: integers, `24,0` accepted. A header row is skipped. The dialog shows a preview: good rows, and bad rows marked in place with line number and reason ("row 7 “25:70” is not a time"); **nothing is applied until "Use 12 rows"**. Semicolons and decimal commas are first-class because Excel exports them in German and many European locales.
 
 **Plant settings (nothing selected).** When a clock exists: "Clock starts at [HH:MM] on [Monday]" and the buttons **Run one day** and **Run one week**. First use of a timetable creates the clock and shows toast 7 (cold restart).
 
@@ -618,7 +628,7 @@ Placeholders in braces are filled from the plant. The worked examples use the nu
 | 2 | Door check (inspector, live; button "Use 6 doors") | "At the busiest hour you need about {need} doors busy at once ({trucks} trucks an hour, {minutes} minutes at a door each). You have {doors}, so trucks will queue at the gate. {better} doors would be busy {util} % of the time. Door time includes waiting for forklifts, so more forklifts shorten it. Estimated from {tPallet} s per pallet; Results shows the real figure after a run." Example: "...about 4.9 doors busy at once (6 trucks an hour, 49 minutes at a door each). You have 4... 6 doors would be busy 82 % of the time." |
 | 3 | Docks in a row (Checks warning `docks-share-lane`, Fix "Show docks") | "The docks of {name} lie in a row on one lane. A vehicle standing at the first dock blocks the others, so vehicles queue on the road while the docks behind stand free. Give each dock its own short side road." |
 | 4 | Gate finding (Results, warning) | Without a clock: "Trucks wait {wait} minutes at the gate on average". With: "Trucks wait 38 minutes at the gate between 09:00 and 11:00". Detail: "{name} has {doors} doors, busy {util} % of that time, and {n} trucks stood in the yard at the worst moment. The doors are not slow: {x} of the {y} minutes per truck were spent waiting for a free forklift." Suggestion: "Add a forklift (to the Early shift), or open another door." Link: Show on plan. |
-| 5 | Timetable paste preview | "{n} rows read, {k} skipped: row {r} “{text}” is not a time. Nothing is applied until you press Use {n} rows." |
+| 5 | Timetable paste preview | "{n} rows read, {k} skipped: row {r} “{text}” is not a time. Nothing is applied until you press Use {n} rows." With more than one skipped row the first is quoted and the others counted: "... row {r} “{text}” is not a time (and {k-1} more). ..."; a time that looks like a known spreadsheet notation gets a hint in brackets ("“0.25” is not a time (a number between 0 and 1 is Excel’s time as a fraction of a day: format the column as hh:mm and copy it again)"). |
 | 6 | Shift preset applied (toast plus note in the tab) | "Two shifts applied: Early 06:00 to 14:00, Late 14:00 to 22:00, Monday to Friday. This plant now has a daily rhythm, so edits restart the simulation at the start of the day, and results are shown by hour and shift." |
 | 7 | Cold restart (first time per session, toast) | "This plant follows a daily timetable. After an edit the simulation starts again at {startTod} instead of continuing, so the figures always describe a whole day." |
 | 8 | Staffing short (Results, warning) | "Not enough forklifts on the Early shift between 09:00 and 11:00: {needed} needed, {staffed} staffed." Suggestion: "Add one to the Early shift, or move the break." |
@@ -648,6 +658,8 @@ Every example is built through the `layout.js` mutators (so it doubles as a test
 | 5 | `rack-warehouse`: "Rack warehouse: aisles and reach trucks" | M3 | Aisle width against equipment, levels, aisle heads | A rack block with a head road, reach trucks. Tips: widen the aisle to 4.0 m and see positions fall; switch the fleet to counterbalance trucks and read the Checks tab. |
 | 6 | `supermarket`: "Production supermarket" | M5 | Load types | Fast and slow movers into two storages by type, tuggers. Tips: make fast movers 40 %; watch the aisle bars. |
 
+**As built in M1 (rows 1 and 2; code authoritative).** *Dock lab* (`buildDockLab('bays'|'row')`, 40 x 28 cells): one two-way street, Goods in with three doors for trucks (check-in and check-out 10 minutes, so the doors are busy about 40 % and the gate stays empty: the lab shows the docks, not the doors) and three docks, each at the end of its own side road; a Storage on two bays; Goods out with 2 doors; **5 forklifts** (the design said 4, the lab was calibrated with 5 so that the promised numbers reproduce). The row variant is the same plant after the edit its notes describe (the three side roads erased, Goods in dragged down onto the street). Its three tips: read the dock share bars (57 %, 34 %, 9 % of the visits, bays), make them a row (first dock 97 %, Checks says `docks-share-lane`, forklifts 58 % instead of 53 % busy, door 33 instead of 31 minutes), add a *sixth* forklift (door 30 minutes, waiting in traffic 9 % to 14 %, in the row 20 %); "add a fourth forklift" of the design became "add a sixth". *Warehouse: first day* (48 x 30 cells): trucks of about 24 pallets every 17 minutes to a Goods in with three doors (a fourth dock to try), a Storage of 600 places, Goods out with 2 doors, **4 forklifts** (the design said 5), a Forklift park; four tips (the gate ~8 minutes and the door ~42 minutes with the forklifts 99 % busy; 4 doors move the queue from the gate to the doors; a fifth forklift gives door ~26 minutes and a sixth ~22 minutes; the door check says 2.7 doors). Every number of every tip is reproduced (means of seeds 1 to 5, 8 simulated hours) by `tests/sim.examples.warehouse.test.js`. The M2 extension of example 2 (a timetable with a 10:00 peak, one shift) is not built.
+
 ### 8.2 Not scheduled
 
 A template generator ("Start from a template" with four questions: positions needed, trucks per day, doors, shifts, then the plant is built through the model API like the examples) is a good idea, and the suggestion line can reuse the door check. It is not scheduled: it needs the examples to exist first to define "typical", and inserting into an existing plant needs a multi-brick ghost in the renderer. A template plant would carry the banner "Illustrative defaults: replace them with your trucks and rates".
@@ -667,15 +679,15 @@ The order is the one you asked for: **the warehouse first** (M1 is the first thi
 
 Sizes are estimates in engineer-days, adjusted from the drafts (which gave 3 to 8 per milestone) for the work they left out (UI, examples, tests). They are not measurements.
 
-| Milestone | Estimate | Cumulative, one engineer | What the planner can do afterwards that was impossible |
-|---|---|---|---|
-| M0 Foundations | 2 to 3 | 0.5 week | nothing visible: the safety net exists |
-| M1 Trucks and dock doors | 7 to 9 | 2 weeks | choose door count, staging, forklifts for unloading; see whether docks share the work |
-| M2 Shifts, breaks, demand | 8 to 10 | 4 weeks | decide staffing per shift, see the peak hour fail and why |
-| M3 Racks and aisles | 8 to 10 (M3a 6 to 7, M3b 2 to 3) | 6 weeks | choose aisle width against equipment, levels, where aisle entrances go |
-| M4 Slots, plans, OTIF | 6 to 8 | 7.5 weeks | choose slotting policy, staging need, cut-off feasibility |
-| M5 Load types | 4 to 6 | 8.5 weeks | zone by type, see per-type lead times |
-| M6 Picking and labour (stretch) | 6 to 8 | not scheduled | pickers per shift, pick method |
+| Milestone | Status | Estimate | Cumulative, one engineer | What the planner can do afterwards that was impossible |
+|---|---|---|---|---|
+| M0 Foundations | **BUILT**, merged 2026-10-09 (`a2af6d8`) | 2 to 3 | 0.5 week | nothing visible: the safety net exists |
+| M1 Trucks and dock doors | **BUILT 2026-10-09** (verified the same day, section 9.2 "As built") | 7 to 9 | 2 weeks | choose door count, staging, forklifts for unloading; see whether docks share the work |
+| M2 Shifts, breaks, demand | not started | 8 to 10 | 4 weeks | decide staffing per shift, see the peak hour fail and why |
+| M3 Racks and aisles | not started | 8 to 10 (M3a 6 to 7, M3b 2 to 3) | 6 weeks | choose aisle width against equipment, levels, where aisle entrances go |
+| M4 Slots, plans, OTIF | not started | 6 to 8 | 7.5 weeks | choose slotting policy, staging need, cut-off feasibility |
+| M5 Load types | not started | 4 to 6 | 8.5 weeks | zone by type, see per-type lead times |
+| M6 Picking and labour (stretch) | not scheduled | 6 to 8 | not scheduled | pickers per shift, pick method |
 
 **Gate for M0:** the dock tasks (25 to 27) are merged, because the dock book changes behaviour and the golden fixture must be captured after it and re-baselined exactly once.
 
@@ -709,7 +721,7 @@ Every milestone ends with the definition of done of 9.8.
 
 *Scope.*
 - Data: `ops.trucks` and `calendar { startTod, startDay }` (5.3), schema 2.
-- Sim: `logistics/trucks.js` (6.3); hooks in `stepSource`, `flowSpace`, `acceptLoads`, `rescaleArrivals`, `finishLoading`; `stats-ops.js` (`ops.trucks`); insights `gate-queue-long`, `doors-bottleneck`, `unload-limited-by-vehicles`, `doors-idle`, `outbound-short`; validation `doors-too-few`, `doors-exceed-docks`, `docks-share-lane`, `timetable-empty`; cold restart for day plants in `runner.js`; `METRICS` and sweeps; dock share consumed from `DockBook.counters` if task 26 has shipped it.
+- Sim: `logistics/trucks.js` (6.3); hooks in `stepStation` (instead of `stepSource`), `flowSpace`, `flowCapacity`, `acceptLoads`, `rescaleArrivals`, `finishLoading` and the minimum batch of `collectDemand`; `stats-ops.js` (`ops.trucks`); insights `gate-queue-long`, `doors-bottleneck`, `unload-limited-by-vehicles`, `doors-idle`, `outbound-short`; validation `doors-too-few`, `doors-exceed-docks`, `docks-share-lane`, `timetable-empty`; cold restart for day plants in `runner.js`; `METRICS` and sweeps; dock share consumed from `DockBook.counters` if task 26 has shipped it.
 - UI: 7.2 in full. Examples 1 and 2. Help page. Report rows.
 
 *Files.* New: `js/model/validate-ops.js`, `js/sim/logistics/trucks.js`, `js/sim/stats-ops.js`, `js/sim/insights-ops.js`, `js/ui/panels/ops-trucks.js`, `timetable-paste.js`, `doors-card.js`, `js/ui/render/ops.js`, `js/ui/guidance-ops.js`, tests. Edited: 9.9.
@@ -722,7 +734,7 @@ Every milestone ends with the definition of done of 9.8.
 - A1.5 Little's-law cross-check: in a rate-mode plant with ample vehicles over 8 h, the time-average number of docked trucks equals the arrival rate times the mean door time within 5 %.
 - A1.6 The door check reproduces the numbers of Appendix A.1 (6 trucks an hour, 26 pallets, 90 s: 4.9 doors; 5 doors at 98 %, 6 at 82 %).
 - A1.7 Outbound pull: with `staging 0` and no truck at work nothing reaches the Goods out and the storage fill rises; with a truck pallets flow; a truck leaves full, or `maxDwell` after check-in short and only when `inboundTotal == 0`; `fillRate` equals loaded over planned.
-- A1.8 Arrival timestamps of trucks are identical for `dt` 0.1 and 0.25; mean gate wait differs by less than a margin recorded at build time (twice the observed difference).
+- A1.8 Arrival timestamps of trucks are identical for `dt` 0.1 and 0.25; mean gate wait differs by less than a margin recorded at build time (twice the observed difference). Recorded: 15 s asserted, 7.1 s observed (one door, a truck every 200 s on average, mean wait 1,438.6 s at `dt` 0.1 against 1,445.7 s at 0.25): an event is applied on the first tick at or after its time, so every door time is rounded up to a tick and the queue adds that up.
 - A1.9 Same seed gives an identical event digest; adding a truck station elsewhere does not change the arrival times of another station (fork independence).
 - A1.10 "Add dock doors" keeps the pallet rate: Starter (180 s, batch 1) gives 24 pallets every 72 min; a 600 s floor raises the pallets instead of shortening the gap.
 - A1.11 `parseTimetable` passes a table of at least 25 inputs (tab, semicolon, comma separators; `6:00`, `06:00`, `06.00`, `0600`, `6:00 Uhr`; decimal comma; header; bad rows; empty text) with expected rows and skips.
@@ -735,6 +747,13 @@ Every milestone ends with the definition of done of 9.8.
 *Cut line (dropped first).* Paste from spreadsheet, the gate-queue sparkline, `jitter` and `noShow`, the extension of example 2, dock share bars if task 26 has not shipped them.
 
 *Depends on* M0, and on task 26 for the dock share. *Risks* R3, R7, R8.
+
+**As built (M1 BUILT, verified 2026-10-09; code authoritative).** A1.1 to A1.16 are met, each by a named test or browser script (the pull request text lists them); the golden suite is byte for byte what it was at the end of M0. Where the build differs from the text above:
+- **Cut line.** Nothing from the cut-line list was dropped except the extension of example 2 (a timetable with a 10:00 peak and one shift), which needs the shifts of M2. Paste from spreadsheet, the gate-queue sparkline, `jitter` and `noShow` and the dock share bars are built.
+- **Not built from 7.x.** The 44 px tap popover on a door slot (7.7): the doors are drawn on the brick and the inspector prints their state as text ("Doors now: ..."), hit testing is unchanged. The findings do not carry `refs.window` and the gate finding has no "between 09:00 and 11:00" variant (6.9, copy 4): both need the day statistics of M2. The impact card of a day plant is replaced by the one-line hint and a toast whose action opens Experiments with whole-day run settings (6.2.7), but not yet with the two variants (the plant before the last edit and the plant now, acceptance A2.10 of M2). `ops.docks` was not created (6.8). The schedule keys `days`, `depart` and `mix` belong to M2, M4 and M5.
+- **UI.** "Run one day" and "Run one week" live in the section Clock of the plant settings (not in a Shifts tab, which M2 adds), run as fast as the machine allows and then pause, and set `duration` and `warmup 0` for the plant (the toast says so). The note `info:add-doors` is shown in Next steps but not in the guide-chip popover on the plan (it enlarged the popover and covered a cell). The time inputs are the browser's own, so an English browser shows 12-hour times.
+- **Checks.** `doors-too-few` and `doors-exceed-docks` still give two-step advice on a station with one dock (the Fix "Use 6 doors" is followed by the warning that 6 doors need 6 dock cells; the UI announces the second step in the door check and in the toast): a product decision about a single message is open (finding UX-5 of `tests/e2e/doors-review.mjs`).
+- **Other.** Seven test shards instead of five. `dockSkew.reason` keeps the word `detour` in the KPI report for a row of docks (pinned by the golden fixtures); only the insight text and the Checks tab say "one lane", and only for plants with trucks. "Add dock doors" on a Goods out reads the last run (`report.throughput.bySink`) and sizes the trucks to what the plant shipped. Minimum batches at a Goods in/out are clamped by `batchCeiling` (6.3.2, 6.3.3).
 
 ### 9.3 M2 Shifts, breaks, demand profiles
 
@@ -840,6 +859,8 @@ Calls only; logic is in new files. "Wave" is the engineer group that edits the f
 | `js/ui/app.js` | canvas | one tab line (Shifts); clock chip | 1, 2 |
 | `js/ui/guidance.js`, `dialogs.js`, `report.js`, `panels/impact.js` | | a hook, Help page and gallery, rows, day-plant condition | 1, 2 |
 | `js/ui/editor/tools.js`, `place.js`, `js/store/store.js`, renderer files | **roads and canvas** | **only M3b, after that wave has merged** | 3b |
+
+**As built (lines added / removed against the commit before, by `git diff --numstat`; code authoritative).** *M0* (`030ea67` to `a2af6d8`): `layout.js` 28 / 5, `serialize.js` 21 / 5, `defaults.js` 5 / 0, `validate.js` 2 / 0, `logistics.js` 6 / 1, `stations.js` 17 / 5, `dispatcher.js` 1 / 1 (the `st.capacity` read), `stats.js` 9 / 1, `insights.js` 7 / 0, and the new `extensions.js` (58 lines, the `reconcileLayout` seam that the design did not list). *M1* (`a2af6d8` to the M1 verification): `layout.js` 36 / 3 (`updateCalendar`, `addStation` ops, `duplicateStation` reconcile, `checkExtensionBlocks`), `serialize.js` 9 / 1, `logistics.js` 9 / 2, `stations.js` 27 / 3, `dispatcher.js` 5 / 3 (the minimum-batch clamp `batchCeiling`, one call), **`vehicles.js` 1 / 0** (one line in `finishLoading`, not two), `insights.js` 60 / 4, `experiments.js` 57 / 1, `examples.js` 127 / 4, `inspector.js` 14 / 4, `bricks.js` 5 / 0 (one `planOps` and one `paintOps` call), `dashboard.js` 6 / 2, `runner.js` 6 / 1, `app.js` 18 / 4, `guidance.js` 7 / 1, `report.js` 16 / 8, `impact.js` 3 / 2, `compare.js` 17 / 7, `checks.js` 3 / 1, `nextsteps.js` 3 / 1, `dialogs.js` (the Help page and, later, the About dialog). Not in the table of the design but touched by M1: `js/ui/editor.js` (2 / 1) and `js/ui/editor/keys.js` (14 / 0), because Delete and the arrows on a focused button of the timetable deleted or nudged the selected brick (UX review, `isOperatedControl`); `ui/panels/fields.js` (5 / 1, the stepper stores a typed out-of-range number at the nearest limit: "33" doors end at 32; it is the stepper of every panel); `scripts/test-tiers.mjs` (7 shards instead of 5), `.github/workflows/ci.yml` and `pages.yml` (the shard list). `docks.js`, `idle.js`, `graph.js`, `traffic.js` and the renderer files other than `render/bricks.js` are untouched.
 
 ---
 
@@ -978,13 +999,13 @@ Starter: 1 pallet every 180 s = 20 per hour. Pallets per truck 24, gap = 24 x 18
 
 ## Appendix B. Validation codes and insight rules
 
-Validation uses the existing `Issue` shape and stable ids (`code:ref`). Severities in brackets.
+Validation uses the existing `Issue` shape and stable ids (`code:ref`). Severities in brackets. The four checks of M1 run only for stations that have `ops.trucks` (a legacy plant gets no new issue); their ref is the station id.
 
 | Code | M | Fires when | Fix |
 |---|---|---|---|
-| `doors-too-few` (warning) | 1 | doors needed (A.1) exceeds the doors | Use N doors |
-| `doors-exceed-docks` (warning) | 1 | more doors than road cells touching the station | Extend the road along the edge |
-| `docks-share-lane` (warning) | 1 | two or more dock cells of a station are neighbouring road cells along its edge and the cells on their far side are not road cells | Show docks |
+| `doors-too-few` (warning) | 1 | the door check (A.1) puts the doors above 95 % busy (`needed / doors > 0.95`; A.1 itself says 5 doors for 4.9 needed run at 98 % and the queue explodes, so the rule does not wait for `needed` to exceed the doors) | Use N doors: the fewest that are at most 85 % busy; no button where even 32 doors would stay above 95 % (the message then says so) |
+| `doors-exceed-docks` (warning) | 1 | more doors than road cells touching the station (a station with no road cell at all has `station-no-dock` instead) | Extend the road along the edge |
+| `docks-share-lane` (warning) | 1 | two or more dock cells of a station are neighbouring road cells along its edge and the road is joined between them (a link either way). A second road behind them does NOT end the lane: measured, the first dock took every visit with and without one (Appendix C) | Show docks |
 | `timetable-empty` (warning) | 1 | schedule mode with no rows | Add a row |
 | `shift-gap` (warning) | 2 | a day has uncovered hours while a source without door binding keeps producing | Show shifts |
 | `staffing-needs-depot` (warning) | 2 | a fleet is bound to shifts but no depot is reachable | Add parking |
@@ -1000,16 +1021,16 @@ Validation uses the existing `Issue` shape and stable ids (`code:ref`). Severiti
 | `type-no-home` (error) | 5 | a type is produced that no outgoing flow accepts | Add types to a flow |
 | `type-refused` (warning) | 5 | a flow delivers a type the destination refuses | Allow the type |
 
-Insight rules (thresholds are named constants at the top of `insights-ops.js`; with a clock each carries `refs.window`).
+Insight rules (thresholds are named constants at the top of `insights-ops.js`; with a clock each carries `refs.window`). The ids of the M1 rules carry the station (`gate-queue-long:A`), the usual pattern of the older rules. The older `supply` rule ("A delivers more than the plant takes") is not applied to a Goods in with trucks: a truck releases its pallets into the yard at once, so the yard of a healthy station is full while a truck is unloaded.
 
 | Rule | M | Severity | Condition |
 |---|---|---|---|
-| `gate-queue-long` | 1 | warning from mean gate wait 15 min, critical from 45 min | mean gate wait above the constant |
-| `doors-bottleneck` | 1 | warning | door utilisation at least 85 %, gate wait at least 5 min, and not `unload-limited-by-vehicles` |
-| `unload-limited-by-vehicles` | 1 | warning | doors held while the Goods in is blocked (staging full) at least 25 % of the time or pallets wait long for a vehicle: "the doors are not the problem, the forklifts are" |
+| `gate-queue-long` | 1 | warning from mean gate wait 15 min, critical from 45 min | mean gate wait above the constant: the larger of the mean of the trucks that docked and the Little estimate from the queue (a queue that only grows is not hidden); at least three trucks in the window |
+| `doors-bottleneck` | 1 | warning | door utilisation at least 85 %, gate wait at least 5 min, and not `unload-limited-by-vehicles`; also not `outbound-short` on a Goods out, and not on a Goods in whose pallets are held back for a reason the older rules name. On a Goods out the advice adds that more doors only move the wait from the gate to the door when the trucks mostly wait for pallets |
+| `unload-limited-by-vehicles` | 1 | warning | doors busy or trucks queue, while the Goods in is blocked (staging full) at least 25 % of the time or pallets wait 2 min or more for a vehicle, and the verdict of the older transport rules is docks, traffic or vehicles: "the doors are not the problem, the forklifts are" |
 | `doors-idle` | 1 | info | at least 2 doors, utilisation below 30 %, gate wait below 1 min |
 | `outbound-short` | 1 | warning | at least 10 % of trucks left short |
-| `docks-unbalanced` | 1 | info | three or more docks and one holds at least 90 % of the visits (only if task 26 does not already report it) |
+| `docks-unbalanced` | 1 | info | three or more docks and one holds at least 90 % of the visits. Exists since the dock work (task 26); in a plant with trucks it says "the docks lie one behind the other on one lane" for a row of docks, as the Checks tab does |
 | `staffing-short` | 2 | warning | needed above staffed in an hour window |
 | `peak-hour-fails` | 2 | warning or critical | any hour with gate wait at or above the threshold or staffing short; blocks the "good" insight |
 | `shift-idle` | 2 | info | a shift's utilisation below 35 % |
@@ -1055,7 +1076,7 @@ for (const spurs of [false, true]) for (const enabled of [true, false]) {
 }
 ```
 
-Result on 2026-10-08: `[465,0,0,0,0,0]` for the row with the dock book on or off; `[311,155,2]` for the bays with it on and `[397,0,0]` with it off.
+Result on 2026-10-08: `[465,0,0,0,0,0]` for the row with the dock book on or off; `[311,155,2]` for the bays with it on and `[397,0,0]` with it off. On the tree of milestone M1 (the dock work merged and tuned since) the same recipe gives `[465,0,0,0,0,0]` for the row and `[310,156,1]` for the bays (seed 3, 3 simulated hours). With a second road behind the row joined to every dock cell the row gives `[202,0,0,0,0,0]` (the first dock takes every visit), joined only at its ends `[372,0,0,0,0,0]` (in both the other five docks get no visit at all) (`tests/m1.model.review.test.js`, M1-MODEL-REV-3): the reason `docks-share-lane` does not look at what lies behind the docks.
 
 Speed (section 4.2): for each of `EXAMPLES`, `new Simulation(ex.build(), { seed: 1 })`, time `sim.advance(3600)` with `performance.now()` and print `3600 / seconds`.
 

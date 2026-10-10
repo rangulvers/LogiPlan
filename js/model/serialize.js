@@ -230,9 +230,17 @@ function sharePayload(str) {
   let s = String(str).trim();
   const hash = s.indexOf('#');
   if (hash >= 0) s = s.slice(hash + 1);
-  s = s.replace(/\s+/g, '').replace(/^["'<([]+/, '').replace(/[.,;:!?)\]}>"']+$/, '');
+  s = s.replace(/\s+/g, '').replace(/^["'<([]+/, '');
+  // trailing punctuation: a backwards scan, not /[...]+$/ - that expression is retried at every start of a run and takes quadratic time on a
+  // link that ends in many such characters followed by a letter (a crafted #p= link would freeze the tab at start-up)
+  let end = s.length;
+  while (end > 0 && TRAILING_PUNCTUATION.includes(s[end - 1])) end--;
+  s = s.slice(0, end);
   return s.startsWith('p=') ? s.slice(2) : s;
 }
+
+/** The characters that may follow a link in running text (a full stop, a comma, a closing bracket or quote): ignored at its end. */
+const TRAILING_PUNCTUATION = '.,;:!?)]}>"\'';
 
 /** A deflate-raw decompressor, or the "please update your browser" error where the browser has none. */
 function createInflater() {

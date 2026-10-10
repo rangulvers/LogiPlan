@@ -14,22 +14,23 @@
 //   6  layering              the import graph against docs/ARCHITECTURE.md section 3, cycles, scripts/check-imports.mjs
 //   7  documents vs code     the numbers of 5.3 and Appendix B read from the document and compared with the code
 //
-// The defects (all `todo`, each with a test that fails today and passes with the fix; the cause and the evidence are in the failure message):
-//   M1-MODEL-REV-1   mergeOps / mergeCalendar: a junk value in a patch resets the field to its DEFAULT (a junk "schedule" wipes the timetable), against the
-//                    mutator convention of layout.js (keep the current value); latent, the panels guard their inputs today
-//   M1-MODEL-REV-2   parseTimetable reads the Excel day fraction "0.25" as 00:25 (H.MM with one hour digit; 7.2 lists HH.MM only)
-//   M1-MODEL-REV-3   docks-share-lane is silent when a second road lies behind the docks, but the simulation still sends every visit to the first dock
-//   M1-MODEL-REV-4   parseTimeField takes quadratic time on a long run of spaces (the paste dialog parses on every keystroke)
-//   M1-MODEL-REV-5   decodeShare takes quadratic time on a link that ends in a long run of punctuation (a crafted #p= link freezes the start-up)
-//   M1-MODEL-REV-6   the Fix "Use 32 doors" of doors-too-few leaves the warning in place when even 32 doors are too few
-//   M1-MODEL-REV-7   the message of doors-too-few reads "needs about 1 doors ... but it has 1" between 95 and 100 % busy
-//   M1-MODEL-REV-8   doorCheck(trucks, null) throws
-//   M1-MODEL-REV-9   an empty time cell before a tab is reported as "“24” is not a time"
-//   M1-MODEL-REV-10  "06:00:00" (the usual export notation) is refused (a design gap: 7.2 lists no seconds)
+// The defects the review found (the tests named "M1-MODEL-REV-n") and what became of them. The core fixer fixed all but one, and the tests are ordinary
+// regression tests now; the parser items (2, 4, 9, 10) were done in js/ui/panels/timetable-paste.js by the UI fixer:
+//   M1-MODEL-REV-1   fixed: mergeOps / mergeCalendar: a junk value in a patch keeps the CURRENT value (sanitizers take the current block)
+//   M1-MODEL-REV-2   fixed: parseTimetable no longer reads the Excel day fraction "0.25" as 00:25 (it is refused with a hint)
+//   M1-MODEL-REV-3   fixed: docks-share-lane also fires when a second road lies behind the docks (the simulation uses only the first dock there too)
+//   M1-MODEL-REV-4   fixed: parseTimeField takes linear time on a long run of spaces
+//   M1-MODEL-REV-5   fixed: decodeShare takes linear time on a link that ends in a long run of punctuation
+//   M1-MODEL-REV-6   fixed: no "Use 32 doors" where even 32 doors are too few; the text says so
+//   M1-MODEL-REV-7   fixed: the message of doors-too-few between 95 and 100 % busy
+//   M1-MODEL-REV-8   fixed: doorCheck(trucks, null) reads null as no options
+//   M1-MODEL-REV-9   fixed (by the UI fixer, js/ui/panels/timetable-paste.js trimKeepingTabs): an empty time cell before a tab is reported as "has no arrival time"
+//   M1-MODEL-REV-10  fixed: "06:00:00" (seconds that are zero) is read
 //
-// Tests named "M1-MODEL-REV-n" are REAL DEFECTS found by this review that are NOT fixed: they FAIL today and are `todo`, so that the suite stays green
-// until they are fixed (M1_MODEL_REVIEW_STRICT=1 turns them into ordinary tests). Tests named "DISCREPANCY" pin a place where the code (which is
-// authoritative) differs from a document: they pass, and say what the document should say. M1_MODEL_REVIEW_HEAVY=1 runs the larger sizes.
+// A `defect` is a REAL DEFECT that is NOT fixed: its test FAILS today and is `todo`, so that the suite stays green until it is fixed
+// (M1_MODEL_REVIEW_STRICT=1 turns it into an ordinary test). Tests named "DISCREPANCY" pin a place where the code (which is authoritative) differs from a
+// document: they pass, and say what the document should say (the documents were amended by the core fixer, see the tests named "docs:").
+// M1_MODEL_REVIEW_HEAVY=1 runs the larger sizes.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -723,7 +724,7 @@ test('M1-MODEL-REV schema 6: a mutator that forgets reconcileLayout is rolled ba
 // 5 (first part). A defect of the mutators: junk in a patch
 // =============================================================================================================================
 
-defect('M1-MODEL-REV-1 a junk value in a patch of ops.trucks or of the calendar RESETS the field to its default (and a junk "schedule" wipes the timetable) instead of keeping the current value', () => {
+test('M1-MODEL-REV-1 (fixed) a junk value in a patch of ops.trucks or of the calendar RESETS the field to its default (and a junk "schedule" wipes the timetable) instead of keeping the current value', () => {
   // layout.js header: "anything non-numeric ... keeps the CURRENT value when a mutator patches a field (an editor that commits NaN or '' while the user
   // clears a field must not wipe the setting)". mergeParams does so for params; mergeOps / mergeCalendar fall back to the DEFAULT.
   const layout = L.createLayout({ cols: 20, rows: 12 });
@@ -989,7 +990,7 @@ test('M1-MODEL-REV paste 1: 2,000 generated spreadsheet texts (separators, local
 });
 
 test('M1-MODEL-REV paste 2: nothing in 7.2 is guessed: bad fields are never read as another time or another number of pallets', () => {
-  // a field that is not a time of 7.2 is a bad row, whatever it looks like (am/pm, seconds, 24:00, a day fraction with a comma, full-width digits)
+  // a field that is not a time of 7.2 is a bad row, whatever it looks like (seconds that are not zero, 24:00, 13:00 PM, a day fraction, full-width digits)
   for (const time of H.BAD_TIMES) {
     const r = parseTimetable(`${time}\t24`);
     assert.equal(r.rows.length, 0, `“${time}” must not become a row`);
@@ -1001,7 +1002,10 @@ test('M1-MODEL-REV paste 2: nothing in 7.2 is guessed: bad fields are never read
     assert.equal(r.rows.length, 0, `“${p}” pallets must not become a row`);
   }
   // what 7.2 does accept, with its exact meaning
-  const good = { '6:00': 21600, '06:00': 21600, '06.00': 21600, '0600': 21600, '6:00 Uhr': 21600, '06:00h': 21600, '6:00 UHR': 21600, '0:00': 0, '23:59': 86399 - 59, '00:01': 60, '1230': 45000 };
+  const good = {
+    '6:00': 21600, '06:00': 21600, '06.00': 21600, '0600': 21600, '6:00 Uhr': 21600, '06:00h': 21600, '6:00 UHR': 21600, '0:00': 0, '23:59': 86399 - 59, '00:01': 60, '1230': 45000,
+    '06:00:00': 21600, '6:05:00': 21900, '6:00 AM': 21600, '6:00 pm': 64800, '12:00 AM': 0, '12:30 PM': 45000, '11:59 p.m.': 86340, '6.30 Uhr': 23400, '1:15 a.m.': 4500,
+  };
   for (const [text, at] of Object.entries(good)) assert.deepEqual(readBack(`${text};24`).rows, [[1, at, 24]], text);
   for (const [text, pallets] of Object.entries({ '24': 24, '24,0': 24, '24.0': 24, '24,00': 24, '1': 1, '200': 200, '': null })) assert.deepEqual(readBack(`6:00;${text}`).rows, [[1, 21600, pallets]], `“${text}”`);
   for (const [sep, name] of [['\t', 'tab'], [';', 'semicolon'], [',', 'comma']]) {
@@ -1061,17 +1065,18 @@ test('M1-MODEL-REV paste 3: parseTimetable never throws and never applies anythi
   assert.equal(rows[0].line, 1, 'and does not change its argument');
 });
 
-test('DISCREPANCY paste: the summary adds "(and N more)" to the sentence of copy 5 when more than one row was skipped; the document has the sentence without it', () => {
+test('docs: the summary of the paste preview adds "(and N more)" when more than one row was skipped, and copy 5 of 7.6 says so (the discrepancy of the review, fixed in the document)', () => {
   const text = [...Array.from({ length: 12 }, (_, i) => `${6 + i}:00;24`), '25:70;3', 'noon;4'].join('\n');
   const r = parseTimetable(text);
   assert.equal(r.rows.length, 12);
   assert.equal(summarizeTimetable(r), '12 rows read, 2 skipped: row 13 “25:70” is not a time (and 1 more). Nothing is applied until you press Use 12 rows.');
   const design = readFileSync(path.join(H.ROOT, 'docs', 'WAREHOUSE-DESIGN.md'), 'utf8');
   assert.ok(design.includes('"{n} rows read, {k} skipped: row {r} “{text}” is not a time. Nothing is applied until you press Use {n} rows."'), 'copy 5 of 7.6 is still in the document');
+  assert.ok(design.includes('(and {k-1} more)'), 'and the document says what is added when several rows were skipped');
   assert.equal(summarizeTimetable(parseTimetable(`${text.split('\n').slice(0, 12).join('\n')}\n25:70;3`)), '12 rows read, 1 skipped: row 13 “25:70” is not a time. Nothing is applied until you press Use 12 rows.', 'with one skipped row the copy is word for word');
 });
 
-defect('M1-MODEL-REV-2 parseTimetable reads an Excel day fraction such as "0.25" (a time cell shown as a number: 6:00) as 00:25, because "H.MM" with ONE hour digit is accepted; 7.2 lists HH.MM only', () => {
+test('M1-MODEL-REV-2 (fixed) parseTimetable reads an Excel day fraction such as "0.25" (a time cell shown as a number: 6:00) as 00:25, because "H.MM" with ONE hour digit is accepted; 7.2 lists HH.MM only', () => {
   // docs/WAREHOUSE-DESIGN.md 7.2: "Times: H:MM, HH:MM, HH.MM (two digits after the point, at most 59), HHMM". A single hour digit before a point is not on the list, and it is
   // exactly what a time cell shows in a General-formatted spreadsheet: 0.25 = 6:00, 0.5 = 12:00 (refused: one digit), 0.75 = 18:00. R12: never guess silently.
   for (const text of ['0.25;24', '0.75;24', '0.33;5', '6.00;24']) {
@@ -1082,7 +1087,7 @@ defect('M1-MODEL-REV-2 parseTimetable reads an Excel day fraction such as "0.25"
   assert.equal(parseTimeField('06.00'), 21600, 'HH.MM stays');
 });
 
-defect('M1-MODEL-REV-10 (design gap) a time with seconds that are zero, "06:00:00", is a bad row: it is the notation of most warehouse-system and database exports, and reading it loses nothing', () => {
+test('M1-MODEL-REV-10 (fixed, a design gap) a time with seconds that are zero, "06:00:00", is a bad row: it is the notation of most warehouse-system and database exports, and reading it loses nothing', () => {
   // 7.2 lists no notation with seconds, so the parser refuses it; ops.js timeOfDay (the sanitizer) reads HH:MM:SS. Zero seconds can be read without a guess; 06:00:30 stays refused.
   assert.equal(parseTimeField('06:00:00'), 21600);
   assert.equal(parseTimeField('6:05:00'), 21900);
@@ -1093,20 +1098,20 @@ defect('M1-MODEL-REV-10 (design gap) a time with seconds that are zero, "06:00:0
 /** Milliseconds of CPU for one call of `fn`. */
 const timed = (fn) => { const t0 = cpu(); fn(); return cpu() - t0; };
 
-defect('M1-MODEL-REV-4 parseTimeField / parseTimetable take QUADRATIC time on a field with a long run of spaces (the regexp /\\s*(?:uhr|h)$/ is tried at every start): the paste dialog parses on every keystroke', () => {
+test('M1-MODEL-REV-4 (fixed) parseTimeField / parseTimetable took QUADRATIC time on a field with a long run of spaces (the regexp /\\s*(?:uhr|h)$/ is tried at every start): the paste dialog parses on every keystroke', () => {
   // 10,000 spaces: linear code needs a millisecond or two, the regexp 100 to 160 ms (measured: 8e4 spaces = 6.9 s, 4 times the input = 16 times the time)
   const ms = timed(() => parseTimetable(`6:00${' '.repeat(10000)}x;24`));
   assert.ok(ms < 40, `10,000 spaces in a time field: ${ms.toFixed(0)} ms of CPU`);
 });
 
-defect('M1-MODEL-REV-5 decodeShare takes QUADRATIC time on a link that ends in a long run of punctuation followed by a letter (sharePayload strips trailing punctuation with an unanchored /[.,;:!?)\\]}>"\']+$/): a crafted #p= link freezes the tab at start-up', async () => {
+test('M1-MODEL-REV-5 (fixed) decodeShare took QUADRATIC time on a link that ends in a long run of punctuation followed by a letter (sharePayload strips trailing punctuation with an unanchored /[.,;:!?)\\]}>"\']+$/): a crafted #p= link freezes the tab at start-up', async () => {
   const t0 = cpu();
   await S.decodeShare(`${')'.repeat(10000)}a`).catch(() => {});
   const ms = cpu() - t0;
   assert.ok(ms < 30, `10,000 punctuation characters: ${ms.toFixed(0)} ms of CPU (linear: a millisecond; measured: 8e4 characters = 6.5 s, 4 times the input = 16 times the time)`);
 });
 
-defect('M1-MODEL-REV-9 a row whose time cell is EMPTY and whose pallets are given ("<TAB>24") is reported as “24” is not a time, not as "has no arrival time": the line is trimmed before its columns are split', () => {
+test('M1-MODEL-REV-9 (fixed) a row whose time cell is EMPTY and whose pallets are given ("<TAB>24") was reported as “24” is not a time, not as "has no arrival time": the line was trimmed before its columns were split (a tab at the ends of a line is now an empty cell)', () => {
   const r = parseTimetable('\t24\n6:00\t12');
   assert.equal(r.separator, 'tab');
   assert.deepEqual(r.rows.map((x) => x.at), [21600]);
@@ -1241,7 +1246,7 @@ test('M1-MODEL-REV validate 2: the boundaries: doors == docks is fine, one door 
 /** ASCII plants of odd shapes: the lanes the rule must find, and what the sim shows is not asserted here. A is a Goods in with trucks. */
 const SHAPES = [
   ['a row of three docks on one street', ['.AAA....', '.+++++..', '........'], ['1,1 2,1 3,1']],
-  ['the same row with a second road behind it', ['.AAA....', '.+++++..', '.+++++..', '........'], []],
+  ['the same row with a second road behind it: still one lane (the simulation sends every visit to the first dock there too, M1-MODEL-REV-3)', ['.AAA....', '.+++++..', '.+++++..', '........'], ['1,1 2,1 3,1']],
   ['the street turns a corner beside the station: the docks of one side', ['........', '.AA+....', '.AA+....', '..+++...', '........'], ['3,1 3,2']],
   ['two stations facing a one-cell street: the docks are shared and both are in a lane', ['AAAA....', '++++++..', 'BBBB....'], ['0,1 1,1 2,1 3,1']],
   ['three short spurs: every dock has a road behind it', ['.AAA....', '.+.+....', '.+.+....', '........'], []],
@@ -1281,7 +1286,7 @@ test('M1-MODEL-REV validate 3: docks-share-lane on odd shapes (corner, shared do
   }
 });
 
-defect('M1-MODEL-REV-3 docks-share-lane is silent for docks in a row that have a second road BEHIND them, but the simulation sends every visit to the first dock there too (Appendix B: "the cells on their far side are not road cells")', () => {
+test('M1-MODEL-REV-3 (fixed) docks-share-lane also fires for docks in a row that have a second road BEHIND them: the simulation sends every visit to the first dock there too', () => {
   const plant = (wide) => {
     const l = L.createLayout({ name: 'Dock lab', cols: 40, rows: 24, cellSize: 2 });
     L.paintRoadPath(l, [[4, 10], [30, 10], [30, 18], [4, 18], [4, 10]]);
@@ -1312,6 +1317,12 @@ defect('M1-MODEL-REV-3 docks-share-lane is silent for docks in a row that have a
   assert.ok(share(b) > 0.9, `with a second road behind the docks the first dock takes ${(share(b) * 100).toFixed(0)} % of the visits: ${b} (the Appendix C row without it: 465,0,0,0,0,0)`);
   assert.ok(VOPS.dockLanes(narrow, narrow.stations[0]).length > 0);
   assert.ok(VOPS.dockLanes(wide, wide.stations[0]).length > 0, 'the plan check must warn about the plant that shows the symptom');
+  assert.equal(issuesOf(wide, ['docks-share-lane']).length, 1, 'and so must the validator');
+  // a road behind the docks joined only at its ends shows the same (372 of 372 visits in 3 hours): the symptom does not depend on how the second road is joined
+  const ends = plant(true);
+  for (let x = 5; x <= 29; x++) { delete ends.roads[`${x},11`]; delete ends.roads[`${x},10`]; }
+  L.paintRoadPath(ends, [[4, 10], [30, 10]]);
+  assert.ok(VOPS.dockLanes(ends, ends.stations[0]).length > 0);
 });
 
 test('M1-MODEL-REV validate 4: the Fix buttons through the REAL store: one undo step, the issue is gone, nothing is invalid, undo restores the plant exactly', () => {
@@ -1361,7 +1372,7 @@ test('M1-MODEL-REV validate 4: the Fix buttons through the REAL store: one undo 
   assert.ok(applied['update-station'] > 20 && applied['extend-docks'] > 5 && applied.focus > 3, JSON.stringify(applied));
 });
 
-defect('M1-MODEL-REV-6 the Fix of doors-too-few offers "Use 32 doors" when even 32 doors are too few, and the warning is still there afterwards', () => {
+test('M1-MODEL-REV-6 (fixed) the Fix of doors-too-few offers "Use 32 doors" when even 32 doors are too few, and the warning is still there afterwards', () => {
   const layout = L.createLayout({ cols: 40, rows: 14 });
   L.paintRoadPath(layout, [[0, 6], [39, 6]]);
   for (let i = 0; i < 20; i++) L.paintRoadPath(layout, [[1 + i * 2, 6], [1 + i * 2, 3]]);
@@ -1374,7 +1385,7 @@ defect('M1-MODEL-REV-6 the Fix of doors-too-few offers "Use 32 doors" when even 
   assert.equal(issuesOf(layout, ['doors-too-few']).filter((i) => i.refs.stationId === s.id).length, 0, `after "${fix.label}" the warning is still there`);
 });
 
-defect('M1-MODEL-REV-7 the message of doors-too-few says "needs about 1 doors busy at once ... but it has 1" at 96 % busy: the 95 % rule fires before the doors are fewer than needed, and the sentence does not say so', () => {
+test('M1-MODEL-REV-7 (fixed) the message of doors-too-few says "needs about 1 doors busy at once ... but it has 1" at 96 % busy: the 95 % rule fires before the doors are fewer than needed, and the sentence does not say so', () => {
   const layout = L.createLayout({ cols: 30, rows: 14 });
   L.paintRoadPath(layout, [[2, 6], [28, 6]]);
   L.addStation(layout, { type: 'source', name: 'Goods in', x: 5, y: 4, w: 2, h: 2, ops: { trucks: { doors: 1, interArrival: { kind: 'const', mean: 3063, spread: 0 }, pallets: { kind: 'const', mean: 26, spread: 0 } } } });
@@ -1386,14 +1397,14 @@ defect('M1-MODEL-REV-7 the message of doors-too-few says "needs about 1 doors bu
   assert.doesNotMatch(issue.message, /needs about 1 .*but it has 1,/, issue.message);
 });
 
-defect('M1-MODEL-REV-8 doorCheck(trucks, null) throws a TypeError (the options default only covers undefined), where describeTrucks and the layout.js convention read null as "no options"', () => {
+test('M1-MODEL-REV-8 (fixed) doorCheck(trucks, null) throws a TypeError (the options default only covers undefined), where describeTrucks and the layout.js convention read null as "no options"', () => {
   const t = OPS.defaultTrucks();
   assert.doesNotThrow(() => DOORS.describeTrucks(t, null));
   assert.doesNotThrow(() => DOORS.doorCheck(t, null));
   assert.equal(DOORS.doorCheck(t, null).doors, 2);
 });
 
-test('DISCREPANCY validate: the code is a SUPERSET of Appendix B for doors-too-few (95 % busy, not "exceeds the doors"), silent for a station without a dock, checks only stations that have trucks, and joins the lane cells by road', () => {
+test('DISCREPANCY validate: the code is a SUPERSET of Appendix B for doors-too-few (95 % busy, not "exceeds the doors"), silent for a station without a dock, checks only stations that have trucks, and joins the lane cells by road (Appendix B says nothing of the link)', () => {
   // 1. Appendix B: "doors needed (A.1) exceeds the doors". Code: DOORS_TOO_FEW_UTILISATION = 0.95 (A.1 itself says 5 doors at 98 % explode).
   const layout = boundaryPlant(5, 5);
   L.updateStation(layout, layout.stations[0].id, { ops: { trucks: { doors: 5, checkIn: 300, checkOut: 300, interArrival: { kind: 'const', mean: 600, spread: 0 }, pallets: { kind: 'const', mean: 26, spread: 0 } } } });
@@ -1417,8 +1428,8 @@ test('DISCREPANCY validate: the code is a SUPERSET of Appendix B for doors-too-f
   assert.deepEqual(issuesOf(legacy, ['docks-share-lane']), [], 'a legacy Goods in with the same docks is not warned about');
   L.updateStation(legacy, goodsIn.id, { ops: { trucks: { doors: 2 } } });
   assert.equal(issuesOf(legacy, ['docks-share-lane']).length, 1, 'with trucks it is');
-  // 4. Appendix B: two NEIGHBOURING road cells along the edge with no road behind them. The code also demands that the road is joined between them (a link either way):
-  //    two one-way stubs side by side, one pointing up and one down, are neighbours that no vehicle can pass between.
+  // 4. Appendix B (as amended after M1-MODEL-REV-3): two NEIGHBOURING road cells along the edge. The code also demands that the road is joined between them (a link
+  //    either way): two one-way stubs side by side, one pointing up and one down, are neighbours that no vehicle can pass between.
   const stubs = L.normalizeLayout(layoutFromAscii(['.AAA....', '.^v.....', '........'], { stations: { A: { type: 'source', ops: { trucks: { doors: 2 } } } }, fleets: [{ count: 1 }] }));
   const a = stubs.stations.find((x) => x.id === 'A');
   assert.deepEqual([...H.literalLaneCells(stubs, a)].sort(), ['1,1', '2,1'], 'the sentence of Appendix B selects both');
@@ -1631,8 +1642,8 @@ test('M1-MODEL-REV docs 4: the tables OPS_KEYS and CALENDAR_KEYS list every key 
   for (const entry of CAL.CALENDAR_KEYS) assert.equal(entry.schema, 2);
 });
 
-test('DISCREPANCY docs: 5.3 says the clock is present once a station uses "schedule"; the code (and ARCHITECTURE 4.10) keep it after the last timetable goes, and ARCHITECTURE 4.10 and 6.10 disagree on what a day plant is', () => {
-  // 5.3: "present once any truck station uses schedule" and "the sanitizer creates calendar ... if missing". The code creates it AND keeps it.
+test('docs: the clock persists after the last timetable goes (5.3, ARCHITECTURE 4.10) and both documents define a day plant the same way (the discrepancy of the review, fixed in the documents)', () => {
+  // 5.3: the sanitizer creates the calendar if missing AND keeps it. The code does exactly that.
   const layout = L.createLayout({ cols: 12, rows: 8 });
   const s = L.addStation(layout, { type: 'source', x: 1, y: 1, ops: { trucks: { mode: 'schedule' } } });
   L.updateCalendar(layout, { startTod: 21600, startDay: 2 });
@@ -1645,7 +1656,13 @@ test('DISCREPANCY docs: 5.3 says the clock is present once a station uses "sched
   assert.equal(layout.schema, 2, 'the trucks block keeps the schema at 2');
   L.updateStation(layout, s.id, { ops: { trucks: null } });
   assert.equal(layout.schema, 1, 'a plant without any trucks and without a clock is v1 again');
-  // ARCHITECTURE 4.10 says so; WAREHOUSE-DESIGN 5.3 ("present once any truck station uses schedule") does not
+  // ARCHITECTURE 4.10 and WAREHOUSE-DESIGN 5.3 say so; the earlier wording of 5.3 ("present once any truck station uses schedule") is gone
   assert.match(ARCH, /nothing removes it by itself/);
-  assert.match(DESIGN, /present once any truck station uses "schedule"/);
+  assert.doesNotMatch(DESIGN, /present once any truck station uses "schedule"/);
+  assert.match(DESIGN, /created when a truck station uses "schedule", and kept until updateCalendar\(layout, null\) removes it/);
+  // a day plant is a clock AND a truck timetable until M2: 6.2.1, 6.2.7 and ARCHITECTURE 4.10 / 6.10 agree, and warmWanted() is not "whenever layout.calendar exists"
+  assert.match(DESIGN, /A plant with a clock and a truck timetable is called a \*\*day plant\*\*/);
+  assert.doesNotMatch(DESIGN, /returns false when `layout.calendar` exists/);
+  assert.match(ARCH, /A \*\*day plant\*\* \(cold restart in the runner, no impact card\) is, until M2[^.]*a clock AND a truck timetable/);
+  assert.match(ARCH, /Day plants\*\* \(`day-plant.js`, the one definition `isDayPlant\(layout\)`: the plant has a clock AND a truck timetable/);
 });

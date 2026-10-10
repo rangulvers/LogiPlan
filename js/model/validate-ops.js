@@ -36,16 +36,16 @@ const count = (n, one, many) => `${n} ${Number(n) === 1 ? one : many}`;
 // ---------------------------------------------------------------------------------------------------------
 
 /**
- * The four sides of a station: each the strip of cells that touch it (in increasing x or y), the step along the strip, and the step that
- * leads AWAY from the station. The strips are exactly the cells `docksOf` considers (the corners are not docks).
+ * The four sides of a station: each the strip of cells that touch it (in increasing x or y) and the step along the strip. The strips are exactly
+ * the cells `docksOf` considers (the corners are not docks).
  */
 function sidesOf(s) {
   const along = (n, at) => Array.from({ length: n }, (_, i) => at(i));
   return [
-    { cells: along(s.w, (i) => [s.x + i, s.y - 1]), step: E, away: [0, -1] }, // above the station
-    { cells: along(s.w, (i) => [s.x + i, s.y + s.h]), step: E, away: [0, 1] }, // below
-    { cells: along(s.h, (j) => [s.x - 1, s.y + j]), step: S, away: [-1, 0] }, // left
-    { cells: along(s.h, (j) => [s.x + s.w, s.y + j]), step: S, away: [1, 0] }, // right
+    { cells: along(s.w, (i) => [s.x + i, s.y - 1]), step: E }, // above the station
+    { cells: along(s.w, (i) => [s.x + i, s.y + s.h]), step: E }, // below
+    { cells: along(s.h, (j) => [s.x - 1, s.y + j]), step: S }, // left
+    { cells: along(s.h, (j) => [s.x + s.w, s.y + j]), step: S }, // right
   ];
 }
 
@@ -53,19 +53,23 @@ function sidesOf(s) {
 const linked = (layout, a, b, step) => hasLink(layout, a[0], a[1], step) || hasLink(layout, b[0], b[1], opposite(step));
 
 /**
- * The dock lanes of a station: groups of two or more dock cells that lie in a ROW on ONE LANE.
+ * The dock lanes of a station: groups of two or more dock cells that lie in a ROW and are JOINED BY ROAD.
  *
- * Definition (Appendix B, made precise). Take one side of the station: the strip of cells that touch it. Two neighbouring cells A and B of the
- * strip belong to a lane when (1) both are road cells (docks of the station), (2) the road is connected between them (a link A to B or B to A,
- * so they are one road and not two plates side by side), and (3) the cells on their FAR SIDE, one step away from the station behind A and
- * behind B, are not road cells: there is no parallel road behind them that a vehicle could use to get past one that is standing at a dock.
- * A dock lane is a maximal run of cells joined by such pairs. A vehicle that stops on the first dock of a lane cannot be passed by one that
- * wants a dock further along it (the dock book already knows: docks.js, "docks lined up on one lane block each other"), so the docks behind
- * stand free while vehicles queue on the road.
+ * Definition (Appendix B, made precise and corrected by a measurement). Take one side of the station: the strip of cells that touch it. Two
+ * neighbouring cells A and B of the strip belong to a lane when (1) both are road cells (docks of the station) and (2) the road is connected
+ * between them (a link A to B or B to A, so they are one road and not two plates side by side). A dock lane is a maximal run of cells joined by
+ * such pairs. A vehicle that stops on the first dock of a lane cannot be passed by one that wants a dock further along it (the dock book already
+ * knows: docks.js, "docks lined up on one lane block each other"), so the docks behind stand free while vehicles queue on the road.
+ *
+ * What the first version of this rule added - "and the cells on their far side are not road cells" - is gone: a second road BEHIND the docks
+ * does not help in this engine. The routes are shortest paths and the dock book never prefers a farther dock, so with six docks in a row
+ * (3 simulated hours, a pallet every 14 s, 8 forklifts) the first dock took all 465 visits when nothing lay behind the docks, 202 of 202 with
+ * a parallel road joined to every dock cell, and 372 of 372 with one joined at its ends (tests/m1.model.review.test.js, M1-MODEL-REV-3).
+ * A rule that stays silent there tells the planner the docks are fine while five of them stand idle.
  *
  * Docks that are not neighbours (three separate short side roads, the "bays" of the Dock lab) are never in a lane; neither are two
- * neighbouring dock cells that have a road behind them or that are not linked; a dock row on one side of the station is separate from one
- * on another side (corners are not docks).
+ * neighbouring dock cells that are not linked; a dock row on one side of the station is separate from one on another side (corners are not
+ * docks).
  *
  * @param {object} layout
  * @param {object} station a station of `layout`
@@ -74,11 +78,11 @@ const linked = (layout, a, b, step) => hasLink(layout, a[0], a[1], step) || hasL
 export function dockLanes(layout, station) {
   const lanes = [];
   for (const side of sidesOf(station)) {
-    const { cells, step, away } = side;
-    const isLane = cells.map((c) => roadAt(layout, c[0], c[1]) !== null && roadAt(layout, c[0] + away[0], c[1] + away[1]) === null);
+    const { cells, step } = side;
+    const isDock = cells.map((c) => roadAt(layout, c[0], c[1]) !== null);
     let lane = null;
     for (let i = 0; i + 1 < cells.length; i++) {
-      if (isLane[i] && isLane[i + 1] && linked(layout, cells[i], cells[i + 1], step)) {
+      if (isDock[i] && isDock[i + 1] && linked(layout, cells[i], cells[i + 1], step)) {
         if (!lane) lane = [cells[i]];
         lane.push(cells[i + 1]);
       } else if (lane) {
@@ -150,8 +154,14 @@ function checkDoorsTooFew(ctx, add) {
     const check = doorCheck(trucks, { demandFactor: ctx.layout.settings && ctx.layout.settings.demandFactor });
     if (!check.tooFew) continue;
     const { parts } = check;
-    const message = `At the busiest hour ${q(station)} needs about ${parts.need} doors busy at once (${count(parts.trucks, 'truck', 'trucks')} an hour, ${count(parts.minutes, 'minute', 'minutes')} at a door each), but it has ${check.doors}, so trucks will queue at the gate.`;
-    const better = check.action ? `${count(parts.better, 'door', 'doors')} would be busy ${parts.util} % of the time. ` : '';
+    const load = `${count(parts.trucks, 'truck', 'trucks')} an hour, ${count(parts.minutes, 'minute', 'minutes')} at a door each`;
+    // the check fires from 95 % busy, so the doors can be a hair more than the trucks need: "needs about 1 doors ... but it has 1" would not make sense
+    const message = check.needed > check.doors
+      ? `At the busiest hour ${q(station)} needs about ${parts.need} ${parts.need === '1' ? 'door' : 'doors'} busy at once (${load}), but it has ${check.doors}, so trucks will queue at the gate.`
+      : `At the busiest hour ${q(station)} keeps ${check.doors === 1 ? 'its door' : `its ${check.doors} doors`} busy ${parts.utilNow} % of the time (${load}), so trucks will queue at the gate.`;
+    const better = check.action
+      ? `${count(parts.better, 'door', 'doors')} would be busy ${parts.util} % of the time. `
+      : check.suggestionEnough === false ? `Even ${count(parts.better, 'door', 'doors')}, the most a station can have, would be busy ${parts.util} % of the time: fewer or smaller trucks, or a shorter time at the door, help more than doors. ` : '';
     const basis = check.basis === 'measured' ? 'Measured in the last run.' : `This is an estimate from ${parts.tPallet} s per pallet; Results shows the real figure after a run.`;
     add('warning', 'doors-too-few', station.id, message, `${better}Door time includes waiting for forklifts, so more forklifts shorten it. ${basis}`, { stationId: station.id });
   }

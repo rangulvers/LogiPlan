@@ -692,6 +692,10 @@ body.is-resizing {
   .statusbar {
     display: none; /* a phone held sideways needs every line for the plan */
   }
+
+  .topbar__more {
+    display: inline-flex; /* the version chip lives in the status line: without it the More menu is the way to "About and what is new" at every width */
+  }
 }
 
 /* Compact screens (a phone, upright or sideways): the display options sit behind one button instead of covering the plan. */

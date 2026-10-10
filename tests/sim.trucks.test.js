@@ -5,12 +5,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { assertInvariants, createWorld, eventDigest, injectLoads, nonFinitePaths } from './helpers/logistics-invariants.js';
-import { attachStats, microPlant, runTrucks, truckDigest } from './helpers/trucks-gen.js';
+import { attachStats, fuzzPlant, microPlant, runTrucks, truckDigest } from './helpers/trucks-gen.js';
 import { layoutFromAscii } from './helpers/ascii.js';
 import { dist } from '../js/model/defaults.js';
 import { normalizeLayout } from '../js/model/layout.js';
 import { Simulation } from '../js/sim/engine.js';
-import { GATE_LIMIT } from '../js/sim/logistics/trucks.js';
+import { BATCH_WAIT, GATE_LIMIT, TruckDesk } from '../js/sim/logistics/trucks.js';
 
 const CONST = (mean) => dist('const', mean, 0);
 const arrivals = (w, id) => w.named('truckArrived').filter((p) => p.stationId === id).map((p) => p.at);
@@ -217,7 +217,10 @@ test('timetable: jitter moves a truck by at most +-jitter, never before time 0; 
   const w = createWorld(normalizeLayout(layout), { dt: 5, check: true });
   w.run(3 * 86400);
   const times = arrivals(w, 'A');
-  assert.equal(times.length, 3 * 4 - 0, 'every row of every day arrives once (the row in the past of day 0 included? no: see below)'.length > 0 ? times.length : 0);
+  // day 0 starts at 23:53 (startTod 86000): its rows at 00:01:40 and 00:06:40 are in the past, the two late rows come at t = 300 and 399; days 1 and 2 bring
+  // all four rows, day 3 begins at t = 173200 and brings its two early rows, while its two late rows (t = 259500 and 259599, after the end of the run) come
+  // inside the run only when their jitter moves them forward by more than 300 s / 399 s: 12 trucks for sure, 14 at most (which of the two depends on the draws)
+  assert.ok(times.length >= 12 && times.length <= 14, `${times.length} arrivals`);
   assert.deepEqual(times, [...times].sort((a, b) => a - b), 'the arrivals come in time order, also when a jittered truck of the next day beats the last one of this day');
   const nominal = [];
   for (let day = 0; day < 4; day++) for (const r of rows) nominal.push(day * 86400 + r.at - 86000);
@@ -650,4 +653,174 @@ test('24 hours: a plant with two truck stations and a timetable runs in bounded 
   assert.ok(w.lg.liveLoads < 500, `${w.lg.liveLoads} live pallets after a day`);
   assert.ok(w.named('truckArrived').length > 60 && w.lg.completed > 300, `${w.named('truckArrived').length} trucks, ${w.lg.completed} pallets`);
   assert.ok(seconds < 20, `24 simulated hours took ${seconds.toFixed(1)} s of CPU`);
+});
+
+// ---- the minimum batch of a flow at a truck station (M1-SIM-REV-1 and 2) -----------------------------------------------------
+
+/** The sizes of the orders of the plant, in the order they were given. */
+const orderSizes = (w, flowId = null) => w.named('orderAssigned').filter((p) => flowId === null || p.order.flowId === flowId).map((p) => p.order.qty);
+
+test('a minimum batch does not hold the last pallets of a truck back: they go as a smaller batch, the door is freed (Goods in)', () => {
+  const layout = inbound(
+    { doors: 1, checkIn: 0, checkOut: 0, interArrival: CONST(600), pallets: CONST(6) },
+    { flows: [['A', 'C', { batchMin: 4 }]], fleet: { count: 2, capacity: 4 } },
+  );
+  const w = createWorld(layout, { dt: 0.25, check: true });
+  w.run(3600);
+  const desk = w.lg.stationById.get('A').trucks;
+  assert.equal(desk.arrived, 6, 'a truck every 10 minutes, the first at 0');
+  assert.ok(desk.departed >= 5, `${desk.departed} of ${desk.arrived} trucks left: only the last one may still be at its door, nothing waits for a batch that only the next truck could bring`);
+  assert.equal(desk.gate.length, 0);
+  assert.deepEqual([...new Set(orderSizes(w))].sort(), [2, 4], 'six pallets go as 4 and 2');
+  assert.equal(orderSizes(w).length % 2, 0, 'two trips per truck');
+});
+
+test('a minimum batch still waits for pallets that are on their way: the check-in of the next truck keeps the remainder back, a truck at the gate does not', () => {
+  // two doors; truck 1 (6 pallets) is released at 160, truck 2 (6 pallets) at 161: the 2 pallets left of truck 1 wait for them, so the batches are 4, 4, 4
+  const timetable = (doors) => inbound(
+    { mode: 'schedule', doors, checkIn: 60, checkOut: 0, schedule: [{ at: 100, pallets: 6 }, { at: 101, pallets: 6 }] },
+    { flows: [['A', 'C', { batchMin: 4 }]], fleet: { count: 1, capacity: 4, loadTime: 5, unloadTime: 5 }, calendar: { startTod: 0 } },
+  );
+  const together = createWorld(timetable(2), { dt: 0.25, check: true });
+  together.run(1500);
+  assert.deepEqual(orderSizes(together), [4, 4, 4]);
+  // with ONE door the second truck cannot dock, so it cannot complete the batch: it waits at the gate and is not counted
+  const queue = createWorld(timetable(1), { dt: 0.25, check: true });
+  queue.run(1500);
+  assert.deepEqual(orderSizes(queue), [4, 2, 4, 2], 'the second truck waits at the gate (it is not counted), so the 2 left of the first one go on their own');
+  assert.equal(queue.lg.stationById.get('A').trucks.departed, 2);
+});
+
+test('a minimum batch waits for the next truck while a door is free for it - small trucks still make full batches - but not longer than BATCH_WAIT', () => {
+  // six doors, a truck of ONE pallet every minute, a batch of three: the trucks hold their doors for a few minutes and every trip carries three pallets
+  const small = createWorld(inbound(
+    { doors: 6, checkIn: 0, checkOut: 0, interArrival: CONST(60), pallets: CONST(1) },
+    { flows: [['A', 'C', { batchMin: 3 }]], fleet: { count: 2, capacity: 4 } },
+  ), { dt: 0.25, check: true });
+  small.run(1800);
+  assert.ok(orderSizes(small).length >= 5 && orderSizes(small).every((q) => q === 3), `trips: ${orderSizes(small)}`);
+  // the last truck of a timetable (a door is free, nobody comes): its remainder waits BATCH_WAIT for a batch that never fills, then goes and frees the door
+  const last = createWorld(inbound(
+    { mode: 'schedule', doors: 2, checkIn: 0, checkOut: 0, schedule: [{ at: 600, pallets: 6 }] },
+    { flows: [['A', 'C', { batchMin: 4 }]], fleet: { count: 1, capacity: 4, loadTime: 5, unloadTime: 5 }, calendar: { startTod: 0 } },
+  ), { dt: 0.25, check: true });
+  last.run(600 + BATCH_WAIT - 20);
+  assert.deepEqual(orderSizes(last), [4], 'the 2 left over still wait: a second truck could complete the batch');
+  assert.equal(last.lg.stationById.get('A').trucks.docked.length, 1);
+  last.run(60 + 200);
+  assert.deepEqual(orderSizes(last), [4, 2], 'after BATCH_WAIT the remainder goes');
+  const sent = last.named('orderAssigned').map((p) => p.t);
+  assert.ok(sent[1] - 600 >= BATCH_WAIT - 1 && sent[1] - 600 < BATCH_WAIT + 30, `the remainder was sent ${sent[1] - 600} s after the truck was ready`);
+  assert.equal(last.lg.stationById.get('A').trucks.departed, 1, 'and the truck left');
+  // a second truck within that time completes the batch
+  const joined = createWorld(inbound(
+    { mode: 'schedule', doors: 2, checkIn: 0, checkOut: 0, schedule: [{ at: 600, pallets: 6 }, { at: 1000, pallets: 6 }] },
+    { flows: [['A', 'C', { batchMin: 4 }]], fleet: { count: 1, capacity: 4, loadTime: 5, unloadTime: 5 }, calendar: { startTod: 0 } },
+  ), { dt: 0.25, check: true });
+  joined.run(1300);
+  assert.deepEqual(orderSizes(joined), [4, 4, 4], '2 + 6 pallets: two full batches and the first truck is done');
+});
+
+test('a minimum batch is only lowered at a truck station: legacy flows and flows between other stations keep it', () => {
+  // Goods in without trucks: 6 pallets arrive at once, the batch of 4 sends 4 and the other 2 wait for more (they do not arrive)
+  const legacy = microPlant({ storage: false, aParams: { interArrival: CONST(100000), batch: 6 }, flows: [['A', 'C', { batchMin: 4 }]], fleet: { count: 2, capacity: 4 } });
+  const w = createWorld(legacy, { dt: 0.25, check: true });
+  w.run(600);
+  assert.deepEqual(orderSizes(w), [4], 'the remainder of 2 waits for ever, as before');
+  // a flow from a Goods in with trucks into a storage: same rule as into a sink
+  const viaStorage = createWorld(microPlant({
+    storage: true, inbound: { doors: 1, checkIn: 0, checkOut: 0, interArrival: CONST(600), pallets: CONST(6) },
+    flows: [['A', 'S', { batchMin: 4 }], ['S', 'C']], fleet: { count: 2, capacity: 4 },
+  }), { dt: 0.25, check: true });
+  viaStorage.run(3600);
+  assert.ok(viaStorage.lg.stationById.get('A').trucks.departed >= 5);
+});
+
+test('a minimum batch with several flows out of a Goods in: the remainder of each flow goes, nothing is held for a flow that gets no more', () => {
+  const layout = inbound(
+    { doors: 1, checkIn: 0, checkOut: 0, interArrival: CONST(900), pallets: CONST(9) },
+    { storage: true, flows: [['A', 'S', { batchMin: 4 }], ['A', 'C', { batchMin: 4 }], ['S', 'C']], fleet: { count: 3, capacity: 4 } },
+  );
+  const w = createWorld(layout, { dt: 0.25, check: true });
+  w.run(5400);
+  const desk = w.lg.stationById.get('A').trucks;
+  assert.equal(desk.arrived, 6);
+  assert.ok(desk.departed >= 5, `${desk.departed} of ${desk.arrived} trucks left`);
+});
+
+test('Goods out: the places left on a truck are filled although they are fewer than the minimum batch (maxDwell 0 = until full)', () => {
+  const layout = microPlant({
+    storage: true, goodsIn: false,
+    outbound: { doors: 1, checkIn: 0, checkOut: 0, interArrival: CONST(900), pallets: CONST(22), staging: 0, maxDwell: 0 },
+    flows: [['S', 'C', { batchMin: 4 }]], fleet: { count: 3, capacity: 4 },
+  });
+  const w = createWorld(layout, { dt: 0.25, check: true });
+  injectLoads(w.lg, 'f1', 200);
+  w.run(4 * 3600);
+  const desk = w.lg.stationById.get('C').trucks;
+  assert.ok(desk.departed >= 3, `${desk.arrived} trucks arrived, ${desk.departed} left`);
+  assert.equal(desk.short, 0, 'every truck left with its 22 pallets');
+  assert.equal(desk.loadedTotal, desk.planned);
+  assert.ok(orderSizes(w).includes(2), 'the last two places are filled by a trip of 2');
+  assert.ok(orderSizes(w).every((q) => q === 4 || q === 2));
+});
+
+test('Goods out: with maxDwell a truck fills up too, and a short departure is only the supply being short', () => {
+  const layout = microPlant({
+    storage: true, goodsIn: false,
+    outbound: { doors: 1, checkIn: 0, checkOut: 0, interArrival: CONST(1200), pallets: CONST(22), staging: 0, maxDwell: 3600 },
+    flows: [['S', 'C', { batchMin: 4 }]], fleet: { count: 3, capacity: 4 },
+  });
+  const w = createWorld(layout, { dt: 0.25, check: true });
+  injectLoads(w.lg, 'f1', 200);
+  w.run(4 * 3600);
+  const desk = w.lg.stationById.get('C').trucks;
+  assert.ok(desk.departed >= 6 && desk.short === 0, `${desk.departed} trucks left, ${desk.short} short, with 200 pallets in the storage`);
+});
+
+test('Goods out with staging: the staging space is filled in batches as before, only the remainder is smaller', () => {
+  const layout = microPlant({
+    storage: true, goodsIn: false,
+    outbound: { doors: 2, checkIn: 0, checkOut: 0, interArrival: CONST(2400), pallets: CONST(10), staging: 3, maxDwell: 1800 },
+    flows: [['S', 'C', { batchMin: 4 }]], fleet: { count: 3, capacity: 4 },
+  });
+  const w = createWorld(layout, { dt: 0.25, check: true });
+  injectLoads(w.lg, 'f1', 100);
+  w.run(3 * 3600);
+  const desk = w.lg.stationById.get('C').trucks;
+  assert.equal(desk.short, 0);
+  assert.ok(desk.departed >= 3);
+  assert.equal(w.lg.stationById.get('C').fillLabel, `${desk.staged.length}/6`);
+});
+
+test('a Goods out without staging space shows no "0/0" on its brick', () => {
+  const none = createWorld(microPlant({ storage: true, outbound: { doors: 1, staging: 0 }, fleet: null }), { dt: 1 });
+  const c = none.lg.stationById.get('C');
+  assert.equal(c.fillLabel, '');
+  assert.equal(c.fill, 0);
+  const some = createWorld(microPlant({ storage: true, outbound: { doors: 2, staging: 3 }, fleet: null }), { dt: 1 });
+  assert.equal(some.lg.stationById.get('C').fillLabel, '0/6');
+});
+
+// ---- the invariants helper is not vacuous --------------------------------------------------------------------------------------
+
+test('the invariants of 6.3.5 catch engine bugs: a door freed at half the check-out or half a minute late, a room that forgets the places promised or counts a truck in check-in', () => {
+  // (the seeds were calibrated: each plant reaches the bug within 900 s; if an engine change moves them, scan seeds 1..30 for one that does and put it here)
+  const P = TruckDesk.prototype;
+  const bugs = [
+    ['the door is free after half of the check-out', 'beginCheckout', (o) => function (truck, t) { o.call(this, truck, t); truck.freeAt = t + this.checkOut / 2; }, 5, /began its check-out/],
+    ['the door stays blocked half a minute after the check-out', 'beginCheckout', (o) => function (truck, t) { o.call(this, truck, t); truck.freeAt = t + this.checkOut + 30; }, 2, /began its check-out/],
+    ['room() ignores the places already promised', 'room', (o) => function (st) { const saved = st.inboundTotal; st.inboundTotal = 0; try { return o.call(this, st); } finally { st.inboundTotal = saved; } }, 2, /room \d+ is not|places promised/],
+    ['room() counts a truck that is still in check-in', 'room', (o) => function (st) { let room = o.call(this, st); for (const k of this.docked) if (k.state === 'checkin') room += k.plan; return room; }, 3, /room \d+ is not|places promised/],
+  ];
+  for (const [what, method, make, seed, message] of bugs) {
+    const original = P[method];
+    P[method] = make(original);
+    let failure = null;
+    try {
+      createWorld(fuzzPlant(seed, { style: seed % 2 ? 'hostile' : 'busy' }), { dt: 0.5, seed, check: true }).run(900);
+    } catch (e) { failure = e.message; } finally { P[method] = original; }
+    assert.ok(failure !== null && message.test(failure), `${what}: ${failure === null ? 'not caught' : failure.split('\n').slice(0, 2).join(' | ')}`);
+  }
+  createWorld(fuzzPlant(5, { style: 'hostile' }), { dt: 0.5, seed: 5, check: true }).run(900); // and the real engine passes the same plants
 });

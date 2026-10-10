@@ -57,7 +57,7 @@ import {
   planGrowth, describeGrowth, limitText, sidesOf, noteGrowth, contentShift, reachPoint, autoPanVelocity, blockOn, blockPlan, CHIP_TOOLS,
 } from './editor/grow.js';
 import { TOOL_NAMES, isStrokeTool, toolCursor, toolHint, nextObstacleKind, nextSpeedFactor } from './editor/tools.js';
-import { keyCommand, isTypingTarget, dialogOpen } from './editor/keys.js';
+import { keyCommand, isTypingTarget, isOperatedControl, isSelectionEdit, dialogOpen } from './editor/keys.js';
 import { clampCell, dragThreshold } from './editor/snapping.js';
 import { createPathTool } from './editor/roads.js';
 import { createPlaceTool } from './editor/place.js';
@@ -829,6 +829,7 @@ export class Editor {
       return;
     }
     const command = keyCommand(e);
+    if (isSelectionEdit(command) && isOperatedControl(e.target)) return; // Delete / arrows on a focused button belong to the button, not to the selected station
     if (command && this.run(command, e)) e.preventDefault();
   }
 

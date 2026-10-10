@@ -227,7 +227,11 @@ export function stepperField(opts) {
   const dec = h('button', { class: 'stepper__btn', type: 'button', 'aria-label': `Decrease ${label || ''}`.trim(), onclick: () => apply(last - step) }, icon('minus', { size: 14 }));
   const inc = h('button', { class: 'stepper__btn', type: 'button', 'aria-label': `Increase ${label || ''}`.trim(), onclick: () => apply(last + step) }, icon('plus', { size: 14 }));
   input.addEventListener('input', () => { const v = Number(input.value); if (input.value !== '' && Number.isFinite(v) && v >= min && v <= max) { last = Math.round(v); onChange?.(last); } });
-  input.addEventListener('change', () => apply(Number(input.value) || last, false));
+  input.addEventListener('change', () => { // leaving the field: an out-of-range number ends at the nearest limit AND is stored ("33" doors ends at 32, not at the "3" typed first)
+    const before = last;
+    const c = Math.min(max, Math.max(min, Math.round(Number(input.value) || last)));
+    apply(c, c !== before);
+  });
   shell.el.append(h('div', { class: 'stepper' }, dec, input, inc));
   if (shell.hintEl) shell.el.append(shell.hintEl);
   return {

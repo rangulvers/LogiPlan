@@ -19,10 +19,10 @@
 import { h } from '../../util/dom.js';
 import { formatNumber, round } from '../../util/format.js';
 import { icon } from '../icons.js';
-import { getStation, updateCalendar, updateStation } from '../../model/layout.js';
+import { docksOf, getStation, updateCalendar, updateStation } from '../../model/layout.js';
 import { TRUCK_RANGES, TRUCK_TYPES, MAX_SCHEDULE_ROWS, defaultTrucks, timeOfDay, trucksOf } from '../../model/ops.js';
 import { doorCheck, peakRowsPerHour, describeTrucks } from '../../model/doors.js';
-import { formatTimeOfDay, usesTimetable } from '../../model/calendar.js';
+import { SECONDS_PER_DAY, formatTimeOfDay, usesTimetable } from '../../model/calendar.js';
 import { FIX_ROW_AT } from '../../model/validate-ops.js';
 import { addDockDoors } from '../guidance-ops.js';
 import { coldRestartText, shouldShowColdRestartToast } from '../day-plant.js';
@@ -30,6 +30,7 @@ import { addStyles } from '../ops-styles.js';
 import { createReading, describeDoors, readDoors } from '../render/ops.js';
 import { numberField, selectField, stepperField, segmentedField, section, humanSeconds } from './fields.js';
 import { openTimetableDialog } from './timetable-dialog.js';
+import { whenSettled } from './time-input.js';
 
 export const SECTION_TITLE = 'Trucks and doors';
 const INLINE_W = '120px';
@@ -71,6 +72,35 @@ export function scheduleWithout(schedule, index) {
   return schedule.filter((_, i) => i !== index).map((row) => ({ ...row }));
 }
 
+/**
+ * The trucks of a rate as the rows of a timetable (UX-8): switching from "Generate from rate" to "Use a timetable" keeps the load of the plant instead of
+ * throwing the trucks away. One day of the rate, a truck every `interArrival.mean` from 00:00 with the pallets of an average truck (an empty cell, "drawn", when
+ * the pallets vary); at most MAX_SCHEDULE_ROWS rows (a closer rate gets the rows farther apart and more pallets per truck, the same pallets a day).
+ * @returns {Array<{ at: number, pallets: number|null }>}
+ */
+export function rowsFromRate(trucks) {
+  const gap = trucks && trucks.interArrival && trucks.interArrival.mean;
+  if (!(gap > 0)) return [];
+  const dist = trucks.pallets || {};
+  const mean = finite(dist.mean) ? dist.mean : 24;
+  const spacing = Math.max(gap, SECONDS_PER_DAY / MAX_SCHEDULE_ROWS);
+  const count = Math.max(1, Math.floor(SECONDS_PER_DAY / spacing));
+  const scaled = spacing > gap;
+  const each = Math.max(1, Math.min(TRUCK_RANGES.rowPallets[1], Math.round(scaled ? mean * (spacing / gap) : mean)));
+  const varies = !scaled && ((dist.kind && dist.kind !== 'const' && dist.kind !== 'normal' && dist.kind !== 'uniform') || (finite(dist.spread) && dist.spread > 0));
+  const rows = [];
+  for (let i = 0; i < count; i++) rows.push({ at: Math.min(SECONDS_PER_DAY - 1, Math.round(i * spacing)), pallets: varies ? null : each });
+  return rows;
+}
+
+/** The sentence under the switch when the timetable was started from the rate: "A truck about every 17 min with 24 pallets became 85 rows". */
+export function seedText(trucks, rows) {
+  const first = rows[0];
+  const gap = trucks.interArrival.mean;
+  const each = first && first.pallets !== null ? `${first.pallets} ${first.pallets === 1 ? 'pallet' : 'pallets'}` : `${round(trucks.pallets.mean, 1)} pallets on average`;
+  return `Your rate (a truck about every ${humanSeconds(gap)} with ${each}) became ${formatNumber(rows.length)} ${rows.length === 1 ? 'row' : 'rows'} of the timetable, so the plant gets the same trucks. Edit them, paste your own, or remove all rows.`;
+}
+
 /** "12 trucks a day, 288 pallets, at most 3 in any hour": what a timetable amounts to. null for an empty one. */
 export function timetableSummary(trucks, demandFactor = 1) {
   const rows = Array.isArray(trucks && trucks.schedule) ? trucks.schedule : [];
@@ -78,14 +108,24 @@ export function timetableSummary(trucks, demandFactor = 1) {
   const d = describeTrucks(trucks, { demandFactor });
   const peak = peakRowsPerHour(rows);
   const pallets = Math.round(d.palletsPerTruck * rows.length);
-  return `${formatNumber(rows.length)} ${rows.length === 1 ? 'truck' : 'trucks'} a day, ${formatNumber(pallets)} ${pallets === 1 ? 'pallet' : 'pallets'}, at most ${formatNumber(peak)} in any hour`;
+  return `${formatNumber(rows.length)} ${rows.length === 1 ? 'truck' : 'trucks'} a day, ${formatNumber(pallets)} ${pallets === 1 ? 'pallet' : 'pallets'}, at most ${formatNumber(peak)} in any hour${demandNote(demandFactor, ' (', ')')}`;
+}
+
+/**
+ * Where the demand slider of the plant (Simulate > Demand) enters the numbers of this section (UX-23): the fields keep what the planner typed, the lines that
+ * count (trucks an hour, pallets, the door check) include the slider. '' at 1x. `before`/`after` wrap the sentence.
+ */
+export function demandNote(demandFactor, before = '', after = '') {
+  if (!finite(demandFactor) || Math.abs(demandFactor - 1) < 1e-9) return '';
+  return `${before}includes the demand setting of the plant, ${formatNumber(demandFactor, 2)}×${after}`;
 }
 
 /** "About 1.3 trucks an hour of 24 pallets: 32 pallets an hour." for rate mode (the average over the day); the timetable has its own summary. */
 export function rateSummary(trucks, demandFactor = 1) {
   const d = describeTrucks(trucks, { demandFactor });
   if (d.mode !== 'rate' || !(d.trucksPerHour > 0)) return d.mode === 'rate' ? 'No truck arrives at this demand.' : '';
-  return `About ${formatNumber(d.trucksPerHour, 1)} ${d.trucksPerHour === 1 ? 'truck' : 'trucks'} an hour of ${formatNumber(d.palletsPerTruck, 1)} pallets: ${formatNumber(d.palletsPerHour, 1)} pallets an hour.`;
+  const note = demandNote(demandFactor);
+  return `About ${formatNumber(d.trucksPerHour, 1)} ${d.trucksPerHour === 1 ? 'truck' : 'trucks'} an hour of ${formatNumber(d.palletsPerTruck, 1)} pallets: ${formatNumber(d.palletsPerHour, 1)} pallets an hour${note ? `, ${note}` : ''}.`;
 }
 
 /**
@@ -121,11 +161,23 @@ export function doorFormula(check) {
  * a plant with one or two forklifts at one dock needs much more per pallet (a 24-pallet truck held its door for about an hour at the Starter plant),
  * one with many forklifts less. After a run the measured time stands in and the line points at the forklifts before the doors.
  */
-export function doorCheckNote(check) {
+export function doorCheckNote(check, demandFactor = 1) {
   if (!check || check.empty) return '';
-  return check.basis === 'measured'
+  const base = check.basis === 'measured'
     ? 'Your vehicles set this door time: if it is long, look at the forklifts and AGVs before adding doors.'
     : `The ${check.tPallet} s per pallet is an assumption. In a run your vehicles decide how long a truck stays at its door: few forklifts at one dock need much longer, many forklifts less. Run the plant to see the measured time.`;
+  const demand = demandNote(demandFactor);
+  return demand ? `${base} The check ${demand}.` : base;
+}
+
+/**
+ * The sentence for a station whose doors outnumber the road cells that touch it (UX-5): the door check counts doors, the vehicles reach them through the dock
+ * cells, and the Checks tab warns about the same thing from the other side ("has 6 doors but only 1 road cell touches it"). Said here in the first place,
+ * so that "Use 6 doors" does not lead to a warning nobody announced. '' when the docks are enough, or the station has no dock at all (another check).
+ */
+export function dockNote(doors, docks) {
+  if (!(docks > 0) || !(doors > docks)) return '';
+  return `Only ${docks === 1 ? '1 road cell touches' : `${docks} road cells touch`} this station, so its vehicles reach ${docks === 1 ? 'one dock' : `${docks} docks`}: doors beyond that only let more trucks check in or out while others are unloaded. A second dock, ideally on its own side road, lets more trucks be unloaded at once.`;
 }
 
 /**
@@ -157,6 +209,7 @@ const CSS = `
 .trucks-row+.trucks-row{border-top:1px solid var(--border)}
 .trucks-row--head{position:sticky;top:0;z-index:1;background:var(--surface-2);border-bottom:1px solid var(--border);color:var(--text-dim);font-size:var(--fs-xs);font-weight:var(--fw-semibold)}
 .trucks-row .input{width:100%;min-width:0}
+@media (pointer: coarse){.trucks-row{grid-template-columns:minmax(0,1.25fr) minmax(0,1fr) var(--control-h-sm)}.trucks-row .btn--icon{min-width:var(--control-h-sm);min-height:var(--control-h-sm)}}
 .trucks-table__empty{margin:0;padding:var(--sp-3);color:var(--text-dim);font-size:var(--fs-sm)}
 .trucks-actions{display:flex;flex-wrap:wrap;gap:var(--sp-2)}
 .doorcheck{display:flex;flex-direction:column;gap:6px;padding:var(--sp-2) var(--sp-3);border:1px solid var(--border);border-radius:var(--radius-md);background:var(--surface-2)}
@@ -166,7 +219,8 @@ const CSS = `
 .doorcheck__formula{margin:0;font-size:var(--fs-xs);color:var(--text-dim);font-variant-numeric:tabular-nums}
 .doorcheck__note{margin:0;font-size:var(--fs-xs);line-height:1.45;color:var(--text-dim)}
 .doorcheck__actions{display:flex;flex-wrap:wrap;gap:var(--sp-2)}
-.trucks-link{align-self:flex-start;padding:2px 0;border:0;background:none;color:var(--accent-text);font:inherit;font-size:var(--fs-sm);text-decoration:underline;cursor:pointer}
+.doorcheck .eyebrow{color:var(--text-dim)}
+.trucks-link{align-self:flex-start;display:inline-flex;align-items:center;min-height:24px;padding:2px 0;border:0;background:none;color:var(--accent-text);font:inherit;font-size:var(--fs-sm);text-decoration:underline;cursor:pointer}
 .trucks-link:hover{color:var(--accent-hover)}
 .trucks-link:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:2px}
 `;
@@ -199,7 +253,8 @@ function truckDistField(opts) {
   const mean = numberField({ label: 'Average', unit, min, max, value: shown(dist.mean), onChange: (v) => { dist = { ...dist, mean: v * scale }; refresh(); emit(); } });
   const spread = numberField({ label: 'Spread', unit: '%', min: 0, max: 100, value: Math.round(dist.spread * 100), onChange: (v) => { dist = { ...dist, spread: v / 100 }; emit(); } });
   const hint = h('p', { class: 'field__hint' });
-  const el = h('div', { class: 'stack', style: { '--gap': '8px' } }, h('span', { class: 'field__label' }, label), kind.el, h('div', { class: 'field-grid' }, mean.el, spread.el), hint);
+  // a group with a name: two of these sit in the section and a screen reader hears "Average" in both (UX-13)
+  const el = h('div', { class: 'stack', role: 'group', 'aria-label': label, style: { '--gap': '8px' } }, h('span', { class: 'field__label' }, label), kind.el, h('div', { class: 'field-grid' }, mean.el, spread.el), hint);
   function refresh() {
     spread.el.hidden = !(dist.kind === 'normal' || dist.kind === 'uniform');
     const text = describe ? describe(dist) : '';
@@ -227,35 +282,58 @@ function truckDistField(opts) {
 /**
  * The table of arrivals: a time and a number of pallets per row (an empty number: drawn from the pallets-per-truck distribution), add and delete,
  * paste from a spreadsheet. Edits go to `edit(schedule)` as a complete list; the model sorts it. `sync(schedule)` shows the stored rows.
+ * `latest()` gives the trucks block as stored NOW: after an edit the table shows the stored (sorted) rows at once instead of one frame later, so the next
+ * keystroke or click always works on what is stored.
+ *
+ * A TIME is stored when the planner is done with it (time-input.js: leaving the field, Enter), never segment by segment: typing 09:30 over 07:00 must not
+ * store 09:00 and move the row under the fingers. The row then keeps the planner's place: the focus goes to the same column of the row where it moved to.
  */
-function createTimetable({ edit, openPaste, maxRows = MAX_SCHEDULE_ROWS }) {
+function createTimetable({ edit, openPaste, latest, maxRows = MAX_SCHEDULE_ROWS }) {
   let rows = []; // { row, time, pallets, del } per displayed line
   let schedule = [];
-  let pendingFocus = null; // { at, col } | { index, col } after an edit that re-sorts or removes rows
+  let demand = 1;
+  let pendingFocus = null; // { at, col } | { index, col } after an edit that re-sorts or removes rows; col: 'time' | 'pallets' | 'delete'
   const scroll = h('div', { class: 'trucks-table__scroll' });
   const empty = h('p', { class: 'trucks-table__empty' }, 'No rows yet. Add a row, or paste a timetable from your spreadsheet.');
   const head = h('div', { class: 'trucks-row trucks-row--head', 'aria-hidden': 'true' }, h('span', null, 'Arrival'), h('span', null, 'Pallets'), h('span'));
   const table = h('div', { class: 'trucks-table', role: 'group', 'aria-label': 'Truck timetable', 'data-role': 'timetable' }, head, scroll, empty);
-  const add = h('button', { class: 'btn btn--sm', type: 'button', 'data-role': 'add-row', onclick: () => { pendingFocus = { index: schedule.length, col: 'time' }; edit([...schedule.map((r) => ({ ...r })), nextRow(schedule, currentTrucks())]); } },
-    icon('plus', { size: 14 }), 'Add a row');
+  /** Store a new list of rows and show what was stored (sorted) at once. */
+  const commit = (next) => {
+    edit(next);
+    const stored = latest();
+    if (stored && Array.isArray(stored.schedule)) api.sync(stored.schedule, stored, demand);
+  };
+  const add = h('button', {
+    class: 'btn btn--sm', type: 'button', 'data-role': 'add-row',
+    onclick: () => {
+      const stored = latest();
+      const base = stored && Array.isArray(stored.schedule) ? stored.schedule : schedule;
+      pendingFocus = { index: base.length, col: 'time' };
+      commit([...base.map((r) => ({ ...r })), nextRow(base, stored || trucksNow)]);
+    },
+  }, icon('plus', { size: 14 }), 'Add a row');
   const paste = h('button', { class: 'btn btn--sm', type: 'button', 'data-role': 'paste', onclick: () => openPaste() }, icon('import', { size: 14 }), 'Paste from spreadsheet');
-  const clear = h('button', { class: 'btn btn--sm btn--ghost', type: 'button', 'data-role': 'clear-rows', onclick: () => edit([]) }, icon('trash', { size: 14 }), 'Remove all rows');
+  const clear = h('button', { class: 'btn btn--sm btn--ghost', type: 'button', 'data-role': 'clear-rows', onclick: () => commit([]) }, icon('trash', { size: 14 }), 'Remove all rows');
   const full = h('p', { class: 'field__hint', hidden: true }, `A timetable holds at most ${MAX_SCHEDULE_ROWS} rows.`);
   const summary = h('p', { class: 'field__hint', 'data-role': 'timetable-summary', 'aria-live': 'polite' });
   let trucksNow = null;
-  const currentTrucks = () => trucksNow;
+  /** The control of `line` a focus event is heading for: 'time' | 'pallets' | 'delete', else null (somewhere else on the page). */
+  const colOf = (line, el) => (el === line.time ? 'time' : el === line.pallets ? 'pallets' : el === line.del ? 'delete' : null);
 
   function makeRow(index) {
     const time = h('input', { class: 'input input--sm tnum', type: 'time', step: '60', required: true });
     const pallets = h('input', { class: 'input input--sm tnum', type: 'number', min: TRUCK_RANGES.rowPallets[0], max: TRUCK_RANGES.rowPallets[1], step: '1', inputmode: 'numeric', placeholder: 'drawn' });
     const del = h('button', { class: 'btn btn--icon btn--sm btn--ghost', type: 'button', 'data-role': 'delete-row' }, icon('trash', { size: 14 }));
     const line = { row: h('div', { class: 'trucks-row', 'data-row': String(index) }, time, pallets, del), time, pallets, del, index };
-    time.addEventListener('change', () => {
+    whenSettled(time, (how, event) => {
+      const row = schedule[line.index];
+      if (!row) return;
       const at = timeOfDay(time.value);
-      if (at === null || !schedule[line.index]) { time.value = formatTimeOfDay(schedule[line.index]?.at ?? 0); return; }
-      if (at === schedule[line.index].at) return;
-      pendingFocus = { at, col: 'time' };
-      edit(scheduleWith(schedule, line.index, { at }));
+      if (at === null) { time.value = formatTimeOfDay(row.at); return; } // a half-typed time is not a time: back to the stored one
+      if (at === row.at) return;
+      const col = how === 'blur' ? colOf(line, event.relatedTarget) : how === 'enter' ? 'time' : null; // never pull the focus from where the planner went
+      pendingFocus = col ? { at, col } : null;
+      commit(scheduleWith(schedule, line.index, { at }));
     });
     pallets.addEventListener('change', () => {
       const raw = pallets.value.trim();
@@ -263,9 +341,9 @@ function createTimetable({ edit, openPaste, maxRows = MAX_SCHEDULE_ROWS }) {
       if (!row) return;
       const n = raw === '' ? null : Math.round(Number(raw));
       if (n !== null && !(n >= TRUCK_RANGES.rowPallets[0] && n <= TRUCK_RANGES.rowPallets[1])) { pallets.value = row.pallets === null ? '' : String(row.pallets); return; }
-      if (n !== row.pallets) edit(scheduleWith(schedule, line.index, { pallets: n }));
+      if (n !== row.pallets) commit(scheduleWith(schedule, line.index, { pallets: n }));
     });
-    del.addEventListener('click', () => { pendingFocus = { index: line.index, col: 'delete' }; edit(scheduleWithout(schedule, line.index)); });
+    del.addEventListener('click', () => { pendingFocus = { index: line.index, col: 'delete' }; commit(scheduleWithout(schedule, line.index)); });
     return line;
   }
 
@@ -285,21 +363,25 @@ function createTimetable({ edit, openPaste, maxRows = MAX_SCHEDULE_ROWS }) {
     line.del.title = `Delete ${label}`;
   }
 
+  /** Give the focus back to the row an edit moved (after the browser has finished the focus change that triggered the edit: it would undo ours). */
   function applyFocus() {
     if (!pendingFocus) return;
     const want = pendingFocus;
     pendingFocus = null;
-    let line = null;
-    if (want.at !== undefined) line = rows.find((r) => schedule[r.index] && schedule[r.index].at === want.at);
-    else line = rows[Math.min(want.index, rows.length - 1)];
-    if (!line) { add.focus(); return; }
-    (want.col === 'delete' ? line.del : line.time).focus();
+    setTimeout(() => {
+      let line = null;
+      if (want.at !== undefined) line = rows.find((r) => schedule[r.index] && schedule[r.index].at === want.at);
+      else line = rows[Math.min(want.index, rows.length - 1)];
+      if (!line) { if (!add.disabled) add.focus(); return; } // the last row was deleted: the next control is "Add a row"
+      (want.col === 'delete' ? line.del : want.col === 'pallets' ? line.pallets : line.time).focus();
+    }, 0);
   }
 
-  return {
+  const api = {
     el: h('div', { class: 'stack', style: { '--gap': '8px' } }, table, h('div', { class: 'trucks-actions' }, add, paste, clear), full, summary),
     sync(next, trucks, demandFactor) {
       trucksNow = trucks;
+      demand = demandFactor === undefined ? demand : demandFactor;
       schedule = next;
       while (rows.length > next.length) rows.pop().row.remove();
       while (rows.length < next.length) {
@@ -314,11 +396,12 @@ function createTimetable({ edit, openPaste, maxRows = MAX_SCHEDULE_ROWS }) {
       clear.hidden = next.length === 0;
       add.disabled = next.length >= maxRows;
       full.hidden = next.length < maxRows;
-      summary.textContent = timetableSummary(trucks, demandFactor) || '';
+      summary.textContent = timetableSummary(trucks, demand) || '';
       summary.hidden = next.length === 0;
       applyFocus();
     },
   };
+  return api;
 }
 
 // ---------------------------------------------------------------------------------------------------------
@@ -384,7 +467,7 @@ export function trucksSections(ctx, env) {
     mode.el.append(modeHint);
 
     const gap = truckDistField({
-      label: 'Time between trucks', unit: 'min', scale: 60, min: TRUCK_RANGES.interArrivalMean[0] / 60, max: TRUCK_RANGES.interArrivalMean[1] / 60, value: shownTrucks.interArrival,
+      label: 'Time between trucks', unit: 'min', scale: 60, min: TRUCK_RANGES.interArrivalMean[0] / 60, max: Math.floor(TRUCK_RANGES.interArrivalMean[1] / 60), value: shownTrucks.interArrival, // whole minutes at the top: "between 1 and 16666.666667" would show the conversion (UX-11)
       hint: 'How long until the next truck arrives.', describe: (d) => `Average ${humanSeconds(d.mean)}`,
       onChange: (dist) => edit('time between trucks', { interArrival: dist }, 'interArrival'),
     });
@@ -398,6 +481,7 @@ export function trucksSections(ctx, env) {
 
     const timetable = createTimetable({
       edit: (schedule) => edit('truck timetable', { schedule }, 'schedule'),
+      latest: () => trucksOf(current()),
       openPaste: () => { if (coldToast) coldToast.close(); coldToast = null; openTimetableDialog(ctx, { stationId: id }); }, // the toast of the cold restart would lie over the preview at 390 px
     });
     const jitter = numberField({
@@ -440,10 +524,19 @@ export function trucksSections(ctx, env) {
     const checkBox = h('div', { class: 'doorcheck', 'data-role': 'door-check', role: 'group', 'aria-label': 'Door check' }, checkTitle, checkText, checkFormula, checkNote, h('div', { class: 'doorcheck__actions' }, useDoors));
 
     const remove = h('button', {
-      class: 'trucks-link', type: 'button', 'data-role': 'remove-trucks', title: 'Back to the plain arrivals of this station. Nothing you set before is lost.',
-      onclick: () => { store.commit('Remove dock doors', (d) => { updateStation(d, id, { ops: { trucks: null } }); tidyClock(d); }); },
+      class: 'trucks-link', type: 'button', 'data-role': 'remove-trucks', title: 'Back to the plain arrivals of this station. The doors, the check-in times and the timetable are removed; Undo brings them back.',
+      onclick: () => {
+        const name = current().name;
+        if (!store.commit('Remove dock doors', (d) => { updateStation(d, id, { ops: { trucks: null } }); tidyClock(d); })) return;
+        const after = store.getState().layout;
+        ctx.toast(`${quoted(name)} has no trucks any more: the doors, the check-in times and the timetable are removed.`, {
+          kind: 'info', ms: 8000, action: { label: 'Undo', onClick: () => { if (store.getState().layout === after) store.undo(); } },
+        });
+      },
     }, 'Remove trucks');
-    const removeNote = h('p', { class: 'field__hint' }, outbound ? 'Removing the trucks goes back to a Goods out that takes every pallet at once.' : 'Removing the trucks goes back to the plain arrivals of the Deliveries section.');
+    const removeNote = h('p', { class: 'field__hint' }, outbound
+      ? 'Removing the trucks removes the doors and the timetable of this station and goes back to a Goods out that takes every pallet at once. Undo brings them back.'
+      : 'Removing the trucks removes the doors and the timetable of this station and goes back to the plain arrivals of the Deliveries section. Undo brings them back.');
 
     const panel = section({ title: SECTION_TITLE, aside: sectionAside(shownTrucks), open: memory.get(SECTION_TITLE) !== false },
       doors.el, checkIn.el, checkOut.el, mode.el,
@@ -494,13 +587,15 @@ export function trucksSections(ctx, env) {
           doorsNow.hidden = false;
         } else doorsNow.hidden = true;
         const check = doorCheckFor(state.layout, st, report);
-        const signature = JSON.stringify([check.text, check.action && check.action.doors, check.tooFew, check.basis]);
+        const docks = docksOf(state.layout, id).length;
+        const dockText = dockNote(Math.max(trucks.doors, check.action ? check.action.doors : 0), docks);
+        const signature = JSON.stringify([check.text, check.action && check.action.doors, check.tooFew, check.basis, demand, dockText]);
         if (signature !== lastCheck) {
           lastCheck = signature;
           checkText.textContent = check.text;
           checkFormula.textContent = doorFormula(check);
           checkFormula.hidden = !checkFormula.textContent;
-          checkNote.textContent = check.empty ? '' : doorCheckNote(check);
+          checkNote.textContent = check.empty ? '' : [doorCheckNote(check, demand), dockText].filter(Boolean).join(' ');
           checkNote.hidden = !checkNote.textContent;
           checkBox.classList.toggle('is-warn', check.tooFew);
           useDoorsCount = check.action ? check.action.doors : 0;
@@ -526,8 +621,13 @@ export function trucksSections(ctx, env) {
   function setMode(next) {
     const before = store.getState().layout;
     const label2 = next === 'schedule' ? `Use a timetable for ${quoted(current().name)}` : `Generate trucks from a rate for ${quoted(current().name)}`;
-    if (!store.commit(label2, (d) => { updateStation(d, id, { ops: { trucks: { mode: next } } }); if (next === 'rate') tidyClock(d); })) return;
-    if (next === 'schedule' && !usesTimetable(before) && shouldShowColdRestartToast()) coldToast = ctx.toast(coldRestartText(store.getState().layout), { kind: 'info', ms: 9000 });
+    const trucks = trucksOf(current());
+    // the trucks of the rate become the first rows (an existing timetable is kept as it is): the switch must not stop the trucks (UX-8)
+    const rows = next === 'schedule' && trucks && trucks.mode !== 'schedule' && (!trucks.schedule || trucks.schedule.length === 0) ? rowsFromRate(trucks) : [];
+    if (!store.commit(label2, (d) => { updateStation(d, id, { ops: { trucks: rows.length ? { mode: next, schedule: rows } : { mode: next } } }); if (next === 'rate') tidyClock(d); })) return;
+    const seeded = rows.length ? seedText(trucks, rows) : '';
+    const cold = next === 'schedule' && !usesTimetable(before) && shouldShowColdRestartToast() ? coldRestartText(store.getState().layout) : '';
+    if (seeded || cold) coldToast = ctx.toast([seeded, cold].filter(Boolean).join(' '), { kind: 'info', ms: 12000 });
   }
 
   /** The legacy fields of the Deliveries section while trucks are on: relabel the output buffer, hide what the trucks replace, show the note. */
@@ -538,10 +638,16 @@ export function trucksSections(ctx, env) {
     if (field) {
       const labelEl = field.querySelector('.field__label');
       const hintEl = field.querySelector('.field__hint');
-      if (labelEl && labelEl.dataset.original === undefined) { labelEl.dataset.original = labelEl.textContent; if (hintEl) hintEl.dataset.original = hintEl.textContent; }
+      const unitEl = field.querySelector('.input-unit');
+      if (labelEl && labelEl.dataset.original === undefined) {
+        labelEl.dataset.original = labelEl.textContent;
+        if (hintEl) hintEl.dataset.original = hintEl.textContent;
+        if (unitEl) unitEl.dataset.original = unitEl.textContent;
+      }
       const put = (el, text) => { if (el && text !== undefined && el.textContent !== text) el.textContent = text; };
       put(labelEl, on ? STAGING_LABEL : labelEl && labelEl.dataset.original);
       put(hintEl, on ? STAGING_HINT : hintEl && hintEl.dataset.original);
+      put(unitEl, on ? 'pallets' : unitEl && unitEl.dataset.original); // the label says pallets, so does the unit (UX-27)
     }
     for (const el of form.querySelectorAll('[data-role=legacy-arrivals]')) if (el.hidden !== on) el.hidden = on;
     const note = form.querySelector('[data-role=trucks-note]');

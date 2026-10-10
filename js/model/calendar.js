@@ -44,28 +44,32 @@ export function usesTimetable(layout) {
   });
 }
 
-/** startTod from a number, a numeric string or "H:MM" text: an integer 0..86399, junk gives 0, out of range is clamped. */
-function readStartTod(v) {
+/** startTod from a number, a numeric string or "H:MM" text: an integer 0..86399, out of range is clamped, junk gives `fallback` (0 unless a merge passes the current value). */
+function readStartTod(v, fallback = 0) {
   const parsed = typeof v === 'string' && v.includes(':') ? timeOfDay(v) : null;
-  return parsed !== null ? parsed : clampInt(v, 0, SECONDS_PER_DAY - 1, 0);
+  return parsed !== null ? parsed : clampInt(v, 0, SECONDS_PER_DAY - 1, fallback);
 }
 
 /**
  * Sanitized `layout.calendar`, or undefined when the plant has no clock (see the header: a raw object keeps its clock, a timetable creates one).
  * @param {unknown} raw whatever a file holds
  * @param {object} layout the layout built so far (stations already sanitized): a timetable on a station creates the calendar
+ * @param {unknown} [current] the calendar before a merge (mergeCalendar): a field that is junk keeps its value there, where a file takes 0
  * @returns {{ startTod: number, startDay: number }|undefined}
  */
-export function sanitizeCalendar(raw, layout) {
+export function sanitizeCalendar(raw, layout, current) {
   if (!isObj(raw) && !usesTimetable(layout)) return undefined;
-  return { startTod: readStartTod(own(raw, 'startTod')), startDay: clampInt(own(raw, 'startDay'), 0, 6, 0) };
+  const cur = isObj(current) ? { startTod: readStartTod(own(current, 'startTod')), startDay: clampInt(own(current, 'startDay'), 0, 6, 0) } : { startTod: 0, startDay: 0 };
+  return { startTod: readStartTod(own(raw, 'startTod'), cur.startTod), startDay: clampInt(own(raw, 'startDay'), 0, 6, cur.startDay) };
 }
 
 const NO_LAYOUT = Object.freeze({ stations: Object.freeze([]) });
 
 /**
  * The calendar that results from merging `patch` into `current`, sanitized. `patch === null` removes it (undefined). An object patch
- * merges key by key and creates the clock when the plant had none; a patch that is not an object changes nothing. It does not know the
+ * merges key by key and creates the clock when the plant had none; a field of the patch that is junk (NaN, '', 'x') keeps the CURRENT value, as the
+ * patches of `params` and `ops` do (a start-time field that is being cleared must not move the start of the day to 00:00); a patch that is not an
+ * object changes nothing. It does not know the
  * layout, so it cannot tell whether a timetable still needs the clock: updateCalendar (layout.js) lets reconcileLayout decide that.
  * @param {object|undefined} current
  * @param {unknown} patch
@@ -75,7 +79,7 @@ export function mergeCalendar(current, patch) {
   if (patch === null) return undefined;
   const base = isObj(current) ? current : undefined;
   if (!isObj(patch)) return base === undefined ? undefined : sanitizeCalendar(base, NO_LAYOUT);
-  return sanitizeCalendar({ ...(base ?? {}), ...patch }, NO_LAYOUT);
+  return sanitizeCalendar({ ...(base ?? {}), ...patch }, NO_LAYOUT, base);
 }
 
 const pad2 = (n) => String(n).padStart(2, '0');

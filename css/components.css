@@ -1923,6 +1923,7 @@ dialog.modal::backdrop {
 .toast__msg {
   flex: 1 1 auto;
   min-width: 0;
+  overflow-wrap: anywhere; /* a station name of 120 letters wraps inside the toast instead of running out of it */
 }
 
 .toast__action {

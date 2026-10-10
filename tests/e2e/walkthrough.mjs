@@ -575,7 +575,8 @@ await withBrowser(async ({ browser, url, errors }) => {
       await clickCell(page, 9, 7, 'erase the road cell below Goods receiving');
       const p = await record('cut the road', page, (q) => q.steps.some((s) => /Goods receiving does not touch a road/.test(s.text)));
       match(p.steps.find((s) => /does not touch a road/.test(s.text)).text, /Vehicles cannot reach it\. Drag it next to a road, or draw a road up to it\./, 'it says what to do');
-      eq(p.badge, '1', 'the Checks badge agrees');
+      // the Checks badge follows the checks list, which recomputes at most every 200 ms: it may trail the guidance card by a few frames, so wait for it instead of reading it in the same instant
+      ok((await noticed(page, (q) => q.badge === '1', `the Checks badge agrees (read together with the card: ${JSON.stringify(p.badge)})`, 4000)).problems.badge === '1', 'the Checks badge agrees');
       await shot(page, 'c2-road-cut');
       await context.close();
     }
@@ -641,7 +642,7 @@ await withBrowser(async ({ browser, url, errors }) => {
       await clickCell(page, 30, 3, 'place a Workstation far from any road');
       const p = await record('station off the road', page, (q) => q.steps.some((s) => /Workstation 1 does not touch a road/.test(s.text)));
       ok(p.callouts.some((c) => /No road touches this station|Nothing leaves this workstation/.test(c)) || true, 'the form speaks too');
-      eq(p.badge, '2', 'the Checks tab counts the problems');
+      ok((await noticed(page, (q) => q.badge === '2', `the Checks tab counts the problems (read together with the card: ${JSON.stringify(p.badge)})`, 4000)).problems.badge === '2', 'the Checks tab counts the problems');
       await shot(page, 'c5-off-road');
       await context.close();
     }

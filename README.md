@@ -6,7 +6,7 @@ LogiPlan replaces the Lego mock-up. Build a plant on a baseplate (roads, one-way
 
 It is a **static web app** (vanilla ES modules, no build step, no runtime dependencies, no network access needed), so it runs straight from GitHub Pages.
 
-> Live site (after the first deploy): `https://<your-user>.github.io/<repo>/`
+> Live site (once GitHub Pages is switched on, see *Deploy*): `https://rangulvers.github.io/LogiPlan/`. The version number and the short code of the build at the bottom right of the window say which deploy you are looking at; click it for the build, its date and what is new (see *Versioning*).
 
 ---
 
@@ -65,7 +65,31 @@ Opening `index.html` directly from disk does not work (browsers block ES modules
 2. **Settings → Pages → Build and deployment → Source: GitHub Actions.**
 3. Merge to `main`. `.github/workflows/pages.yml` runs the import check and the fast tests, then publishes the site (`scripts/build-site.mjs` assembles `index.html`, `css/`, `js/`, `assets/`); the heavy tests run beside it (see *Tests and CI*).
 
-All asset URLs are relative, so it works under `https://<user>.github.io/<repo>/`. `…/version.json` shows which commit is live.
+All asset URLs are relative, so it works under `https://<user>.github.io/<repo>/`. `…/version.json` shows which version and commit are live (see *Versioning*).
+
+---
+
+## Versioning
+
+LogiPlan has one version number, `x.y.z` (it stays `0.x` until the first stable release), kept in `package.json`. Every copy of the app knows what it **is** and says so:
+
+| Where | What you see |
+|---|---|
+| **The version chip**, bottom right of the window (`v0.6.0 a45ce49`: the number, which changes with a release, and the code of the build, which changes with every deploy; a development copy shows `v0.6.0 dev`; a phone shows the number only) | Click it (or Tab to it and press Enter) for the **About** window: version, build (the commit, linked to GitHub), when it was built (your time and UTC), whether this is the live site or a local copy, a *Copy version info* button for bug reports, and **What is new**: the changelog of the project, newest version open, older ones closed. Where the status line is hidden (a window lower than 521 px: a phone held sideways, 200 % zoom on a Full HD monitor) the *More* menu is there at every width and has *About and what is new*, and so has the narrow layout and the Help window. |
+| **A newer version is live** | If the site has been updated while your page was open (or the browser kept an old copy), the chip gets a dot and the word *Update* (and the *More* button a dot), and the About window a *Reload now* button. A new deploy of the same version number counts too: the window then says "a newer build". LogiPlan checks `version.json` once after start, when you come back to the tab and every 30 minutes while the tab stays in front, at most every 5 minutes. It never reloads by itself and never interrupts a running simulation or an edit. *Reload now* saves your plant first (and refuses to reload when it could not be saved in full), fetches the new files past the browser cache and reloads; a running simulation, its results and the undo history start again. A development copy never checks. Anything that goes wrong (offline, no file, junk) is silent. |
+| **The HTML report** | Its footer says *Generated with LogiPlan v0.6.0 (a45ce49)*. |
+| **`/version.json`** on the site | `{ name, version, commit, shortCommit, builtAt, channel, builtFrom }` of the build that is live: the pipeline's `GITHUB_SHA`, the build time (UTC) and the branch. |
+
+The version is **not** written into project files or share links, so the same plant always exports to the same bytes.
+
+**How it is made.** `js/build-info.js` holds the identity of the running copy. In the repository it is the development default (`commit: 'dev'`); `scripts/build-site.mjs` writes the real one (version from `package.json`, `GITHUB_SHA`, the build time, channel `live`) into the **site it assembles only**, together with `version.json` and a copy of `CHANGELOG.md`. Nothing in the pipeline changes the repository.
+
+**How to cut a version.**
+
+1. While you work, add a line for every change a planner will notice under `## [Unreleased]` in `CHANGELOG.md`, in plain words (what they can now do), under **Added**, **Improved** or **Fixed**. No file names, no jargon.
+2. To release: `npm run version:bump -- minor` (or `patch`, `major`, or an exact `1.2.3`; `--date YYYY-MM-DD` and `--dry-run` exist). It sets `package.json` and `js/build-info.js` to the new version and moves the Unreleased lines under `## [x.y.z] - date`, and prints what to do next. An empty Unreleased section gets a `TODO` stub that the tests refuse until you write it.
+3. `npm run version:check` (also part of the tests) fails when `package.json`, `js/build-info.js` and the newest released entry of `CHANGELOG.md` name different versions, when that entry has no valid date, or when `js/build-info.js` is not the development default.
+4. Commit, open the pull request, merge to `main`. The Pages workflow publishes it; optionally tag the merge commit `vx.y.z`.
 
 ---
 
@@ -78,6 +102,7 @@ npm run test:heavy        # the slow ones: seeded fuzz runs, performance bounds,
 npm test                  # everything, test by test (node:test), ~3 min
 npm run test:quiet        # everything, compact output
 npm run check             # every import resolves, every named import is exported
+npm run version:check     # package.json, js/build-info.js and CHANGELOG.md name the same version (npm run version:bump -- minor cuts a new one)
 npm run test:e2e          # browser tests (real Chromium via Playwright, screenshots in e2e-output/)
 node scripts/perf-baseline.mjs        # CPU seconds per simulated hour of the three examples (--root DIR compares two checkouts in one run)
 node scripts/rebaseline-golden.mjs    # re-record the golden fixtures (tests/fixtures/golden): a pull request that does must say why the legacy results changed

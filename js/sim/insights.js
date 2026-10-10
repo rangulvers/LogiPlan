@@ -241,6 +241,18 @@ function pullsForTrucks(ctx, id) {
 }
 
 /**
+ * A Goods in with trucks is not judged by the `supply` rule: a truck releases all its pallets into the yard at the end of check-in (up to 200 at once),
+ * so the yard of a healthy truck station is full while a truck is being unloaded, and the output buffer is "full" for as long as that takes. Neither the
+ * blocked share nor the backlog at the end of the window says that the plant takes less than the trucks bring (a healthy station was told "A delivers
+ * more than the plant takes: 17 loads are piling up", next to doors-idle). What the pile means for trucks is said by the rules of insights-ops.js:
+ * trucks queue at the gate (gate-queue-long), the vehicles are slow (unload-limited-by-vehicles). Only a plant with trucks has `report.ops`.
+ */
+function receivesTrucks(ctx, id) {
+  const trucks = ctx.report && ctx.report.ops ? ctx.report.ops.trucks : null;
+  return Boolean(trucks && trucks[id] && trucks[id].role === 'in');
+}
+
+/**
  * Mean time loads waited for a pickup by this fleet. Flows that deliver into a saturated workstation or a full
  * buffer are left out: there a load waits for room at the destination (the dispatcher only sends a vehicle when
  * the load fits), and more vehicles do not create room. null when nothing is left to judge.
@@ -448,6 +460,7 @@ function supplyExceedsCapacity(ctx) {
   const out = [];
   for (const s of ctx.stations) {
     if (s.type !== 'source' || !(s.blocked >= SUPPLY_BLOCKED_SHARE && s.yardNow >= SUPPLY_MIN_YARD)) continue;
+    if (receivesTrucks(ctx, s.id)) continue; // see receivesTrucks
     if (!(ctx.flowsFrom.get(s.id) || []).length) continue; // nothing is connected to it: source-unconnected-activity explains that
     const next = (ctx.flowsFrom.get(s.id) || []).map((f) => ctx.byId.get(f.to)).filter(Boolean)
       .sort((a, b) => Math.max(b.utilization, b.avgFill) - Math.max(a.utilization, a.avgFill))[0];
@@ -863,30 +876,28 @@ const SKEW_TEXT = {
 const DOCK_STEPS = [[0, -1], [1, 0], [0, 1], [-1, 0]];
 
 /**
- * Do the docks `quiet` lie in a row with the busy one, side by side on one lane? A chain of neighbouring dock cells of the station leads from
- * the busy dock to the quiet one, and every cell of the chain is a plain piece of lane (at most two linked road neighbours: no side road, no
- * parallel road to pass a vehicle that stands there). The statistics call such a dock 'detour' when the road is a loop (the quiet dock can be
- * reached from the other side the long way round, and the golden fixtures pin that word in the KPI report); the planner is told what the
- * plan shows: they lie in a row (the plan check docks-share-lane, model/validate-ops.js dockLanes). Said only for a plant with trucks (the
+ * Do the docks `quiet` lie in a row with the busy one, side by side and joined by road? A chain of neighbouring dock cells of the station, each
+ * linked to the next by road, leads from the busy dock to the quiet one: the lane of the plan check docks-share-lane (model/validate-ops.js
+ * dockLanes), which does not care whether another road lies behind the docks - the simulation uses only the first dock there too (M1-MODEL-REV-3).
+ * The statistics call such a dock 'detour' when the road is a loop or has a road behind it (the quiet dock can be reached the long way round, and the
+ * golden fixtures pin that word in the KPI report); the planner is told what the plan shows: they lie in a row. Said only for a plant with trucks (the
  * report has `ops`): the insights of a legacy plant are pinned bit for bit too (tests/m0.review.test.js 1.1), so there the old word stays.
  */
 function quietDocksInRow(layout, docks, busy, quiet) {
   if (!layout || !layout.roads || !Array.isArray(docks)) return false;
   const key = (d) => `${d.cx},${d.cy}`;
   const cells = new Map(docks.map((d) => [key(d), d]));
-  const linked = (d) => DOCK_STEPS.map(([dx, dy], dir) => [d.cx + dx, d.cy + dy, dir])
-    .filter(([x, y, dir]) => hasLink(layout, d.cx, d.cy, dir) || hasLink(layout, x, y, (dir + 2) % 4));
+  const joined = (d) => DOCK_STEPS.map(([dx, dy], dir) => [d.cx + dx, d.cy + dy, dir])
+    .filter(([x, y, dir]) => cells.has(`${x},${y}`) && (hasLink(layout, d.cx, d.cy, dir) || hasLink(layout, x, y, (dir + 2) % 4)));
   const reach = new Set([key(busy)]);
   const queue = [busy];
   for (let h = 0; h < queue.length; h++) {
-    const next = linked(queue[h]);
-    if (next.length > 2) continue;
-    for (const [x, y] of next) {
+    for (const [x, y] of joined(queue[h])) {
       const k = `${x},${y}`;
-      if (cells.has(k) && !reach.has(k)) { reach.add(k); queue.push(cells.get(k)); }
+      if (!reach.has(k)) { reach.add(k); queue.push(cells.get(k)); }
     }
   }
-  return quiet.some((q) => reach.has(key(q)) && linked(q).length <= 2);
+  return quiet.some((q) => reach.has(key(q)));
 }
 
 /** One dock does nearly all the work while others stand unused and vehicles wait: only said when the report knows why. */
