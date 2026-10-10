@@ -29,6 +29,8 @@
 //  * A time budget (maxMillis) is checked between ticks, never inside one. The clock is read after every tick at first and then
 //    every few ticks, as many as keep the reading overhead small and the overshoot of the budget to about an eighth of it;
 //    a plant whose ticks are slow is therefore checked after every tick.
+//  * The detail collector (sim/detail.js) is optional and off: `sim.detail` is null until the UI calls enableDetail(). It is polled once per tick after the statistics
+//    (afterTickSafe, which never throws: a collector that failed is dropped, `sim.detailError` keeps the reason and the run goes on). Nothing in kpis() depends on it.
 //  * setRuntime() accepts exactly RUNTIME_KEYS. Other keys (e.g. when a whole settings object is passed) are ignored,
 //    so a structural setting can never be changed behind the simulation's back; junk values of the accepted keys
 //    keep the current value. Factors are clamped to [MIN_FACTOR, MAX_FACTOR].
@@ -41,6 +43,7 @@ import { Logistics } from './logistics.js';
 import { Stats, WARMUP_EPS } from './stats.js';
 import { TrafficSystem } from './traffic.js';
 import { generateInsights } from './insights.js';
+import { Detail } from './detail.js';
 
 /** Range of the what-if factors accepted by setRuntime (demand, vehicle speed, process time). */
 export const MIN_FACTOR = 0.05;
@@ -103,6 +106,10 @@ export class Simulation {
     this._fault = null;
     this._tickEnd = 0;
     this._measuring = !(this.settings.warmup > 0);
+    /** The optional detail collector (sim/detail.js): null unless the UI turned it on with enableDetail(); nothing in kpis() depends on it. */
+    this.detail = null;
+    /** Why the collector was dropped (an Error), else null: the dock says "statistics stopped". */
+    this.detailError = null;
 
     this.graph = buildGraph(this.layout);
     this.traffic = new TrafficSystem(this.graph, {
@@ -138,10 +145,13 @@ export class Simulation {
     this.traffic.step(dt);
     this.time = this._tickEnd;
     this.stats.sample(dt);
+    let fresh = false;
     if (!this._measuring && this.time + WARMUP_EPS >= this.settings.warmup) {
       this._measuring = true;
       this.stats.reset();
+      fresh = true;
     }
+    if (this.detail !== null && !this.detail.afterTickSafe(dt, fresh)) this.dropDetail(); // never throws; a failed collector is dropped, the run goes on
     if (this._fault !== null) {
       const error = this._fault;
       this._fault = null;
@@ -289,6 +299,37 @@ export class Simulation {
   hasLeft(jam, trafficVehicles) {
     const limit = this.graph.cellSize;
     return Array.from(trafficVehicles || []).some((v) => Math.abs(odometerOf(v) - (jam.odometers.get(idOf(v)) ?? 0)) > limit);
+  }
+
+  // ---- optional detail (statistics of single vehicles, stations, flows and cells; docs/ENTITY-INSIGHTS-DESIGN.md, ARCHITECTURE.md 5.8) -----------
+
+  /** Turn the detail collector on (idempotent) and return it, or null when it could not start (sim.detailError says why). Only the UI does; headless runs, experiments and sweeps never pay for it. */
+  enableDetail(opts) {
+    if (this.detail === null) {
+      try {
+        this.detail = new Detail(this, opts);
+        this.detailError = null;
+      } catch (error) { // optional means optional: a collector that cannot start leaves the simulation as it was; the caller sees null and sim.detailError
+        this.detail = null;
+        this.detailError = error instanceof Error ? error : new Error(String(error));
+      }
+    }
+    return this.detail;
+  }
+
+  /** The collector failed: forget it, keep the reason. Called by step() only. */
+  dropDetail() {
+    this.detailError = this.detail.error || null;
+    this.detail.detach();
+    this.detail = null;
+  }
+
+  /** Turn it off again and let go of what it recorded. */
+  disableDetail() {
+    if (this.detail !== null) {
+      this.detail.detach();
+      this.detail = null;
+    }
   }
 
   // ---- results --------------------------------------------------------------------------------------------

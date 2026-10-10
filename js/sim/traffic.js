@@ -592,8 +592,16 @@ export class TrafficSystem {
       else st.waitVehicle += dt;
       st.totalWait += dt;
       st.edgeWait[tv.edge] += dt;
-      st.nodeWait[tv._blk === 2 ? tv._blkNode : this._cellOf(tv)] += dt;
+      st.nodeWait[this.waitNodeOf(tv)] += dt;
     }
+  }
+
+  /**
+   * The cell this vehicle's waiting is booked on (what _bookkeep books to nodeWait): the junction it waits in front of, else the cell it is in. Read only; the detail collector
+   * (sim/detail.js) asks it so that its cell tables add up to nodeWait exactly.
+   */
+  waitNodeOf(tv) {
+    return tv._blk === 2 ? tv._blkNode : this._cellOf(tv);
   }
 
   /** 'broken' if a disabled vehicle is anywhere along the blocking chain, else 'junction' / 'vehicle'. */
