@@ -650,7 +650,7 @@ await withBrowser(async ({ browser, url, errors }) => {
     await page.getByRole('button', { name: 'Help' }).first().click();
     await dialog.waitFor();
     const tabs = dialog.locator('[role=tab]');
-    eq(await tabs.allInnerTexts(), ['Quick start', 'Tools & shortcuts', 'How vehicles find work', 'Trucks and dock doors', 'Statistics of an item', 'How the simulation works', 'Tips'], 'a first-class page of the Help');
+    eq(await tabs.allInnerTexts(), ['Quick start', 'Tools & shortcuts', 'How vehicles find work', 'Trucks and dock doors', 'Statistics of an item', 'How the simulation works', 'Tips', 'Examples'], 'a first-class page of the Help');
     await tabs.nth(2).click();
     const help = dialog.locator('[data-help=vehicles]');
     await help.waitFor();

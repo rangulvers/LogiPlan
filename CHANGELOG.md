@@ -10,6 +10,10 @@ that the history can be read. How to cut a new version is described in the READM
 ## [Unreleased]
 
 ### Added
+- **Six new examples, from very simple to a two-plant campus.** The examples window is now a ladder in five levels. New: *Hello, pallet* (one forklift),
+  *Charging corner* (six electric forklifts), *Yard shuttle* (one truck over 280 metres), *Morning peak* (a cross-dock on a timetable),
+  *Components plant* (three kinds of vehicle) and *Two plants, one yard* (two plants on one baseplate that share a warehouse and a charging hall; one
+  plant model, not a multi-site one). Open an example and press *Things to try*, or use the new **Examples** tab in Help: every number there was measured.
 - **Click any item to see its statistics.** Click a workstation, Goods in, storage, Goods out, depot, flow, road cell, fleet or several items and a
   **Statistics** panel opens over the bottom of the plan with six numbers. Each has an (i) that says exactly how it is counted. The panel shows
   *Since start* or *Last 30 min*, says how long it has measured, and calls anything under 20 minutes *indicative*. It opens when your click ends on an

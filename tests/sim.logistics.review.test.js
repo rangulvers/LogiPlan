@@ -748,10 +748,11 @@ test('hand-over: a live Stats on a real plant agrees with the counters of the lo
   }
 });
 
-test('the shipped examples run for an hour on the real engine with every invariant intact and goods leaving', () => {
+test('the shipped examples run for 90 minutes on the real engine with every invariant intact and goods leaving', () => {
+  // 90 minutes, not an hour: a pipeline ships late (twin-plants: the first load leaves at minute 84, docs/EXAMPLES-DESIGN.md 3.3 rule 5 and 8.5)
   for (const ex of EXAMPLES) {
     const w = createRealWorld(ex.build(), { dt: 0.2 });
-    runChecked(w, 3600, 10);
+    runChecked(w, 5400, 10);
     assert.ok(w.lg.completed > 0, `${ex.name}: nothing was shipped`);
     assert.equal(w.lg.unplaced.length, 0, `${ex.name}: every vehicle found a place`);
   }

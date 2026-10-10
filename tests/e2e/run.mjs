@@ -35,6 +35,7 @@ const SCRIPTS = Object.freeze([
   { name: 'roads-canvas-combined', what: 'one planner session with smart roads and the growing plan together: jittery aisle, past the edge, Shift branch, brick beyond the left edge, flows, vehicles, play, undo/redo of every step, reload, export/import, share link, simulation equality, touch, dark, keyboard-only plan size, 390 px' },
   { name: 'panels1', what: 'Properties, Simulate and Checks panels' },
   { name: 'panels2', what: 'Fleet and Flows panels, dialogs' },
+  { name: 'examples', what: 'examples ladder in the real app: gallery by level (badges, learn lines, chips, the wide twin-plants card, contrast, keyboard, 1440 and 390 px, light and dark), the toast action "Things to try" and Help > Examples with every tip, a smoke run of every example past its warm-up' },
   { name: 'dashboard', what: 'Results dashboard' },
   { name: 'compare', what: 'Experiments tab and report export' },
   { name: 'app', what: 'app shell: top bar, palette, tabs, drawer, shortcuts, persistence' },

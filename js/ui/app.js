@@ -1420,7 +1420,12 @@ function createActions(ctx, parts) {
       if (!example) { toast('That example is not available.', { kind: 'error' }); return false; }
       if (!(await confirmReplace(ctx, { title: 'Open this example?', confirmLabel: 'Open example' }))) return false;
       store.newProject(example.build());
-      toast(`Opened the example “${example.name}”. Press ${isTouchOnly() ? 'the' : 'Space or the'} play button to run it.`, { kind: 'success' });
+      const message = `Opened the example “${example.name}”. Press ${isTouchOnly() ? 'the' : 'Space or the'} play button to run it.`;
+      // the lessons of an example live in its tips: one press on the toast opens them (Help > Examples, scrolled to this example)
+      const action = Array.isArray(example.tips) && example.tips.length
+        ? { label: 'Things to try', onClick: () => ctx.dialogs.openHelp({ tab: 'examples', example: id }) }
+        : null;
+      toast(message, action ? { kind: 'success', action, ms: 10000 } : { kind: 'success' });
       return true;
     },
     async newProject() {

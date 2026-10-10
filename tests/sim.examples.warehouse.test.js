@@ -35,7 +35,7 @@ const issueIds = (layout) => validateLayout(layout).map((i) => i.id);
 // ---------------------------------------------------------------------------------------------------------------------------
 
 test('the gallery: the three old examples come first and unchanged in name, then Dock lab and Warehouse: first day, each with notes and tips', () => {
-  assert.deepEqual(EXAMPLES.map((e) => e.id), ['starter', 'two-lines', 'congestion-lab', 'dock-lab', 'warehouse-first-day']);
+  assert.deepEqual(EXAMPLES.slice(0, 5).map((e) => e.id), ['starter', 'two-lines', 'congestion-lab', 'dock-lab', 'warehouse-first-day'], 'the six ladder examples come after them');
   assert.equal(example('dock-lab').name, 'Dock lab: one street, three docks');
   assert.equal(example('warehouse-first-day').name, 'Warehouse: first day');
   for (const id of ['dock-lab', 'warehouse-first-day']) {

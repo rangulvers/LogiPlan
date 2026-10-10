@@ -6,6 +6,8 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { readFileSync } from 'node:fs';
 import { withBrowser, OUT } from './browser.mjs';
+import { EXAMPLES } from '../../js/model/examples.js';
+import { EXAMPLE_LEVELS } from '../../js/ui/examples-gallery.js';
 
 const only = process.argv[2] || '';
 let checks = 0;
@@ -661,25 +663,29 @@ await withBrowser(async ({ page, context, url, errors }) => {
     eq(await dialog().locator('.modal__title').innerText(), 'Welcome to LogiPlan');
     const text = await dialog().innerText();
     ok(text.includes('Continue where you left off') && text.includes('Two lines + warehouse'), 'a project with work offers to continue');
-    eq(await dialog().locator('[data-example]').count(), 5, 'five examples: the three legacy ones and the two of the warehouse module');
+    eq(await dialog().locator('[data-example]').count(), EXAMPLES.length, 'one card per example');
+    eq(await dialog().locator('.example-level__title').allInnerTexts(), EXAMPLE_LEVELS.map((l) => `${l.level}. ${l.title}`), 'the five level headings, in order');
+    eq(await dialog().locator('[data-example]').evaluateAll((cards) => cards.map((c) => c.dataset.example)),
+      [...EXAMPLES].sort((a, b) => a.level - b.level || a.rank - b.rank).map((e) => e.id), 'the cards are sorted by level and rank');
+    eq(await dialog().locator('[data-example]').first().getAttribute('data-example'), 'hello-pallet', 'the simplest example comes first');
     ok(text.includes('Starter: dock → assembly → shipping'), 'example names');
     ok(text.includes('4 stations · 2 flows · 2 vehicles'), 'facts line');
-    await page.waitForFunction(() => document.querySelectorAll('[role="dialog"] [data-example] img').length === 5, null, { timeout: 15000 });
+    await page.waitForFunction((n) => document.querySelectorAll('[role="dialog"] [data-example] img').length === n, EXAMPLES.length, { timeout: 15000 });
     const thumbs = await dialog().locator('[data-example] img').evaluateAll((imgs) => imgs.map((i) => ({ ok: i.complete && i.naturalWidth > 100, src: i.src.slice(0, 22), w: i.naturalWidth, h: i.naturalHeight })));
     ok(thumbs.every((t) => t.ok && t.src === 'data:image/png;base64,'), `previews are real PNG images: ${JSON.stringify(thumbs)}`);
-    eq(await page.evaluate(() => window.__toDataURLCalls), 5, 'one throw-away render per example');
+    eq(await page.evaluate(() => window.__toDataURLCalls), EXAMPLES.length, 'one throw-away render per example');
     await closeAll();
     await page.locator('#open-welcome').click();
     await dialog().waitFor();
-    await page.waitForFunction(() => document.querySelectorAll('[role="dialog"] [data-example] img').length === 5);
-    eq(await page.evaluate(() => window.__toDataURLCalls), 5, 'previews are cached: no new render');
+    await page.waitForFunction((n) => document.querySelectorAll('[role="dialog"] [data-example] img').length === n, EXAMPLES.length);
+    eq(await page.evaluate(() => window.__toDataURLCalls), EXAMPLES.length, 'previews are cached: no new render');
     await closeAll();
 
     // dark theme gets its own previews
     await page.evaluate(() => { document.documentElement.dataset.theme = 'dark'; });
     await page.locator('#open-welcome').click();
-    await page.waitForFunction(() => document.querySelectorAll('[role="dialog"] [data-example] img').length === 5);
-    eq(await page.evaluate(() => window.__toDataURLCalls), 10, 'a new theme draws new previews');
+    await page.waitForFunction((n) => document.querySelectorAll('[role="dialog"] [data-example] img').length === n, EXAMPLES.length);
+    eq(await page.evaluate(() => window.__toDataURLCalls), 2 * EXAMPLES.length, 'a new theme draws new previews');
     await closeAll();
     await page.evaluate(() => { delete document.documentElement.dataset.theme; });
 
@@ -770,7 +776,7 @@ await withBrowser(async ({ page, context, url, errors }) => {
     await dialog().waitFor();
     await page.waitForTimeout(400);
     eq(await dialog().locator('[data-example] img').count(), 0, 'no pictures when drawing fails');
-    eq(await dialog().locator('[data-example] svg.icon--grid').count(), 5, 'a placeholder icon per example');
+    eq(await dialog().locator('[data-example] svg.icon--grid').count(), EXAMPLES.length, 'a placeholder icon per example');
     await dialog().locator('[data-example="starter"]').click();
     await noDialog('and the examples still open');
     eq((await state()).project, 'Starter plant');
@@ -778,11 +784,12 @@ await withBrowser(async ({ page, context, url, errors }) => {
 
   // ---------------------------------------------------------------------------------------------- help
   await run('help', async () => {
+    await reset('starter');
     await page.locator('#open-help').click();
     const d = dialog();
     eq(await d.locator('.modal__title').innerText(), 'Help');
     const tabs = d.getByRole('tab');
-    eq(await tabs.allInnerTexts(), ['Quick start', 'Tools & shortcuts', 'How vehicles find work', 'Trucks and dock doors', 'Statistics of an item', 'How the simulation works', 'Tips']);
+    eq(await tabs.allInnerTexts(), ['Quick start', 'Tools & shortcuts', 'How vehicles find work', 'Trucks and dock doors', 'Statistics of an item', 'How the simulation works', 'Tips', 'Examples']);
     eq(await tabs.first().getAttribute('aria-selected'), 'true');
     ok((await d.getByRole('tabpanel').first().innerText()).includes('Every station needs a road cell that touches it'), 'quick start content');
     // arrow keys move between tabs (automatic activation), Home and End jump
@@ -797,21 +804,37 @@ await withBrowser(async ({ page, context, url, errors }) => {
     eq(keys, ['V', 'H', 'R', 'O', 'Z', 'E', '1', '2', '3', '4', '5', 'W', 'T', 'F'], 'keys come from the editor’s key table');
     ok((await d.innerText()).includes('Ctrl') && (await d.innerText()).includes('Undo'), 'other shortcuts');
     await page.keyboard.press('End');
-    eq(await tabs.nth(6).getAttribute('aria-selected'), 'true'); // seven pages since the statistics page was added after the trucks page
+    eq(await tabs.nth(7).getAttribute('aria-selected'), 'true'); // eight pages: the Examples page is the last
     await page.keyboard.press('ArrowRight');
     eq(await tabs.first().getAttribute('aria-selected'), 'true', 'arrow keys wrap around');
     await page.keyboard.press('ArrowLeft');
-    eq(await tabs.nth(6).getAttribute('aria-selected'), 'true');
+    eq(await tabs.nth(7).getAttribute('aria-selected'), 'true');
+    await page.keyboard.press('ArrowLeft');
     ok((await d.getByRole('tabpanel').innerText()).includes('side road (a bay)'), 'tips');
     await tabs.nth(2).click();
     ok((await d.getByRole('tabpanel').innerText()).includes('Vehicles are not assigned to stations.'), 'how vehicles find work');
     await tabs.nth(5).click(); // "How the simulation works" (the trucks page is nth(3), the statistics page nth(4))
     const sim = await d.getByRole('tabpanel').innerText();
     for (const word of ['dock', 'one-way', 'Junctions', 'deadlock', 'Throughput', 'Lead time', 'bottleneck', 'seed', 'battery']) ok(sim.toLowerCase().includes(word.toLowerCase()), `simulation text mentions ${word}`);
-    await closeAll();
+    // the Examples page (the last one): every example in the order of the gallery, with its tips as written in the registry, and a button that opens it
+    await tabs.nth(7).click();
+    const ordered = [...EXAMPLES].sort((a, b) => a.level - b.level || a.rank - b.rank);
+    const panel = d.getByRole('tabpanel');
+    ok((await panel.innerText()).includes('means over five runs of 8 simulated hours'), 'the page says what the figures are');
+    eq(await panel.locator('.example-help').evaluateAll((els) => els.map((e) => e.dataset.example)), ordered.map((e) => e.id), 'every example, in the order of the gallery');
+    for (const e of ordered) eq(await panel.locator(`[data-example="${e.id}"] ol > li`).allInnerTexts(), e.tips, `${e.id}: the tips are the tips of the registry`);
+    await panel.locator('[data-example="two-lines"]').getByRole('button', { name: /Open this example/ }).click();
+    await noDialog('"Open this example" closes the Help');
+    eq((await calls()).at(-1), ['loadExample', 'two-lines']);
     // the shell can open a given tab
     await page.evaluate(() => { window.harness.ctx.dialogs.openHelp({ tab: 'tips' }); });
     eq(await dialog().getByRole('tab', { selected: true }).innerText(), 'Tips');
+    await closeAll();
+    // ... and the Examples page scrolled to one example (the toast action after opening an example): its heading has the focus
+    await page.evaluate(() => { window.harness.ctx.dialogs.openHelp({ tab: 'examples', example: 'twin-plants' }); });
+    eq(await dialog().getByRole('tab', { selected: true }).innerText(), 'Examples');
+    eq(await page.evaluate(() => document.activeElement?.textContent), EXAMPLES.find((e) => e.id === 'twin-plants').name, 'the heading of that example has the focus');
+    ok(await page.evaluate(() => { const r = document.querySelector('#help-example-twin-plants').getBoundingClientRect(); const m = document.querySelector('[role=dialog] .modal__body').getBoundingClientRect(); return r.top >= m.top - 1 && r.top < m.bottom; }), 'and it is scrolled into view');
     await closeAll();
   });
 
@@ -1044,7 +1067,7 @@ await withBrowser(async ({ page, context, url, errors }) => {
     clean(await audit('[data-panel=flows]'), 'flows panel');
     for (const name of ['welcome', 'help', 'share', 'importExport']) {
       await page.locator(`#open-${name}`).click();
-      if (name === 'welcome') await page.waitForFunction(() => document.querySelectorAll('[role="dialog"] [data-example] img').length === 5);
+      if (name === 'welcome') await page.waitForFunction((n) => document.querySelectorAll('[role="dialog"] [data-example] img').length === n, EXAMPLES.length);
       if (name === 'share') await page.getByLabel('Link to this project').waitFor();
       if (name === 'help') {
         for (const label of ['Tools & shortcuts', 'How the simulation works', 'Tips']) {
@@ -1105,7 +1128,7 @@ await withBrowser(async ({ page, context, url, errors }) => {
         for (const name of ['welcome', 'help', 'share', 'importExport']) {
           await page.evaluate(() => window.harness.showTab('fleet'));
           await page.locator(`#open-${name}`).evaluate((b) => b.click());
-          if (name === 'welcome') await page.waitForFunction(() => document.querySelectorAll('[role="dialog"] [data-example] img').length === 5, null, { timeout: 15000 });
+          if (name === 'welcome') await page.waitForFunction((n) => document.querySelectorAll('[role="dialog"] [data-example] img').length === n, EXAMPLES.length, { timeout: 15000 });
           if (name === 'share') await page.getByLabel('Link to this project').waitFor();
           await page.waitForTimeout(250);
           await shotPage(`dialog-${name}`, theme, size);

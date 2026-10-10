@@ -159,7 +159,7 @@ await withBrowser(async ({ browser, url, errors }) => {
     ok(await page.evaluate(() => document.getElementById('app').dataset.state) === 'ready', 'the app reports ready');
     ok(await page.evaluate(() => !document.querySelector('[data-region=loading]')), 'the loading message is gone');
     eq(await page.title(), 'Untitled plant – LogiPlan', 'document title follows the plant name');
-    const cards = await dialog.getByRole('button', { name: /Starter|Two production|Congestion|Dock lab|Warehouse: first day/ }).count();
+    const cards = await dialog.locator('[data-example]').count();
     eq(cards, EXAMPLES.length, 'one card per example');
     ok(await dialog.getByRole('button', { name: 'Create empty plant' }).isVisible(), 'empty plant offered');
     ok(await page.evaluate(() => document.activeElement && document.activeElement.closest('[role=dialog]') !== null), 'focus is inside the welcome dialog');

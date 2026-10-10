@@ -2665,3 +2665,127 @@ button.chart-legend__item[aria-pressed='false'] .chart-legend__key {
     print-color-adjust: exact;
   }
 }
+
+/* ---------------------------------------------------------------------------------------------------------
+   Examples gallery (welcome dialog) and the Examples page of the Help dialog (js/ui/examples-gallery.js).
+   Levels with a heading each; a card across two columns for a very wide plan when the grid has room for two. */
+.example-level {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.example-level__title {
+  margin: 0;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+}
+
+.example-level__caption {
+  margin: -4px 0 0;
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+}
+
+.example-grid-wrap {
+  container-type: inline-size;
+}
+
+.example-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 12px;
+}
+
+@container (min-width: 500px) {
+  .example-card--wide {
+    grid-column: span 2;
+  }
+}
+
+.example-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.example-dots {
+  display: inline-flex;
+  gap: 3px;
+}
+
+.example-dots__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  border: 1px solid var(--text-faint);
+  box-sizing: border-box;
+}
+
+.example-dots__dot--on {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.example-learn {
+  color: var(--text);
+  font-size: var(--fs-sm);
+  line-height: var(--lh);
+}
+
+.example-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.example-chips .chip {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.example-help {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding-bottom: var(--sp-3);
+  border-bottom: 1px solid var(--border);
+}
+
+.example-help:last-child {
+  border-bottom: 0;
+}
+
+.example-help__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--sp-2);
+}
+
+.example-help__title {
+  margin: 0;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+}
+
+.example-help__title:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.example-help__tips {
+  margin: 0;
+  padding-left: 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  line-height: var(--lh);
+  max-width: 78ch;
+}

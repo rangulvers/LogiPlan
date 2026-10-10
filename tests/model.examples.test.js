@@ -100,20 +100,38 @@ test('every station of every example has a dock, every flow is routable both way
     for (const s of layout.stations) assert.ok(L.docksOf(layout, s.id).length >= 1, `${example.id}: ${s.name} has no dock`);
     const bad = validateLayout(layout).filter((i) => i.code.startsWith('flow-') || i.code.startsWith('station-'));
     assert.deepEqual(bad, [], example.id);
-    assert.ok(layout.flows.length >= 2 && layout.fleets.length >= 1);
+    assert.ok(layout.flows.length >= 1 && layout.fleets.length >= 1); // hello-pallet is the one-flow plant
     assert.ok(layout.stations.some((s) => s.type === 'source') && layout.stations.some((s) => s.type === 'sink'));
   }
 });
 
-test('plant sizes: grids 40x24 to 56x36, 2 m cells, one connected road network with a loop', () => {
+// The five original examples keep the 40x24 to 56x36 box at 2 m; the six of the ladder (docs/EXAMPLES-DESIGN.md 2, 8.2) have their own sizes: the cell
+// follows the vehicle (3 m for a 2.6 m forklift, 4 m for the 3.5 m yard truck) and the two big plants are bigger. `loop`: hello-pallet and the yard shuttle
+// are one road with dead ends by design.
+const LADDER_SIZES = {
+  'hello-pallet': { cols: 36, rows: 14, cellSize: 3, loop: false },
+  'charging-corner': { cols: 56, rows: 30, cellSize: 2, loop: true },
+  'yard-shuttle': { cols: 60, rows: 44, cellSize: 4, loop: false },
+  'morning-peak': { cols: 60, rows: 44, cellSize: 3, loop: true },
+  'components-plant': { cols: 79, rows: 42, cellSize: 2, loop: true },
+  'twin-plants': { cols: 170, rows: 52, cellSize: 2, loop: true },
+};
+
+test('plant sizes: the five original grids 40x24 to 56x36 with 2 m cells and a loop, the six of the ladder as listed; one connected road network', () => {
   for (const { example, layout } of built) {
     const { cols, rows, cellSize } = layout.grid;
-    assert.ok(cols >= 40 && cols <= 56 && rows >= 24 && rows <= 36, `${example.id}: ${cols}x${rows}`);
-    assert.equal(cellSize, 2);
+    const ladder = LADDER_SIZES[example.id];
+    if (ladder) {
+      assert.deepEqual({ cols, rows, cellSize }, { cols: ladder.cols, rows: ladder.rows, cellSize: ladder.cellSize }, example.id);
+    } else {
+      assert.ok(cols >= 40 && cols <= 56 && rows >= 24 && rows <= 36, `${example.id}: ${cols}x${rows}`);
+      assert.equal(cellSize, 2);
+    }
     assert.equal(pieces(layout), 1, `${example.id}: one connected road network`);
     const { cells, edges } = roadGraph(layout);
-    assert.ok(edges >= cells.length, `${example.id}: the roads contain a loop (connections >= cells)`);
-    assert.ok(L.roadLengthMeters(layout) > 100);
+    if (!ladder || ladder.loop) assert.ok(edges >= cells.length, `${example.id}: the roads contain a loop (connections >= cells)`);
+    else assert.ok(edges < cells.length, `${example.id}: one road with dead ends, no loop, by design`);
+    assert.ok(L.roadLengthMeters(layout) > (example.id === 'hello-pallet' ? 80 : 100)); // hello-pallet: one 81 m road
   }
 });
 
