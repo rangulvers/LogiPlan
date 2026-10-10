@@ -17,6 +17,8 @@
     "check": "node scripts/check-imports.mjs",
     "version:check": "node scripts/bump-version.mjs --check",
     "version:bump": "node scripts/bump-version.mjs",
-    "test:e2e": "node tests/e2e/run.mjs"
+    "test:e2e": "node tests/e2e/run.mjs",
+    "how:facts": "node scripts/how-facts.mjs",
+    "capture:how": "node scripts/capture-how.mjs"
   }
 }

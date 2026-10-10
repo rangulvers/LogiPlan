@@ -10,6 +10,11 @@ that the history can be read. How to cut a new version is described in the READM
 ## [Unreleased]
 
 ### Added
+- **A page that explains LogiPlan: "How LogiPlan works".** It lives next to the planner (`/how/`) and is linked from the version dialog. It tells the story
+  from the problem to a decision, shows real screenshots of every step and has a live simulation of an example plant that runs the planner's own engine in
+  your browser: play, pause, switch on a second forklift and compare, or run a whole shift and see how long your machine needs. Every figure on it is
+  generated from the project or read from the running simulation, and it says plainly what the planner does not do yet. It sets no cookies and loads
+  nothing from other sites.
 - **Six new examples, from very simple to a two-plant campus.** The examples window is now a ladder in five levels. New: *Hello, pallet* (one forklift),
   *Charging corner* (six electric forklifts), *Yard shuttle* (one truck over 280 metres), *Morning peak* (a cross-dock on a timetable),
   *Components plant* (three kinds of vehicle) and *Two plants, one yard* (two plants on one baseplate that share a warehouse and a charging hall; one

@@ -182,6 +182,7 @@ try {
     ok(/^LogiPlan v[\d.]+ \(development build\), Chrome \d+, window 1440 x 900 on a 1440 x 900 screen$/.test(line), `the bug report line: ${line}`);
     const links = await page.locator('[role=dialog] .about__links a').evaluateAll((as) => as.map((a) => [a.textContent, a.href, a.target, a.rel]));
     eq(links, [
+      ['How LogiPlan works', `${new URL(page.url()).origin}/how/`, '', ''],
       ['Licence (MIT)', 'https://github.com/rangulvers/LogiPlan/blob/main/LICENSE', '_blank', 'noopener noreferrer'],
       ['Source code on GitHub', 'https://github.com/rangulvers/LogiPlan', '_blank', 'noopener noreferrer'],
       ['Report a problem', 'https://github.com/rangulvers/LogiPlan/issues', '_blank', 'noopener noreferrer'],

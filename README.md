@@ -8,6 +8,10 @@ It is a **static web app** (vanilla ES modules, no build step, no runtime depend
 
 > Live site (once GitHub Pages is switched on, see *Deploy*): `https://rangulvers.github.io/LogiPlan/`. The version number and the short code of the build at the bottom right of the window say which deploy you are looking at; click it for the build, its date and what is new (see *Versioning*).
 
+**New here? Read [How LogiPlan works](how/index.html)** (served at `/how/`, also linked from the version dialog of the app): what it is for, how a plant goes from an empty baseplate to an answer, a live simulation that runs the real engine in your browser, and a plain list of what is not built. Its numbers are generated from this repository and tested.
+
+<p><img src="how/img/run.light.webp" alt="The plant running in LogiPlan: vehicles on the roads, loads queuing in front of a workstation, key figures along the top." width="760"></p>
+
 ---
 
 ## What you can do

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Assemble the deployable static site into ./_site (what GitHub Pages serves).
-// The app needs no bundling: we copy index.html, css/, js/, assets/ and CHANGELOG.md, add .nojekyll and the identity of this build.
+// The app needs no bundling: we copy index.html, css/, js/, assets/, how/ (the landing page, docs/HOW-PAGE-DESIGN.md) and CHANGELOG.md, add .nojekyll and the identity of this build.
 //
 //   node scripts/build-site.mjs [outdir]      outdir is relative to the repository (default _site) or absolute; it is emptied first
 //
@@ -92,7 +92,7 @@ export function assembleSite({ out, env = process.env, now = new Date() }) {
   mkdirSync(out, { recursive: true });
 
   const required = ['index.html', 'css', 'js'];
-  const optional = ['assets', 'favicon.svg', 'favicon.ico', 'manifest.webmanifest', 'CHANGELOG.md'];
+  const optional = ['assets', 'how', 'favicon.svg', 'favicon.ico', 'manifest.webmanifest', 'CHANGELOG.md'];
   for (const name of required) {
     if (!existsSync(path.join(root, name))) throw new Error(`missing required ${name}`);
     cpSync(path.join(root, name), path.join(out, name), { recursive: true });

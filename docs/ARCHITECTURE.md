@@ -894,3 +894,10 @@ Status colours used consistently everywhere: busy/ok green, starved amber, block
 `.github/workflows/pages.yml`: on push to `main`, job `verify` (import check, fast test tier, assemble `_site/` (index.html, css/, js/, assets/, CHANGELOG.md, docs not needed; the identity of the build, `js/build-info.js` and `version.json`, is written into `_site/` from `GITHUB_SHA`, see 6.11), upload with
 `actions/upload-pages-artifact`), then job `deploy` (`actions/deploy-pages`, needs `verify` only, skipped when a newer commit is already on the branch). The heavy test tier runs beside the deploy
 (one job per shard) and turns the run red if it fails, without holding the deploy back: the pull request has already passed it (`ci.yml`). Repo Settings → Pages → Source: **GitHub Actions**. All asset URLs relative so it works under `/<repo>/`.
+
+## 10. The landing page `/how/`
+A static page beside the app, not part of its bundle; design and claim ledger in `docs/HOW-PAGE-DESIGN.md`.
+* `how/index.html`, `how/css/page.css` (built on `css/tokens.css`), `how/js/` (`demo-boot.js` is the only script of the first view; `demo.js` and `demo-logic.js` load when the demo section is near and import the app's own `js/sim`, `js/model`, `js/ui/renderer.js`), `how/css/demo.css`, `how/svg/`, `how/img/`. `scripts/build-site.mjs` copies `how/` into the site; `scripts/serve.mjs` redirects `/how` to `/how/`.
+* Facts: every number or name that can go stale is derived by `scripts/how-facts.mjs` (`npm run how:facts`) into `how/facts.json`; the page prints it as `data-fact="key"`. `tests/how.page.test.js` fails on a stale file, a wrong or unknown fact, or a typed digit.
+* Screenshots: `npm run capture:how` (`scripts/capture-how.mjs`) drives the real app with fixed seeds, viewport and simulated time and rewrites `how/img/*` and `how/img/manifest.json`; `tests/how.visuals.test.js` checks them. Re-run it after a visual change of the planner, then commit the images.
+* Tests: `tests/how.page.test.js`, `how.site.test.js` (assembled site under a path prefix), `how.demo.test.js`, `how.visuals.test.js` (fast tier); `tests/e2e/how.mjs` in Chromium.

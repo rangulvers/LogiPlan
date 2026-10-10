@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1000" width="1600" height="1000" role="img" aria-labelledby="t">
+<title id="t">Schematic: variant A is the plant as it is, variant B is the same plant with one more forklift. Both are run several times with the same seeds. If the ranges of a measure overlap there is no clear winner; if they are apart the difference is real.</title>
+<style>
+:root{--bg:#f6f8fb;--plate:#dfe7f2;--stud:#cbd6e6;--road:#3b4658;--card:#fff;--line:#c3ccda;--ink:#1c2230;--dim:#4f5d75;--src:#2f7df6;--snk:#3dbb6d;--fork:#f08a24;--acc:#1f5fd1;--accs:#e8f0fe;--ok:#2a8a50;--bar:#8a97ad}
+@media(prefers-color-scheme:dark){:root{--bg:#1a202a;--plate:#263143;--stud:#324057;--road:#0f1319;--card:#202735;--line:#3d495c;--ink:#e6ebf5;--dim:#a3afc4;--src:#2a71dd;--snk:#37a862;--fork:#f5b94c;--acc:#7fb1ff;--accs:#2a3547;--ok:#5fd08d;--bar:#6b778c}}
+.t{font:600 36px system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;fill:var(--ink)}
+.d{font:500 32px system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;fill:var(--dim)}
+.h{font:700 34px system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+.f{fill:var(--fork);stroke:var(--card);stroke-width:4}
+.p{fill:none;stroke:var(--road);stroke-width:34}
+.w{stroke:var(--bar);stroke-width:10;stroke-linecap:round}
+.m{stroke-width:10;stroke-linecap:round}
+@media(prefers-reduced-motion:no-preference){.n{transform-box:fill-box;transform-origin:center;animation:p 2.4s ease-in-out infinite}}
+@keyframes p{50%{transform:scale(1.25)}}
+</style>
+<defs><pattern id="s" width="40" height="40" patternUnits="userSpaceOnUse"><circle cx="20" cy="20" r="6" fill="var(--stud)"/></pattern></defs>
+<rect width="1600" height="1000" fill="var(--bg)"/>
+<g aria-hidden="true">
+<defs><g id="plan"><rect width="640" height="400" rx="22" fill="var(--plate)"/><rect width="640" height="400" rx="22" fill="url(#s)"/>
+<rect x="190" y="90" width="260" height="220" class="p" rx="6"/>
+<rect x="24" y="170" width="86" height="60" rx="8" fill="var(--src)"/><rect x="530" y="170" width="86" height="60" rx="8" fill="var(--snk)"/>
+<path d="M110,200H173M467,200H530" stroke="var(--road)" stroke-width="34"/></g></defs>
+<g transform="translate(60,70)"><use href="#plan"/>
+<circle class="f" cx="190" cy="140" r="17"/><circle class="f" cx="420" cy="90" r="17"/><circle class="f" cx="320" cy="310" r="17"/></g>
+<g transform="translate(900,70)"><use href="#plan"/>
+<circle class="f" cx="190" cy="140" r="17"/><circle class="f" cx="420" cy="90" r="17"/><circle class="f" cx="320" cy="310" r="17"/>
+<circle class="f" cx="450" cy="250" r="17"/><circle class="n" cx="450" cy="250" r="32" fill="none" stroke="var(--acc)" stroke-width="6"/></g>
+<rect x="60" y="14" width="46" height="46" rx="12" fill="var(--accs)" stroke="var(--line)" stroke-width="2"/><text class="h" x="83" y="49" text-anchor="middle" style="fill:var(--acc)">A</text>
+<text class="t" x="124" y="49">As it is</text>
+<rect x="900" y="14" width="46" height="46" rx="12" fill="var(--accs)" stroke="var(--line)" stroke-width="2"/><text class="h" x="923" y="49" text-anchor="middle" style="fill:var(--acc)">B</text>
+<text class="t" x="964" y="49">One more forklift</text>
+<path d="M720,270H880M850,244L880,270L850,296" fill="none" stroke="var(--acc)" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+<rect x="60" y="520" width="1480" height="430" rx="26" fill="var(--card)" stroke="var(--line)" stroke-width="3"/>
+<text class="t" x="100" y="585">Same seeds, run again and again</text>
+<text class="d" x="1500" y="585" text-anchor="end">schematic</text>
+<text class="t" x="100" y="690">Ranges overlap</text><text class="d" x="100" y="735">no clear winner</text>
+<g class="w"><path d="M700,670H1020"/><path d="M800,725H1120"/></g>
+<circle cx="860" cy="670" r="14" fill="var(--src)"/><circle cx="960" cy="725" r="14" fill="var(--fork)"/>
+<text class="h" x="650" y="682" text-anchor="end" style="fill:var(--acc)">A</text><text class="h" x="750" y="737" text-anchor="end" style="fill:var(--acc)">B</text>
+<text class="t" x="100" y="855">Ranges apart</text><text class="d" x="100" y="900">a real difference</text>
+<g class="w"><path d="M700,835H900"/><path d="M1100,890H1400"/></g>
+<circle cx="800" cy="835" r="14" fill="var(--src)"/><circle cx="1250" cy="890" r="14" fill="var(--fork)"/>
+<text class="h" x="650" y="847" text-anchor="end" style="fill:var(--acc)">A</text><text class="h" x="1050" y="902" text-anchor="end" style="fill:var(--acc)">B</text>
+</g>
+</svg>

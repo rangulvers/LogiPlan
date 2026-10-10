@@ -1,0 +1,541 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>How LogiPlan works – plan a plant, then watch it run</title>
+  <meta name="description" content="LogiPlan is a free, open-source planner for factory and warehouse logistics: draw roads and stations, add vehicles, and a live simulation shows the queues, the traffic jams and the bottleneck before anything is built.">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#eef1f6" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#12161d" media="screen and (prefers-color-scheme: dark)">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="LogiPlan">
+  <meta property="og:title" content="How LogiPlan works – plan a plant, then watch it run">
+  <meta property="og:description" content="Draw a factory on a baseplate, add forklifts and AGVs, press play. A real simulation, running in your browser.">
+  <meta property="og:image" content="https://rangulvers.github.io/LogiPlan/how/img/og.png" data-fact-content="site.og_image">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../css/tokens.css">
+  <link rel="stylesheet" href="css/page.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to the content</a>
+
+  <header class="top" data-top>
+    <div class="wrap top__row">
+      <a class="brand" href="./" aria-label="LogiPlan, top of this page">
+        <img class="brand__logo" src="../assets/logo.svg" alt="" width="32" height="32">
+        <span class="brand__name">LogiPlan</span>
+      </a>
+      <nav class="toc" aria-label="On this page">
+        <ul>
+          <li><a href="#problem">The problem</a></li>
+          <li><a href="#how">How it works</a></li>
+          <li><a href="#live">Live demo</a></li>
+          <li><a href="#understand">Evidence</a></li>
+          <li><a href="#value">Value</a></li>
+          <li><a href="#examples">Examples</a></li>
+          <li><a href="#craft">Under the hood</a></li>
+          <li><a href="#limits">Limits</a></li>
+        </ul>
+      </nav>
+      <a class="btn btn--primary btn--sm top__cta" href="../">Open the planner</a>
+    </div>
+  </header>
+
+  <main id="main">
+
+    <!-- ============================== HERO ============================== -->
+    <section class="hero" aria-labelledby="hero-h">
+      <div class="wrap hero__grid">
+        <div class="hero__copy">
+          <p class="eyebrow">A planner for factory and warehouse logistics</p>
+          <h1 id="hero-h" class="hero__title">Watch your plant run <span class="hero__em">before you build it.</span></h1>
+          <p class="lede">Draw roads and stations on a baseplate. Say where the loads go. Add forklifts, AGVs and tugger trains, and press play. A live simulation shows the queues, the jams and the one thing that limits the whole plant.</p>
+          <div class="cta-row">
+            <a class="btn btn--primary btn--lg" href="../">Open the planner <span class="btn__arrow" aria-hidden="true">→</span></a>
+            <a class="btn btn--ghost btn--lg" href="#live">Run a plant right here</a>
+          </div>
+          <ul class="chips" aria-label="At a glance">
+            <li>Free and open source (<span data-fact="license">MIT</span>)</li>
+            <li>Runs in your browser</li>
+            <li>No account, nothing to install</li>
+          </ul>
+        </div>
+        <div class="hero__art">
+          <div class="hero__plan"><svg class="hero__svg" viewBox="0 0 720 504" width="720" height="504" aria-hidden="true" focusable="false">
+<defs>
+<pattern id="hstud" width="24" height="24" patternUnits="userSpaceOnUse"><circle cx="12" cy="12" r="2.4" class="hp-stud"/></pattern>
+<marker id="ha" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M1 1.5L8.5 5L1 8.5z" class="hf-head"/></marker>
+</defs>
+<rect class="hp" x="0" y="0" width="720" height="504" rx="22"/>
+<rect x="0" y="0" width="720" height="504" rx="22" fill="url(#hstud)"/>
+<g class="hr">
+<path class="hr__edge" d="M 144,180 H 576 A 36 36 0 0 1 612,216 V 360 A 36 36 0 0 1 576,396 H 144 A 36 36 0 0 1 108,360 V 216 A 36 36 0 0 1 144,180 Z"/>
+<path class="hr__edge" d="M204,132L204,180"/><path class="hr__edge" d="M372,132L372,180"/><path class="hr__edge" d="M612,276L636,276"/><path class="hr__edge" d="M372,396L372,420"/><path class="hr__edge" d="M108,276L84,276"/><path class="hr__edge" d="M276,180L276,240"/><path class="hr__edge" d="M468,396L468,312"/>
+<path class="hr__road" d="M 144,180 H 576 A 36 36 0 0 1 612,216 V 360 A 36 36 0 0 1 576,396 H 144 A 36 36 0 0 1 108,360 V 216 A 36 36 0 0 1 144,180 Z"/>
+<path class="hr__road" d="M204,132L204,180"/><path class="hr__road" d="M372,132L372,180"/><path class="hr__road" d="M612,276L636,276"/><path class="hr__road" d="M372,396L372,420"/><path class="hr__road" d="M108,276L84,276"/><path class="hr__road" d="M276,180L276,240"/><path class="hr__road" d="M468,396L468,312"/>
+<path class="hr__mid" d="M 144,180 H 576 A 36 36 0 0 1 612,216 V 360 A 36 36 0 0 1 576,396 H 144 A 36 36 0 0 1 108,360 V 216 A 36 36 0 0 1 144,180 Z"/>
+</g>
+<g class="hb hb--source"><rect class="hb__lip" x="156" y="52" width="96" height="68" rx="6"/><rect class="hb__top" x="156" y="48" width="96" height="67" rx="6"/><circle class="hb__stud" cx="168" cy="59" r="3.2"/><circle class="hb__stud" cx="180" cy="59" r="3.2"/><circle class="hb__stud" cx="192" cy="59" r="3.2"/><circle class="hb__stud" cx="204" cy="59" r="3.2"/><circle class="hb__stud" cx="216" cy="59" r="3.2"/><circle class="hb__stud" cx="228" cy="59" r="3.2"/><circle class="hb__stud" cx="240" cy="59" r="3.2"/><text class="hb__label" x="204" y="106" text-anchor="middle">Goods in</text></g>
+<g class="hb hb--process"><rect class="hb__lip" x="324" y="52" width="96" height="68" rx="6"/><rect class="hb__top" x="324" y="48" width="96" height="67" rx="6"/><circle class="hb__stud" cx="336" cy="59" r="3.2"/><circle class="hb__stud" cx="348" cy="59" r="3.2"/><circle class="hb__stud" cx="360" cy="59" r="3.2"/><circle class="hb__stud" cx="372" cy="59" r="3.2"/><circle class="hb__stud" cx="384" cy="59" r="3.2"/><circle class="hb__stud" cx="396" cy="59" r="3.2"/><circle class="hb__stud" cx="408" cy="59" r="3.2"/><text class="hb__label" x="372" y="106" text-anchor="middle">Assembly</text></g>
+<g class="hb hb--sink"><rect class="hb__lip" x="648" y="244" width="72" height="68" rx="6"/><rect class="hb__top" x="648" y="240" width="72" height="67" rx="6"/><circle class="hb__stud" cx="660" cy="251" r="3.2"/><circle class="hb__stud" cx="672" cy="251" r="3.2"/><circle class="hb__stud" cx="684" cy="251" r="3.2"/><circle class="hb__stud" cx="696" cy="251" r="3.2"/><circle class="hb__stud" cx="708" cy="251" r="3.2"/><text class="hb__label" x="684" y="298" text-anchor="middle">Goods out</text></g>
+<g class="hb hb--storage"><rect class="hb__lip" x="312" y="436" width="120" height="68" rx="6"/><rect class="hb__top" x="312" y="432" width="120" height="67" rx="6"/><circle class="hb__stud" cx="324" cy="443" r="3.2"/><circle class="hb__stud" cx="336" cy="443" r="3.2"/><circle class="hb__stud" cx="348" cy="443" r="3.2"/><circle class="hb__stud" cx="360" cy="443" r="3.2"/><circle class="hb__stud" cx="372" cy="443" r="3.2"/><circle class="hb__stud" cx="384" cy="443" r="3.2"/><circle class="hb__stud" cx="396" cy="443" r="3.2"/><circle class="hb__stud" cx="408" cy="443" r="3.2"/><circle class="hb__stud" cx="420" cy="443" r="3.2"/><text class="hb__label" x="372" y="490" text-anchor="middle">Storage</text></g>
+<g class="hb hb--depot"><rect class="hb__lip" x="0" y="244" width="72" height="68" rx="6"/><rect class="hb__top" x="0" y="240" width="72" height="67" rx="6"/><circle class="hb__stud" cx="12" cy="251" r="3.2"/><circle class="hb__stud" cx="24" cy="251" r="3.2"/><circle class="hb__stud" cx="36" cy="251" r="3.2"/><circle class="hb__stud" cx="48" cy="251" r="3.2"/><circle class="hb__stud" cx="60" cy="251" r="3.2"/><text class="hb__label" x="36" y="298" text-anchor="middle">Parking</text></g>
+<g class="hb hb--process"><rect class="hb__lip" x="240" y="244" width="72" height="68" rx="6"/><rect class="hb__top" x="240" y="240" width="72" height="67" rx="6"/><circle class="hb__stud" cx="252" cy="251" r="3.2"/><circle class="hb__stud" cx="264" cy="251" r="3.2"/><circle class="hb__stud" cx="276" cy="251" r="3.2"/><circle class="hb__stud" cx="288" cy="251" r="3.2"/><circle class="hb__stud" cx="300" cy="251" r="3.2"/><text class="hb__label" x="276" y="298" text-anchor="middle">Packing</text></g>
+<g class="hb hb--process"><rect class="hb__lip" x="420" y="244" width="96" height="68" rx="6"/><rect class="hb__top" x="420" y="240" width="96" height="67" rx="6"/><circle class="hb__stud" cx="432" cy="251" r="3.2"/><circle class="hb__stud" cx="444" cy="251" r="3.2"/><circle class="hb__stud" cx="456" cy="251" r="3.2"/><circle class="hb__stud" cx="468" cy="251" r="3.2"/><circle class="hb__stud" cx="480" cy="251" r="3.2"/><circle class="hb__stud" cx="492" cy="251" r="3.2"/><circle class="hb__stud" cx="504" cy="251" r="3.2"/><text class="hb__label" x="468" y="298" text-anchor="middle">Press</text></g>
+<g class="hfl">
+<path class="hf" d="M261.6,84H314.4" marker-end="url(#ha)"/>
+<path class="hf" d="M388.8,124.8C408,192 441.6,201.6 456,232.8" marker-end="url(#ha)"/>
+<path class="hf" d="M345.6,124.8C321.6,192 297.6,201.6 278.4,232.8" marker-end="url(#ha)"/>
+<path class="hf" d="M427.2,76.8C564,76.8 652.8,124.8 681.6,230.4" marker-end="url(#ha)"/>
+<path class="hf" d="M276,316.8C276,384 316.8,408 340.8,427.2" marker-end="url(#ha)"/>
+</g>
+<g class="hq">
+<rect x="367" y="122.4" width="10" height="10" rx="2.5"/><rect x="367" y="134.4" width="10" height="10" rx="2.5"/><rect x="367" y="146.4" width="10" height="10" rx="2.5"/>
+<rect x="199" y="122.4" width="10" height="10" rx="2.5"/><rect x="199" y="134.4" width="10" height="10" rx="2.5"/>
+</g>
+<g class="hvs" style="--path:path('M 144,180 H 576 A 36 36 0 0 1 612,216 V 360 A 36 36 0 0 1 576,396 H 144 A 36 36 0 0 1 108,360 V 216 A 36 36 0 0 1 144,180 Z')">
+<g class="hv hv--agv" style="--d:0s;offset-distance:6%"><rect x="-14" y="-7.5" width="28" height="15" rx="4.5" class="hv__body"/><rect x="-5" y="-4.5" width="9" height="9" rx="2" class="hv__load"/><rect x="7" y="-5" width="5" height="10" rx="2" class="hv__cab"/></g><g class="hv hv--agv" style="--d:-6s;offset-distance:38%"><rect x="-14" y="-7.5" width="28" height="15" rx="4.5" class="hv__body"/><rect x="-5" y="-4.5" width="9" height="9" rx="2" class="hv__load"/><rect x="7" y="-5" width="5" height="10" rx="2" class="hv__cab"/></g><g class="hv hv--fork" style="--d:-12s;offset-distance:61%"><rect x="-14" y="-7.5" width="28" height="15" rx="4.5" class="hv__body"/><rect x="-5" y="-4.5" width="9" height="9" rx="2" class="hv__load"/><rect x="7" y="-5" width="5" height="10" rx="2" class="hv__cab"/></g><g class="hv hv--agv" style="--d:-3s;offset-distance:84%"><rect x="-14" y="-7.5" width="28" height="15" rx="4.5" class="hv__body"/><rect x="-5" y="-4.5" width="9" height="9" rx="2" class="hv__load"/><rect x="7" y="-5" width="5" height="10" rx="2" class="hv__cab"/></g><g class="hv hv--fork" style="--d:-9s;offset-distance:22%"><rect x="-14" y="-7.5" width="28" height="15" rx="4.5" class="hv__body"/><rect x="-5" y="-4.5" width="9" height="9" rx="2" class="hv__load"/><rect x="7" y="-5" width="5" height="10" rx="2" class="hv__cab"/></g>
+</g>
+</svg></div>
+          <p class="hero__cap"><span class="mono">Illustration</span> A small plant as LogiPlan draws it: bricks for stations, plates for roads, dashed arrows for flows, and vehicles on the move.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================== 01 PROBLEM ============================== -->
+    <section class="sec sec--surface" id="problem" aria-labelledby="problem-h">
+      <div class="wrap">
+        <div class="sec__head">
+          <p class="eyebrow"><span class="eyebrow__n">01</span> The problem</p>
+          <h2 id="problem-h">A layout looks fine on paper. Then the forklifts meet at a junction.</h2>
+          <p class="lede">In-plant logistics is where good floor plans go wrong: a dock on the main aisle, one charger for six trucks, a door that is never free when the truck arrives. These are not drawing problems. They are problems of <em>time and traffic</em>, and a drawing cannot show time.</p>
+        </div>
+        <ul class="qs">
+          <li class="q">
+            <h3 class="q__ask">How many vehicles do I need?</h3>
+            <p>Run the plant with one, then two, then three. Compare how busy they are and how long loads wait. The answer is where adding another stops helping.</p>
+          </li>
+          <li class="q">
+            <h3 class="q__ask">Where will it jam?</h3>
+            <p>Vehicles queue at junctions, wait for docks and block each other in dead ends. A traffic heatmap and per-junction waits show where, and why.</p>
+          </li>
+          <li class="q">
+            <h3 class="q__ask">What really limits the plant?</h3>
+            <p>A machine, a dock door, a forklift, a charger? LogiPlan names the bottleneck in plain language and shows the evidence behind it.</p>
+          </li>
+        </ul>
+        <p class="aside">The usual ways to answer these questions are a spreadsheet, a Lego mock-up, or the first week of production. LogiPlan stands in for the mock-up, and keeps the part of it that made it useful: you can see and touch the plant.</p>
+      </div>
+    </section>
+
+    <!-- ============================== 02 HOW ============================== -->
+    <section class="sec" id="how" aria-labelledby="how-h">
+      <div class="wrap">
+        <div class="sec__head">
+          <p class="eyebrow"><span class="eyebrow__n">02</span> How it works</p>
+          <h2 id="how-h">Four steps from an empty baseplate to an answer.</h2>
+          <p class="lede">The pictures below are screenshots of the real planner, not mock-ups.</p>
+        </div>
+
+        <ol class="steps">
+          <li class="step">
+            <div class="step__text">
+              <p class="step__n" aria-hidden="true">1</p>
+              <h3>Build the plant</h3>
+              <p>Lay road plates, one-way lanes and slow zones, then snap down bricks: Goods in, Workstation, Storage, Goods out, Parking and charging. Roads stay straight while you drag. Everything can be undone, and the baseplate grows as your plant does, up to <span data-fact="grid.max">320</span> × <span data-fact="grid.max">320</span> cells.</p>
+              <p class="step__note">A station docks on the road cells that touch it, so where you put it decides where vehicles stand and wait.</p>
+            </div>
+            <figure class="shot">
+              <picture>
+                <source media="screen and (prefers-color-scheme: dark)" srcset="img/build.dark.webp">
+                <img src="img/build.light.webp" width="1600" height="1000" loading="lazy" decoding="async" alt="The LogiPlan editor: a tool palette on the left, a plant on the baseplate with roads, coloured station bricks and flow arrows, and the details panel of the selected station on the right.">
+              </picture>
+              <figcaption><span class="mono">Fig. 1</span> The editor.</figcaption>
+            </figure>
+          </li>
+          <li class="step">
+            <div class="step__text">
+              <p class="step__n" aria-hidden="true">2</p>
+              <h3>Describe the work</h3>
+              <p>Draw arrows between stations to say where loads go next, in what share, how many a process consumes per cycle, in what batch size and priority. A Goods in can receive trucks on a rate or on a timetable you paste from Excel, through dock doors and a gate.</p>
+              <p class="step__note">Flows decide where loads go. Vehicles are not tied to stations.</p>
+            </div>
+            <figure class="shot">
+              <picture>
+                <source media="screen and (prefers-color-scheme: dark)" srcset="img/flows.dark.webp">
+                <img src="img/flows.light.webp" width="1600" height="1000" loading="lazy" decoding="async" alt="A flow from a storage station to a workstation selected on the plan, and the Flows tab with the split of the storage output and the settings of that flow: its share and the loads per cycle.">
+              </picture>
+              <figcaption><span class="mono">Fig. 2</span> Flows between stations.</figcaption>
+            </figure>
+          </li>
+          <li class="step">
+            <div class="step__text">
+              <p class="step__n" aria-hidden="true">3</p>
+              <h3>Add vehicles</h3>
+              <p>AGVs, forklifts, tugger trains or your own kind (<span data-fact="vehicle.presets">4</span> presets to start from): speed, acceleration, capacity, load and unload time, batteries and chargers, breakdowns, and where they park. Any free vehicle serves any flow, nearest job first, oldest first, or balanced, as you choose.</p>
+            </div>
+            <figure class="shot">
+              <picture>
+                <source media="screen and (prefers-color-scheme: dark)" srcset="img/fleet.dark.webp">
+                <img src="img/fleet.light.webp" width="1600" height="1000" loading="lazy" decoding="async" alt="The Fleet tab: a fleet of forklifts with its count, speed, capacity and what its vehicles are doing right now, next to the plan.">
+              </picture>
+              <figcaption><span class="mono">Fig. 3</span> A fleet and its settings.</figcaption>
+            </figure>
+          </li>
+          <li class="step">
+            <div class="step__text">
+              <p class="step__n" aria-hidden="true">4</p>
+              <h3>Press play</h3>
+              <p>The simulation runs from <span data-fact="speed.min">1</span>× to <span data-fact="speed.max">1200</span>× real time. Vehicles queue at junctions, reverse at dead ends, charge when their battery runs low and sometimes break down. Change demand, vehicle speed or process time while it runs, and watch what moves.</p>
+            </div>
+            <figure class="shot">
+              <picture>
+                <source media="screen and (prefers-color-scheme: dark)" srcset="img/run.dark.webp">
+                <img src="img/run.light.webp" width="1600" height="1000" loading="lazy" decoding="async" alt="The plant running: vehicles on the roads, loads waiting in front of several stations, and the simulation clock and speed control above the plan.">
+              </picture>
+              <figcaption><span class="mono">Fig. 4</span> The plant running.</figcaption>
+            </figure>
+          </li>
+        </ol>
+      </div>
+    </section>
+
+    <!-- ============================== 03 LIVE ============================== -->
+    <section class="sec sec--dark" id="live" aria-labelledby="live-h">
+      <div class="wrap">
+        <div class="sec__head">
+          <p class="eyebrow"><span class="eyebrow__n">03</span> Live demo</p>
+          <h2 id="live-h">Run it here. This is the real engine.</h2>
+          <p class="lede">Nothing on this page is a recording. The simulation below is the same code the planner uses, running in your browser on a plant from the example list. Every figure next to it is read from that run, and the same plant with the same seed always gives the same figures.</p>
+        </div>
+
+        <!-- MOUNT "demo": the frame, the still picture and the no-JavaScript note are the page's (lead); everything inside .lp-demo is built by how/js/demo.js (demo builder). docs/HOW-PAGE-DESIGN.md 7. -->
+        <div class="demo" data-mount="demo" data-demo="warehouse-first-day">
+          <figure class="demo__still" data-demo-fallback>
+            <picture>
+              <img src="img/demo-still.dark.webp" width="1600" height="1000" loading="lazy" decoding="async" alt="A still frame of the demo plant, a small pallet warehouse: Goods in with trucks waiting at its doors, a Storage, a Goods out, a forklift park and forklifts on the road loop, with the pallets that wait shown on each station.">
+            </picture>
+          </figure>
+          <noscript><p class="demo__note">JavaScript is off, so this is a still frame of the demo plant. The live simulation needs JavaScript.</p></noscript>
+        </div>
+
+        <ul class="tips">
+          <li><strong>Press Play</strong> and watch the pallets pile up in front of the station that is slowest.</li>
+          <li><strong>Change one thing</strong>: flip the switch under the picture (in this plant, a fifth forklift) and compare the figures before and after, side by side, from the same random seed.</li>
+          <li><strong>Run a whole shift</strong> and read how long your machine took to simulate it.</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- ============================== 04 UNDERSTAND ============================== -->
+    <section class="sec" id="understand" aria-labelledby="understand-h">
+      <div class="wrap">
+        <div class="sec__head">
+          <p class="eyebrow"><span class="eyebrow__n">04</span> Evidence</p>
+          <h2 id="understand-h">From a moving picture to numbers you can defend.</h2>
+          <p class="lede">Watching vehicles is persuasive. Counting is convincing. LogiPlan does both, and every number says how it is counted.</p>
+        </div>
+
+        <div class="feats">
+          <article class="feat">
+            <figure class="shot">
+              <picture>
+                <source media="screen and (prefers-color-scheme: dark)" srcset="img/results.dark.webp">
+                <img src="img/results.light.webp" width="1600" height="1000" loading="lazy" decoding="async" alt="The Results tab: throughput, lead time, work in progress and fleet utilisation, with a plain-language finding that names the station that waits for its input.">
+              </picture>
+            </figure>
+            <h3>A dashboard that names the bottleneck</h3>
+            <p>Throughput, lead time, work in progress, utilisation and time stuck in traffic, per station and per fleet, with findings in plain sentences that point at the limiting station and say what waits in front of it.</p>
+          </article>
+          <article class="feat">
+            <figure class="shot">
+              <picture>
+                <source media="screen and (prefers-color-scheme: dark)" srcset="img/traffic.dark.webp">
+                <img src="img/traffic.light.webp" width="1600" height="1000" loading="lazy" decoding="async" alt="A traffic heatmap laid over the plan: the busiest road cells glow in warm colours, with the colour scale in the corner.">
+              </picture>
+            </figure>
+            <h3>A heatmap of where traffic hurts</h3>
+            <p>See which road cells carry the most vehicles and which ones make them wait. A Jobs overlay shows where every vehicle is heading right now.</p>
+          </article>
+          <article class="feat">
+            <figure class="shot">
+              <picture>
+                <source media="screen and (prefers-color-scheme: dark)" srcset="img/stats.dark.webp">
+                <img src="img/stats.light.webp" width="1600" height="1000" loading="lazy" decoding="async" alt="A forklift selected on the plan, its usual routes drawn as lines of different widths, and the Statistics panel showing how its time is spent.">
+              </picture>
+            </figure>
+            <h3>Click anything for its statistics</h3>
+            <p>Click a station, a flow, a road cell or a fleet and a panel opens with the numbers a planner asks first, each with an (i) that states exactly how it is counted. Click a <em>vehicle</em> and the plan draws where it usually drives: line width is trips, colour is time lost waiting, dashes are empty runs.</p>
+            <figure class="shot" style="margin-top:32px">
+              <picture>
+                <img src="svg/route-legend.svg" width="1600" height="1000" loading="lazy" decoding="async" alt="A drawing of a road loop with three routes laid over it: a thick red line, a thin blue line and a dashed amber line, and a key that reads: width is how many trips, colour is time lost waiting, dashed is empty or to a depot, a ring is where it queues.">
+              </picture>
+              <figcaption>How to read the routes of a vehicle.</figcaption>
+            </figure>
+          </article>
+          <article class="feat">
+            <figure class="shot">
+              <picture>
+                <source media="screen and (prefers-color-scheme: dark)" srcset="img/docks.dark.webp">
+                <img src="img/docks.light.webp" width="1600" height="1000" loading="lazy" decoding="async" alt="A warehouse with dock doors: the Results tab lists, for the goods-in doors, trucks served, gate wait, door time and how busy the doors are.">
+              </picture>
+            </figure>
+            <h3>Trucks, gates and dock doors</h3>
+            <p>Trucks arrive at a rate or on your timetable, check in at a gate, are unloaded by your forklifts and leave. Results shows the gate wait and the door time, and says whether the doors or the forklifts are the limit.</p>
+            <figure class="shot" style="margin-top:32px">
+              <picture>
+                <img src="svg/dock-diagram.svg" width="1600" height="1000" loading="lazy" decoding="async" alt="A top view of a truck yard: trucks queue on a road, pass a gate, back into lanes at the dock doors of a Goods in, and forklifts carry the pallets to storage. Brackets mark the gate wait before the gate and the door time at the door.">
+              </picture>
+              <figcaption>Where the gate wait and the door time come from.</figcaption>
+            </figure>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================== 05 DECIDE ============================== -->
+    <section class="sec sec--surface" id="decide" aria-labelledby="decide-h">
+      <div class="wrap split">
+        <div class="split__text">
+          <p class="eyebrow"><span class="eyebrow__n">05</span> Decide</p>
+          <h2 id="decide-h">Keep several plans. Compare them fairly. Hand over the result.</h2>
+          <p class="lede">A plan is rarely right on the first try, and rarely the only candidate. So LogiPlan is built around variants.</p>
+          <ul class="ticks">
+            <li><strong>Variants A, B, C…</strong> of one plant, compared side by side with repeated runs, so one lucky seed does not decide.</li>
+            <li><strong>Sweeps</strong> answer “how many AGVs do I need?” by running the plant again and again with a changing setting.</li>
+            <li><strong>A coach</strong> tells you what a plant still needs, such as a Goods in that is not connected yet, and offers the fix in one click.</li>
+            <li><strong>Reports and links:</strong> a self-contained HTML, print or PDF report, a PNG of the layout, the project as JSON, or a share link.</li>
+          </ul>
+          <figure class="shot" style="margin-top:32px">
+              <picture>
+                <img src="svg/variant-diagram.svg" width="1600" height="1000" loading="lazy" decoding="async" alt="A schematic of two variants: plant A as it is and plant B with one more forklift, both run several times with the same seeds. If the ranges of a measure overlap, there is no clear winner; if they are apart, the difference is real.">
+              </picture>
+              <figcaption>How two variants are read against each other.</figcaption>
+            </figure>
+        </div>
+        <figure class="shot">
+          <picture>
+            <source media="screen and (prefers-color-scheme: dark)" srcset="img/compare.dark.webp">
+            <img src="img/compare.light.webp" width="1600" height="1000" loading="lazy" decoding="async" alt="Two variants of one plant compared side by side: the Experiments tab with the key figures of both from repeated runs and the range of each.">
+          </picture>
+          <figcaption><span class="mono">Fig. 5</span> Variants, compared.</figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <!-- ============================== 06 VALUE ============================== -->
+    <section class="sec" id="value" aria-labelledby="value-h">
+      <div class="wrap">
+        <div class="sec__head">
+          <p class="eyebrow"><span class="eyebrow__n">06</span> Value</p>
+          <h2 id="value-h">What it is worth, as reasoning you can check.</h2>
+          <p class="lede">There is no savings percentage on this page, because one would have to be invented. Here is the logic instead.</p>
+        </div>
+        <ol class="why">
+          <li>
+            <h3>Questions get answered before the money is spent.</h3>
+            <p>Moving a dock or adding a vehicle on the floor takes time and money, and often stops work. Moving a brick takes a second, and a simulated shift takes seconds of computing time (the demo above measures it on your machine). The cheapest moment to be wrong is the one before anything is built.</p>
+          </li>
+          <li>
+            <h3>The answer comes with its evidence.</h3>
+            <p>A number without a counting rule is an opinion. Every figure in the Statistics panel has an (i) that says what is counted and over what window, and calls a measurement <em>indicative</em> when it covers too little time. The same plant and seed always give the same results, so a colleague can reproduce yours.</p>
+          </li>
+          <li>
+            <h3>It teaches the physics, not just the tool.</h3>
+            <p>The examples ladder starts with a single forklift whose capacity you can work out on paper (“<span data-fact="ex.hello-pallet.learn">A vehicle is a machine with a cycle time, so its capacity can be calculated.</span>”), then lets the simulation confirm it and show what the paper calculation missed: queues, charging, docks that cannot share the work.</p>
+          </li>
+          <li>
+            <h3>It is open, so you can look inside.</h3>
+            <p>The model, the traffic rules and the statistics are ordinary JavaScript under the <span data-fact="license">MIT</span> licence. If a number looks odd, you can read how it was made, and the tests that pin it.</p>
+          </li>
+        </ol>
+        <div class="example">
+          <p class="example__tag mono">A real example from the app</p>
+          <h3><span data-fact="ex.dock-lab.name">Dock lab: one street, three docks</span></h3>
+          <p>Trucks bring pallets to a Goods in with three docks, each on its own short side road, and forklifts carry them to a Storage. Turn the three side roads into one row and the docks stop sharing the work: in the app’s own numbers the first dock takes almost all the visits and the others stand empty, because a forklift cannot drive past a parked one. Both layouts have three docks; only one of them shares the work. That is the kind of mistake that is cheap to find here and expensive to find on day one.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================== 07 EXAMPLES ============================== -->
+    <section class="sec sec--surface" id="examples" aria-labelledby="examples-h">
+      <div class="wrap">
+        <div class="sec__head">
+          <p class="eyebrow"><span class="eyebrow__n">07</span> Examples</p>
+          <h2 id="examples-h"><span data-fact="examples.count">11</span> plants, <span data-fact="examples.levels">5</span> levels, one path.</h2>
+          <p class="lede">Open an example and press play, or follow the ladder from the top. Each plant adds one idea to the ones before it, and has a short list of things to try whose numbers were measured.</p>
+        </div>
+        <div class="ladder">
+<section class="lvl" aria-labelledby="lvl1-h">
+<div class="lvl__head"><p class="lvl__n mono">Level 1</p><h3 id="lvl1-h"><span data-fact="level.1.title">Start here</span></h3><p class="lvl__cap"><span data-fact="level.1.caption">One road, then one small plant.</span></p></div>
+<ul class="exs">
+<li class="ex"><picture class="ex__pic"><source media="screen and (prefers-color-scheme: dark)" srcset="img/ex-hello-pallet.dark.webp"><img src="img/ex-hello-pallet.light.webp" width="640" height="400" loading="lazy" decoding="async" alt=""></picture><div class="ex__body"><h4 class="ex__name"><span data-fact="ex.hello-pallet.name">Hello, pallet: one forklift, one road</span></h4><p class="ex__learn"><span data-fact="ex.hello-pallet.learn">A vehicle is a machine with a cycle time, so its capacity can be calculated.</span></p><p class="ex__meta mono">Stations <span data-fact="ex.hello-pallet.stations">3</span> · Vehicles <span data-fact="ex.hello-pallet.vehicles">1</span></p></div></li>
+<li class="ex"><picture class="ex__pic"><source media="screen and (prefers-color-scheme: dark)" srcset="img/ex-starter.dark.webp"><img src="img/ex-starter.light.webp" width="640" height="400" loading="lazy" decoding="async" alt=""></picture><div class="ex__body"><h4 class="ex__name"><span data-fact="ex.starter.name">Starter: dock → assembly → shipping</span></h4><p class="ex__learn"><span data-fact="ex.starter.learn">The smallest complete plant: a source, a workstation, a sink and two AGVs.</span></p><p class="ex__meta mono">Stations <span data-fact="ex.starter.stations">4</span> · Vehicles <span data-fact="ex.starter.vehicles">2</span></p></div></li>
+</ul>
+</section>
+<section class="lvl" aria-labelledby="lvl2-h">
+<div class="lvl__head"><p class="lvl__n mono">Level 2</p><h3 id="lvl2-h"><span data-fact="level.2.title">One idea at a time</span></h3><p class="lvl__cap"><span data-fact="level.2.caption">Each plant teaches one thing: energy, distance, docks.</span></p></div>
+<ul class="exs">
+<li class="ex"><picture class="ex__pic"><source media="screen and (prefers-color-scheme: dark)" srcset="img/ex-charging-corner.dark.webp"><img src="img/ex-charging-corner.light.webp" width="640" height="400" loading="lazy" decoding="async" alt=""></picture><div class="ex__body"><h4 class="ex__name"><span data-fact="ex.charging-corner.name">Charging corner: six electric forklifts, two chargers</span></h4><p class="ex__learn"><span data-fact="ex.charging-corner.learn">Energy is a hidden capacity: no charge, no work, and the chargers are a station like any other.</span></p><p class="ex__meta mono">Stations <span data-fact="ex.charging-corner.stations">4</span> · Vehicles <span data-fact="ex.charging-corner.vehicles">6</span></p></div></li>
+<li class="ex"><picture class="ex__pic"><source media="screen and (prefers-color-scheme: dark)" srcset="img/ex-yard-shuttle.dark.webp"><img src="img/ex-yard-shuttle.light.webp" width="640" height="400" loading="lazy" decoding="async" alt=""></picture><div class="ex__body"><h4 class="ex__name"><span data-fact="ex.yard-shuttle.name">Yard shuttle: one truck, 280 metres</span></h4><p class="ex__learn"><span data-fact="ex.yard-shuttle.learn">Over a distance the batch decides: capacity and maximum wait set how many trucks you need.</span></p><p class="ex__meta mono">Stations <span data-fact="ex.yard-shuttle.stations">5</span> · Vehicles <span data-fact="ex.yard-shuttle.vehicles">1</span></p></div></li>
+<li class="ex"><picture class="ex__pic"><source media="screen and (prefers-color-scheme: dark)" srcset="img/ex-dock-lab.dark.webp"><img src="img/ex-dock-lab.light.webp" width="640" height="400" loading="lazy" decoding="async" alt=""></picture><div class="ex__body"><h4 class="ex__name"><span data-fact="ex.dock-lab.name">Dock lab: one street, three docks</span></h4><p class="ex__learn"><span data-fact="ex.dock-lab.learn">Docks share the work only when each has its own side road.</span></p><p class="ex__meta mono">Stations <span data-fact="ex.dock-lab.stations">4</span> · Vehicles <span data-fact="ex.dock-lab.vehicles">5</span></p></div></li>
+</ul>
+</section>
+<section class="lvl" aria-labelledby="lvl3-h">
+<div class="lvl__head"><p class="lvl__n mono">Level 3</p><h3 id="lvl3-h"><span data-fact="level.3.title">Several things at once</span></h3><p class="lvl__cap"><span data-fact="level.3.caption">Lines, traffic and trucks together in one plant.</span></p></div>
+<ul class="exs">
+<li class="ex"><picture class="ex__pic"><source media="screen and (prefers-color-scheme: dark)" srcset="img/ex-two-lines.dark.webp"><img src="img/ex-two-lines.light.webp" width="640" height="400" loading="lazy" decoding="async" alt=""></picture><div class="ex__body"><h4 class="ex__name"><span data-fact="ex.two-lines.name">Two production lines + warehouse</span></h4><p class="ex__learn"><span data-fact="ex.two-lines.learn">Forklifts and AGVs, a bill of materials and the bottleneck it makes.</span></p><p class="ex__meta mono">Stations <span data-fact="ex.two-lines.stations">8</span> · Vehicles <span data-fact="ex.two-lines.vehicles">10</span></p></div></li>
+<li class="ex"><picture class="ex__pic"><source media="screen and (prefers-color-scheme: dark)" srcset="img/ex-congestion-lab.dark.webp"><img src="img/ex-congestion-lab.light.webp" width="640" height="400" loading="lazy" decoding="async" alt=""></picture><div class="ex__body"><h4 class="ex__name"><span data-fact="ex.congestion-lab.name">Congestion lab</span></h4><p class="ex__learn"><span data-fact="ex.congestion-lab.learn">Traffic: a deliberately awkward plant, and the fixes.</span></p><p class="ex__meta mono">Stations <span data-fact="ex.congestion-lab.stations">5</span> · Vehicles <span data-fact="ex.congestion-lab.vehicles">9</span></p></div></li>
+<li class="ex"><picture class="ex__pic"><source media="screen and (prefers-color-scheme: dark)" srcset="img/ex-warehouse-first-day.dark.webp"><img src="img/ex-warehouse-first-day.light.webp" width="640" height="400" loading="lazy" decoding="async" alt=""></picture><div class="ex__body"><h4 class="ex__name"><span data-fact="ex.warehouse-first-day.name">Warehouse: first day</span></h4><p class="ex__learn"><span data-fact="ex.warehouse-first-day.learn">Trucks, doors and forklifts: which one limits the gate?</span></p><p class="ex__meta mono">Stations <span data-fact="ex.warehouse-first-day.stations">4</span> · Vehicles <span data-fact="ex.warehouse-first-day.vehicles">4</span></p></div></li>
+</ul>
+</section>
+<section class="lvl" aria-labelledby="lvl4-h">
+<div class="lvl__head"><p class="lvl__n mono">Level 4</p><h3 id="lvl4-h"><span data-fact="level.4.title">A whole plant</span></h3><p class="lvl__cap"><span data-fact="level.4.caption">A day on a timetable, or a hall with three kinds of vehicle.</span></p></div>
+<ul class="exs">
+<li class="ex"><picture class="ex__pic"><source media="screen and (prefers-color-scheme: dark)" srcset="img/ex-morning-peak.dark.webp"><img src="img/ex-morning-peak.light.webp" width="640" height="400" loading="lazy" decoding="async" alt=""></picture><div class="ex__body"><h4 class="ex__name"><span data-fact="ex.morning-peak.name">Morning peak: a cross-dock on appointments</span></h4><p class="ex__learn"><span data-fact="ex.morning-peak.learn">Size doors and forklifts for the peak hour, not the average: a better timetable is a lever too.</span></p><p class="ex__meta mono">Stations <span data-fact="ex.morning-peak.stations">7</span> · Vehicles <span data-fact="ex.morning-peak.vehicles">8</span></p></div></li>
+<li class="ex"><picture class="ex__pic"><source media="screen and (prefers-color-scheme: dark)" srcset="img/ex-components-plant.dark.webp"><img src="img/ex-components-plant.light.webp" width="640" height="400" loading="lazy" decoding="async" alt=""></picture><div class="ex__body"><h4 class="ex__name"><span data-fact="ex.components-plant.name">Components plant: one hall, three kinds of vehicle</span></h4><p class="ex__learn"><span data-fact="ex.components-plant.learn">Reading a whole plant: which station limits it, which vehicle does which job, and which roads earn their keep.</span></p><p class="ex__meta mono">Stations <span data-fact="ex.components-plant.stations">16</span> · Vehicles <span data-fact="ex.components-plant.vehicles">22</span></p></div></li>
+</ul>
+</section>
+<section class="lvl" aria-labelledby="lvl5-h">
+<div class="lvl__head"><p class="lvl__n mono">Level 5</p><h3 id="lvl5-h"><span data-fact="level.5.title">Two plants, one campus</span></h3><p class="lvl__cap"><span data-fact="level.5.caption">Shared goods, a shuttle fleet and one charging hall.</span></p></div>
+<ul class="exs">
+<li class="ex ex--wide"><picture class="ex__pic"><source media="screen and (prefers-color-scheme: dark)" srcset="img/ex-twin-plants.dark.webp"><img src="img/ex-twin-plants.light.webp" width="640" height="400" loading="lazy" decoding="async" alt=""></picture><div class="ex__body"><h4 class="ex__name"><span data-fact="ex.twin-plants.name">Two plants, one yard</span></h4><p class="ex__learn"><span data-fact="ex.twin-plants.learn">A campus is one system: shared goods, a shuttle fleet, and the one resource both plants depend on.</span></p><p class="ex__meta mono">Stations <span data-fact="ex.twin-plants.stations">33</span> · Vehicles <span data-fact="ex.twin-plants.vehicles">30</span></p></div></li>
+</ul>
+</section>
+</div>
+        <p class="cta-row cta-row--left"><a class="btn btn--primary" href="../?welcome">Browse the examples in the planner</a></p>
+      </div>
+    </section>
+
+    <!-- ============================== 08 CRAFT ============================== -->
+    <section class="sec sec--dark" id="craft" aria-labelledby="craft-h">
+      <div class="wrap">
+        <div class="sec__head">
+          <p class="eyebrow"><span class="eyebrow__n">08</span> Under the hood</p>
+          <h2 id="craft-h">A simulation core you can run anywhere, and a UI that stays out of its way.</h2>
+          <p class="lede">The engine has no idea there is a browser. It is plain data in, plain results out, which is why the same code runs in the planner, in the tests, in headless experiments run from Node and in the demo above.</p>
+        </div>
+
+        <ol class="layers" aria-label="Layers of the code, from the data model up to the interface">
+          <li class="layer layer--model">
+            <h3>Model</h3>
+            <p>The plant as plain data, with mutators, validation, serialisation and the example plants. <span class="mono"><span data-fact="code.model.floor">15</span>+ modules</span></p>
+          </li>
+          <li class="layer layer--sim">
+            <h3>Simulation</h3>
+            <p>Road graph, collision-free traffic with junction blocking and deadlock detection, logistics, statistics, insights and the engine. No DOM. <span class="mono"><span data-fact="code.sim.floor">25</span>+ modules</span></p>
+          </li>
+          <li class="layer layer--store">
+            <h3>Store</h3>
+            <p>Undo and redo, variants and autosave: the application state around a plant.</p>
+          </li>
+          <li class="layer layer--ui">
+            <h3>Interface</h3>
+            <p>A canvas renderer, the editor tools, panels, dashboard and reports. <span class="mono"><span data-fact="code.ui.floor">70</span>+ modules</span></p>
+          </li>
+        </ol>
+
+        <dl class="stats">
+          <div><dt>JavaScript modules</dt><dd><span data-fact="code.files.floor">130</span>+</dd></div>
+          <div><dt>Lines of JavaScript</dt><dd><span data-fact="code.lines.floor" data-format="thousands">48,000</span>+</dd></div>
+          <div><dt>Test files</dt><dd><span data-fact="tests.files.floor">130</span>+</dd></div>
+          <div><dt>Runtime dependencies</dt><dd><span data-fact="code.deps">0</span></dd></div>
+          <div><dt>Golden fixture files</dt><dd><span data-fact="tests.golden">22</span></dd></div>
+          <div><dt>Example plants</dt><dd><span data-fact="examples.count">11</span></dd></div>
+        </dl>
+
+        <div class="points">
+          <article>
+            <h3>Deterministic by construction</h3>
+            <p>One seeded random generator, forked per subsystem. The same plant and seed give the same results, bit for bit. Golden tests pin the full results of the original example plants and of several test plants, so a change that was meant to leave those alone cannot alter them unnoticed.</p>
+          </article>
+          <article>
+            <h3>No build step, no runtime dependencies</h3>
+            <p>Vanilla ES modules served as they are. The site is a folder of static files, published by a workflow to GitHub Pages. An import checker fails the build if a name is imported that is not exported.</p>
+          </article>
+          <article>
+            <h3>Tested in tiers</h3>
+            <p>Unit and integration tests, seeded fuzz tests of the traffic rules and the logistics, and performance bounds. A fast tier runs on every change, the slow tests run in parallel shards in CI, and a test proves that every test file runs in exactly one job.</p>
+          </article>
+          <article>
+            <h3>Versioned and honest about it</h3>
+            <p>The planner shows the version and build it is running, tells you when a newer one is live without ever reloading by itself, and stamps its reports with the version that made them. The version at the time of writing is <span class="mono">v<span data-fact="version">0.6.0</span></span>.</p>
+          </article>
+        </div>
+
+        <div class="selfcheck">
+          <h3>This page follows its own rules</h3>
+          <p>It loads nothing from anywhere else: no web fonts, no scripts or images from third parties, no analytics, no cookies. The only outgoing links are to the repository and its licence. The numbers above are generated from the repository by a script and compared with this text by a test, so they cannot drift without the build failing. The demo imports the same engine modules as the planner.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================== 09 LIMITS ============================== -->
+    <section class="sec" id="limits" aria-labelledby="limits-h">
+      <div class="wrap">
+        <div class="sec__head">
+          <p class="eyebrow"><span class="eyebrow__n">09</span> Honest limits</p>
+          <h2 id="limits-h">What LogiPlan does not do, yet.</h2>
+          <p class="lede">A planning aid with simplified models is only useful if you know where the simplifications are. Check important decisions against real data before you build.</p>
+        </div>
+        <div class="limits">
+          <section class="limits__col" aria-labelledby="notbuilt-h">
+            <h3 id="notbuilt-h">Not in the product</h3>
+            <ul>
+              <li><strong>Order picking.</strong> Trucks, docks, forklifts and storage are modelled; people picking items from shelves are not.</li>
+              <li><strong>A multi-site model.</strong> “Two plants, one yard” is two plants on one baseplate with a shared warehouse and charging hall. It is a single plant model.</li>
+              <li><strong>Racks, shift calendars and demand profiles.</strong> They are on the roadmap in docs/WAREHOUSE-DESIGN.md, not in the planner. A clock exists only for truck timetables.</li>
+              <li><strong>Pedestrians and traffic lights.</strong></li>
+            </ul>
+          </section>
+          <section class="limits__col" aria-labelledby="caveat-h">
+            <h3 id="caveat-h">Built, with a caveat</h3>
+            <ul>
+              <li><strong>Trucks are events at a door,</strong> not vehicles on the road. A door is a count, not a place on the wall.</li>
+              <li><strong>Defaults are indicative.</strong> A truck carries <span data-fact="trucks.pallets">24</span> pallets and check-in takes <span data-fact="trucks.checkin_min">5</span> minutes until you say otherwise.</li>
+              <li><strong>Browsers.</strong> Verified in Chromium. Firefox and Safari should work but have not been tested, and touch screens have not been checked.</li>
+              <li><strong>Very large plants</strong> run live at a fraction of the usual speed, and variant comparisons run on the main thread. README.md, “Known limits”, has the measurements.</li>
+            </ul>
+          </section>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================== CTA ============================== -->
+    <section class="final" aria-labelledby="final-h">
+      <div class="wrap final__inner">
+        <h2 id="final-h">Build a plant. Press play.</h2>
+        <p class="lede">It takes a minute to start from an example, and nothing is sent anywhere: your plant stays in your browser.</p>
+        <div class="cta-row cta-row--center">
+          <a class="btn btn--primary btn--lg" href="../">Open the planner <span class="btn__arrow" aria-hidden="true">→</span></a>
+          <a class="btn btn--ghost btn--lg" href="../?welcome">Start from an example</a>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <div class="wrap foot__grid">
+      <div>
+        <p class="foot__brand"><img src="../assets/logo.svg" alt="" width="24" height="24"> LogiPlan <span class="mono">v<span data-fact="version">0.6.0</span></span></p>
+        <p class="foot__small">Plan factory and warehouse logistics in the browser, then watch it run.</p>
+      </div>
+      <nav aria-label="Project links">
+        <ul class="foot__links">
+          <li><a href="../">Open the planner</a></li>
+          <li><a href="https://github.com/rangulvers/LogiPlan" data-fact-href="repo.url" rel="noopener">Source code on GitHub</a></li>
+          <li><a href="https://github.com/rangulvers/LogiPlan/blob/main/LICENSE" data-fact-href="repo.license_url" rel="noopener">Licence (<span data-fact="license">MIT</span>)</a></li>
+        </ul>
+      </nav>
+      <p class="foot__colophon"><strong>Colophon.</strong> Designed and built with Claude Code, Anthropic’s coding agent, at the direction of the project owner. Set in your system’s own fonts. This page sets no cookies and makes no requests to other sites.</p>
+    </div>
+  </footer>
+
+  <noscript>
+    <p class="noscript">JavaScript is off, so the live demo shows a still frame. Everything else on this page works as it is.</p>
+  </noscript>
+  <script type="module" src="js/demo-boot.js"></script>
+</body>
+</html>
