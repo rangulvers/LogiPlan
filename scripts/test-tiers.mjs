@@ -65,7 +65,16 @@ export const HEAVY_SHARDS = Object.freeze([
   // 4-7: whole files (shard 4: 77 s, 5: 55 s, 6: 57 s, 7: 46 s as the shard command measured them on four idle cores, 2026-10-09, with the warehouse milestone M1 in),
   // packed biggest first. A shard that is a slice of a file cannot hold other files (the name pattern would filter them too), so shards 1-3 hold only the engine review.
   whole(
-    'sim.docks.review.test.js', //      ~77  the dock book attacked: 200 random plants x 20 min, 36 tests
+    'sim.docks.review.test.js', //      ~77  the dock book attacked: 200 random plants x 20 min, 36 tests; it uses one core, so the files of the detail collector (below) run beside it
+    // The detail collector behind sim.detail (docs/ENTITY-INSIGHTS-DESIGN.md, S1): the fast tier holds its unit, regression, fixture and ledger tests (sim.detail.unit / regress / fixtures, sim.seams);
+    // these are the long ones (seconds on four idle cores, then CPU seconds in brackets as measured beside other work).
+    'sim.golden.detail.test.js', //      ~6   (8)  S1.1: the 13 recorded golden runs repeated with the collector on, equal to their fixtures bit for bit; on / off / on in the middle
+    'sim.detail.exact.test.js', //       ~6   (7)  S1.3: time split, waiting, trips, hot spots, dock queue, station figures against the report on the five examples and five dock plants; both windows; battery; Goods-in yard
+    'sim.detail.determinism.test.js', // ~6   (7)  S1.4: digests of straight / repeated / sliced / cut / warm-restart runs, queries every 7 s
+    'sim.detail.containment.test.js', // ~9  (11)  S1.2: removeVehicle mid-run on every hostile truck plant with a removal, a throwing listener and afterTick
+    'sim.detail.fingerprint.test.js', // ~9  (12)  S1.1: full-state fingerprint of 80 hostile plants with the collector on / off / on in the middle
+    'sim.detail.fuzz.test.js', //       ~15  (19)  loaded-leg balance on 270 plants, audits every 120 s, properties of every query (no NaN, no share above 100 %)
+    'sim.detail.perf.test.js', //       ~16  (18)  S1.5 with loose bounds: 500 x on the examples, +25 % over off on Two lines, the 320 x 320 plant, 3.5 MB, query times
   ),
   whole(
     'sim.trucks.fuzz.test.js', //       48.6  M1: 200 random plants with trucks, every invariant on every tick, report.ops, dt and fork independence at scale (A1.3, A1.4, A1.8, A1.9)

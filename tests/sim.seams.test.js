@@ -294,3 +294,215 @@ test('the engine-review auditor (tests/helpers/engine-review-gen.js) counts the 
   store.pool.push(stored);
   assert.ok(auditor.full().some((m) => /holds 1 > capacity 0/.test(m)), 'the auditor reads st.capacity, not params.capacity (4)');
 });
+
+// ---------------------------------------------------------------------------------------------------------------------------
+// The detail collector (docs/ENTITY-INSIGHTS-DESIGN.md 6.1, acceptance S1.1 and S1.15): a second seam, separate from stats.ext. Two ledgers:
+//   1. who touches the collector: `.detail`, enableDetail, ... may appear only in the files that own it
+//   2. which internals of the simulation the collector reads (~70 chains), each probed against a live plant, and the source of detail.js scanned for any read that is not listed,
+//      so that an in-flight change to one of them fails a NAMED test instead of silently changing the statistics
+// ---------------------------------------------------------------------------------------------------------------------------
+
+const JS_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'js');
+const jsFiles = () => {
+  const out = [];
+  const walk = (dir) => { for (const entry of readdirSync(dir, { withFileTypes: true })) { const file = path.join(dir, entry.name); if (entry.isDirectory()) walk(file); else if (entry.name.endsWith('.js')) out.push(file); } };
+  walk(JS_ROOT);
+  return out.map((file) => ({ rel: path.relative(JS_ROOT, file).split(path.sep).join('/'), source: readFileSync(file, 'utf8') }));
+};
+/** Source without comments (line comments and block comments); good enough for the files of this repository, which have no `//` inside a string that matters here. */
+const stripComments = (source) => source.split('\n').map((l) => l.replace(/(^|[^:'"`])\/\/.*$/, '$1')).join('\n').replace(/\/\*[\s\S]*?\*\//g, '');
+
+/** The files that may read the collector: its own, the engine that polls it, the runner that turns it on, the dock and its model/view (stats-*.js), the route overlay. */
+const DETAIL_OWNERS = (rel) => rel === 'sim/detail.js' || rel === 'sim/engine.js' || rel === 'ui/runner.js' || /^ui\/panels\/stats-[\w-]+\.js$/.test(rel) || rel === 'ui/render/routes.js';
+/**
+ * What counts as a read of the collector outside its owners: a property `detail` of a simulation or a runner (`sim.detail`, `this.sim.detail`, `runner.sim.detail`, `rt.detail`), the
+ * runner's accessor `x.detail()`, and the names that exist only for the seam. (`state.ui.detail` is the preference "Collect statistics for clicked items" and `insight.detail`,
+ * `item.detail`, `notice.detail` are texts: neither is the collector.)
+ */
+const DETAIL_READ = /\b(?:sim|simulation|runner|engine|rt|live)\s*\.\s*detail\b|\.detail\s*\(|\bsim\w*\.detail\b/;
+const SEAM_NAMES = /\b(?:enableDetail|disableDetail|dropDetail|detailError|afterTickSafe)\b/;
+
+test('ledger of the readers of the collector: only detail.js, engine.js, runner.js, the stats-*.js panels and render/routes.js touch it', () => {
+  const strays = [];
+  let owners = 0;
+  for (const { rel, source } of jsFiles()) {
+    const code = stripComments(source);
+    if (DETAIL_OWNERS(rel)) { if (DETAIL_READ.test(code) || SEAM_NAMES.test(code)) owners++; continue; }
+    if (SEAM_NAMES.test(code)) strays.push(`${rel}: names the collector's seam (enableDetail, disableDetail, dropDetail, detailError)`);
+    const m = code.match(DETAIL_READ);
+    if (m) strays.push(`${rel}: reads the collector (${m[0]})`);
+  }
+  assert.deepEqual(strays, [], 'only detail.js, engine.js, runner.js, ui/panels/stats-*.js and ui/render/routes.js may touch sim.detail: hand the data over instead (a prop, a frame field)');
+  assert.ok(owners >= 2, 'the owners are found (engine.js and detail.js at least), or the patterns above are wrong');
+});
+
+test('ledger of the readers: the engine is the only core file that knows the collector, and js/sim never imports ui or store', () => {
+  const importers = jsFiles().filter(({ source }) => /from '\.\/detail\.js'|from '\.\.\/sim\/detail\.js'/.test(source)).map(({ rel }) => rel);
+  assert.deepEqual(importers, ['sim/engine.js']);
+  for (const { rel, source } of jsFiles()) if (rel === 'sim/detail.js') assert.doesNotMatch(source, /from '\.\.\/(ui|store)\//, 'js/sim imports nothing from ui or store');
+});
+
+/** The chains of simulation internals detail.js reads, with what a live value must look like. `nonnull`: must be observed with a value (it is null most of the time). */
+const T = {
+  num: (v) => typeof v === 'number' && Number.isFinite(v), int: (v) => Number.isInteger(v), str: (v) => typeof v === 'string', bool: (v) => typeof v === 'boolean',
+  arr: (v) => Array.isArray(v) || ArrayBuffer.isView(v), obj: (v) => v !== null && typeof v === 'object', fn: (v) => typeof v === 'function',
+  strOrNull: (v) => v === null || typeof v === 'string', objOrNull: (v) => v === null || (typeof v === 'object'),
+};
+const LEDGER = {
+  // VehicleRT (js/sim/logistics/vehicles.js)
+  'vr.id': [T.str], 'vr.state': [T.str], 'vr.stateSince': [T.num], 'vr.order': [T.objOrNull, 'nonnull'], 'vr.order.from': [T.str, 'nonnull'], 'vr.targetId': [T.strOrNull, 'nonnull'], 'vr.spot': [T.int],
+  'vr.route': [T.objOrNull, 'nonnull'], 'vr.dock': [T.objOrNull, 'nonnull'], 'vr.depot': [T.objOrNull, 'nonnull'], 'vr.depot.id': [T.str, 'nonnull'], 'vr.leaveStation': [T.strOrNull, 'nonnull'],
+  'vr.battery': [T.num], 'vr.trips': [T.int], 'vr.loadedDistance': [T.num], 'vr.emptyDistance': [T.num], 'vr.parkDistance': [T.num], 'vr.tv': [T.obj], 'vr.tv.driving': [T.bool], 'vr.tv.teleports': [T.int],
+  // the traffic vehicle (js/sim/traffic/vehicle.js) and the traffic system
+  'tv.waiting': [T.bool], 'tv.driving': [T.bool], 'tv.teleports': [T.int], 'tv.node': [T.int], 'tv.edge': [T.int], 'tv.s': [T.num], 'traffic.waitNodeOf': [T.fn],
+  // the route of a leg (js/sim/graph.js route objects)
+  'route.nodes': [T.arr, 'nonnull'], 'route.edges': [T.arr, 'nonnull'],
+  // StationRT (js/sim/logistics/stations.js)
+  'st.id': [T.str], 'st.type': [T.str], 'st.arrivals': [T.int], 'st.produced': [T.int], 'st.consumed': [T.int], 'st.fill': [T.num], 'st.inCount': [T.int], 'st.outCount': [T.int], 'st.state': [T.str],
+  'st.machines': [(v) => v === undefined || Array.isArray(v), 'nonnull'], 'st.inLinks': [T.arr], 'st.outLinks': [T.arr], 'mach.state': [T.str, 'nonnull'],
+  'link.queue': [T.arr], 'link.perCycle': [T.num, 'nonnull'], 'link.claimed': [T.int, 'nonnull'], 'load.createdAt': [T.num, 'nonnull'], 'load.readyAt': [T.num, 'nonnull'], 'load.tk': [T.int, 'nonnull'],
+  // orders (js/sim/logistics.js)
+  'ord.flowId': [T.str, 'nonnull'], 'ord.from': [T.str, 'nonnull'], 'ord.to': [T.str, 'nonnull'], 'ord.qty': [T.num, 'nonnull'],
+  // events: payloads of loadCompleted, orderPickedUp, orderDelivered, truckReady, truckDeparted
+  'ev.leadTime': [T.num, 'nonnull'], 'ev.station': [T.obj, 'nonnull'], 'ev.station.id': [T.str, 'nonnull'], 'ev.stationId': [T.str, 'nonnull'], 'ev.order': [T.obj, 'nonnull'], 'ev.order.from': [T.str, 'nonnull'],
+  'ev.order.loads': [T.arr, 'nonnull'], 'ev.vehicle': [T.obj, 'nonnull'], 'ev.waitForPickup': [T.num, 'nonnull'], 'ev.truck.id': [T.num, 'nonnull'], 'ev.t': [T.num, 'nonnull'],
+  // the logistics layer, the graph and the simulation
+  'lg.vehicles': [T.arr], 'lg.stations': [T.arr], 'lg.flows': [T.arr], 'this.lg.docks': [T.obj], 'this.graph.cols': [T.int], 'this.graph.edges': [T.arr], 'this.graph.stationsAt': [(v) => v instanceof Map],
+  'this.sim.time': [T.num], 'this.sim.settings': [T.obj], 'sim.graph': [T.obj], 'sim.logistics': [T.obj], 'sim.traffic': [T.obj], 'sim.time': [T.num], 'sim.on': [T.fn],
+};
+const CHAIN_TAIL = /\.(?:length|indexOf|get|map)$/;
+
+test('ledger of the simulation internals the collector reads: detail.js reads exactly the chains in LEDGER (a new read must be listed, a dropped one removed)', () => {
+  const code = stripComments(readFileSync(path.join(JS_ROOT, 'sim', 'detail.js'), 'utf8'));
+  const seen = new Set();
+  for (const m of code.matchAll(/(?<![\w.])(vr|tv|st|link|load|mach|ord|route|ev|lg|traffic)((?:\.[A-Za-z_]\w*)+)/g)) seen.add(m[0].replace(CHAIN_TAIL, '').replace(CHAIN_TAIL, ''));
+  for (const m of code.matchAll(/\bthis\.(lg|graph|sim|traffic)((?:\.[A-Za-z_]\w*)+)/g)) seen.add(`this.${m[1]}${m[2]}`.replace(CHAIN_TAIL, '').replace(CHAIN_TAIL, ''));
+  for (const m of code.matchAll(/(?<![\w.])sim\.([A-Za-z_]\w*)/g)) seen.add(`sim.${m[1]}`);
+  // reads that are not simulation internals: the collector's own members and the query results
+  for (const own of ['sim.detail', 'sim.detailError', 'sim.kpis', 'sim.vehicles', 'sim.stations']) seen.delete(own);
+  const listed = new Set(Object.keys(LEDGER));
+  const unlisted = [...seen].filter((c) => !listed.has(c)).sort();
+  const unread = [...listed].filter((c) => !seen.has(c)).sort();
+  assert.deepEqual(unlisted, [], 'detail.js reads simulation internals that the ledger does not list: add them to LEDGER with a probe');
+  assert.deepEqual(unread, [], 'LEDGER lists internals that detail.js no longer reads: remove them');
+});
+
+test('ledger of the simulation internals: every chain exists on a live plant with the type the collector assumes (Two lines for vehicles, machines and links; Warehouse first day for trucks)', () => {
+  const observed = new Map(); // chain -> { ok, bad: [], nonnull }
+  const note = (chain, value) => {
+    const [check] = LEDGER[chain];
+    const o = observed.get(chain) || { bad: [], nonnull: false };
+    if (!check(value)) o.bad.push(String(typeof value === 'object' ? JSON.stringify(Object.keys(value ?? {})) : value));
+    if (value !== null && value !== undefined) o.nonnull = true;
+    observed.set(chain, o);
+  };
+  const walkPlant = (id, seconds, captureTrucks) => {
+    const layout = EXAMPLES.find((e) => e.id === id).build();
+    layout.settings.warmup = 0;
+    const sim = new Simulation(layout, { seed: 1 });
+    const lg = sim.logistics;
+    const onPayload = (ev) => {
+      if (ev.leadTime !== undefined) { note('ev.leadTime', ev.leadTime); note('ev.station', ev.station); note('ev.station.id', ev.station.id); note('ev.stationId', ev.stationId); }
+      if (ev.truck !== undefined) { note('ev.truck.id', ev.truck.id); note('ev.t', ev.t); if (ev.stationId !== undefined) note('ev.stationId', ev.stationId); }
+      if (ev.order !== undefined) {
+        note('ev.order', ev.order); note('ev.order.from', ev.order.from); note('ev.order.loads', ev.order.loads);
+        if (ev.vehicle !== undefined) note('ev.vehicle', ev.vehicle);
+        if (ev.waitForPickup !== undefined) note('ev.waitForPickup', ev.waitForPickup);
+        for (const l of ev.order.loads) { note('load.createdAt', l.createdAt); note('load.readyAt', l.readyAt); note('load.tk', l.tk); }
+      }
+    };
+    for (const name of ['loadCompleted', 'orderPickedUp', 'orderDelivered', ...(captureTrucks ? ['truckReady', 'truckDeparted'] : [])]) sim.on(name, onPayload);
+    note('sim.graph', sim.graph); note('sim.logistics', sim.logistics); note('sim.traffic', sim.traffic); note('sim.on', sim.on);
+    note('this.graph.cols', sim.graph.cols); note('this.graph.edges', sim.graph.edges); note('this.graph.stationsAt', sim.graph.stationsAt); note('this.lg.docks', lg.docks); assert.equal(typeof lg.docks.waitsForDock, 'function', 'DockBook.waitsForDock (a pure read the collector calls for every held-up vehicle)');
+    note('traffic.waitNodeOf', sim.traffic.waitNodeOf);
+    for (const key of ['demandFactor', 'speedFactor', 'processFactor']) assert.equal(typeof sim.settings[key], 'number', `settings.${key}`);
+    for (const key of ['dispatch', 'routing']) assert.equal(typeof sim.settings[key], 'string', `settings.${key}`);
+    for (let t = 0; t < seconds; t += 5) {
+      sim.advance(5);
+      note('sim.time', sim.time); note('this.sim.time', sim.time); note('this.sim.settings', sim.settings);
+      note('lg.vehicles', lg.vehicles); note('lg.stations', lg.stations); note('lg.flows', lg.flows);
+      for (const vr of lg.vehicles) {
+        for (const key of ['id', 'state', 'stateSince', 'order', 'targetId', 'spot', 'route', 'dock', 'depot', 'leaveStation', 'battery', 'trips', 'loadedDistance', 'emptyDistance', 'parkDistance', 'tv']) note(`vr.${key}`, vr[key]);
+        if (vr.order) { note('ord.flowId', vr.order.flowId); note('ord.from', vr.order.from); note('ord.to', vr.order.to); note('ord.qty', vr.order.qty); note('vr.order.from', vr.order.from); }
+        if (vr.depot) note('vr.depot.id', vr.depot.id);
+        const tv = vr.tv;
+        for (const key of ['waiting', 'driving', 'teleports', 'node', 'edge', 's']) note(`tv.${key}`, tv[key]);
+        note('vr.tv.driving', tv.driving); note('vr.tv.teleports', tv.teleports);
+        if (vr.route) { note('route.nodes', vr.route.nodes); note('route.edges', vr.route.edges); }
+      }
+      for (const st of lg.stations) {
+        for (const key of ['id', 'type', 'arrivals', 'produced', 'consumed', 'fill', 'inCount', 'outCount', 'state', 'inLinks', 'outLinks']) note(`st.${key}`, st[key]);
+        note('st.machines', st.machines);
+        for (const m of st.machines || []) note('mach.state', m.state);
+        for (const link of st.inLinks) { note('link.queue', link.queue); note('link.perCycle', link.perCycle); }
+        for (const link of st.outLinks) { note('link.queue', link.queue); note('link.claimed', link.claimed); for (const l of link.queue) { note('load.createdAt', l.createdAt); note('load.readyAt', l.readyAt); } }
+      }
+    }
+  };
+  walkPlant('two-lines', 2400, false);
+  walkPlant('warehouse-first-day', 5400, true);
+  const problems = [];
+  for (const [chain, [, required]] of Object.entries(LEDGER)) {
+    const o = observed.get(chain);
+    if (!o) { problems.push(`${chain}: never observed`); continue; }
+    if (o.bad.length) problems.push(`${chain}: unexpected value(s) ${[...new Set(o.bad)].slice(0, 3).join(' | ')}`);
+    if (required === 'nonnull' && !o.nonnull) problems.push(`${chain}: observed only as null/undefined, so its type was not checked`);
+  }
+  assert.deepEqual(problems, []);
+});
+
+test('ledger of the vehicle states: the collector puts every state of the engine into the time slot Stats gives it, and knows exactly the driving states', async () => {
+  const { VEHICLE_STATES, DRIVING_STATES } = await import('../js/sim/logistics/common.js');
+  const { BASE_SLOT, DRIVING_STATE, SLOT_KEYS } = await import('../js/sim/detail.js');
+  const table = stripComments(readFileSync(path.join(JS_ROOT, 'sim', 'stats.js'), 'utf8')).match(/const STATE_SLOT = [\s\S]*?\}\);/);
+  assert.ok(table, 'stats.js still has its STATE_SLOT table (or this ledger must follow it)');
+  const stats = Object.fromEntries([...table[0].matchAll(/(\w+):\s*([A-Z]+)/g)].map((m) => [m[1], m[2].toLowerCase()]));
+  assert.deepEqual(Object.keys(BASE_SLOT).sort(), [...VEHICLE_STATES].sort(), 'a state added to (or removed from) VEHICLE_STATES must get a slot in detail.js, or its seconds would be filed as idle');
+  assert.deepEqual(Object.keys(DRIVING_STATE).sort(), [...DRIVING_STATES].sort());
+  for (const state of VEHICLE_STATES) assert.equal(SLOT_KEYS[BASE_SLOT[state]], stats[state], `${state}: detail.js files it as ${SLOT_KEYS[BASE_SLOT[state]]}, Stats as ${stats[state]}`);
+});
+
+test('the collector reads the five runtime settings by name (the what-if check): they exist on a live simulation', () => {
+  const sim = new Simulation(starter(), { seed: 1 });
+  const det = sim.enableDetail();
+  assert.deepEqual(Object.keys(det.rt), ['demandFactor', 'speedFactor', 'processFactor', 'dispatch', 'routing']);
+  for (const [key, value] of Object.entries(det.rt)) assert.equal(value, sim.settings[key], key);
+});
+
+test('insights.js exports the one source of "more vehicles do not help": fleetWaitShare and congested agree with the fleet-saturated suggestion', async () => {
+  const { fleetWaitShare, congested, TRAFFIC_WAIT_SHARE, generateInsights } = await import('../js/sim/insights.js');
+  assert.equal(typeof fleetWaitShare, 'function'); assert.equal(typeof congested, 'function');
+  assert.equal(fleetWaitShare({ shares: { driving: 0.5, waiting: 0.1 } }), 0.1 / 0.6);
+  assert.equal(fleetWaitShare({ shares: { driving: 0, waiting: 0 } }), 0);
+  assert.equal(fleetWaitShare({}), 0);
+  const calm = { traffic: { waitShare: 0.01 } };
+  assert.equal(congested(calm, { shares: { driving: 0.5, waiting: 0.01 } }), false);
+  assert.equal(congested(calm, { shares: { driving: 0.5, waiting: 0.5 * TRAFFIC_WAIT_SHARE / (1 - TRAFFIC_WAIT_SHARE) } }), true, 'the fleet\'s own waiting is enough at exactly the threshold');
+  assert.equal(congested({ traffic: { waitShare: TRAFFIC_WAIT_SHARE } }, { shares: { driving: 1, waiting: 0 } }), true, 'so is the plant\'s');
+  // parity with the insight on a real report (Warehouse first day: the forklifts are saturated), and with the two congested variants of it
+  const layout = EXAMPLES.find((e) => e.id === 'warehouse-first-day').build();
+  layout.settings.warmup = 600;
+  const sim = new Simulation(layout, { seed: 1 });
+  sim.advance(3 * 3600);
+  const base = JSON.parse(JSON.stringify(sim.kpis()));
+  const variants = {
+    'calm': (r) => r,
+    'the fleet waits in traffic': (r) => { for (const f of Object.values(r.fleets)) { f.shares.waiting = 0.2; f.shares.driving = 0.3; } return r; },
+    'the plant waits in traffic': (r) => { r.traffic.waitShare = 0.2; return r; },
+  };
+  let compared = 0; let congestedCount = 0;
+  for (const [name, change] of Object.entries(variants)) {
+    const report = change(JSON.parse(JSON.stringify(base)));
+    const insights = generateInsights(report, sim.layout);
+    for (const [fid, f] of Object.entries(report.fleets)) {
+      const saturated = insights.find((i) => i.id.startsWith('fleet-saturated') && i.refs?.fleetIds?.includes(fid));
+      if (!saturated) continue;
+      compared++;
+      const isCongested = congested({ traffic: report.traffic }, { id: fid, ...f });
+      if (isCongested) congestedCount++;
+      assert.equal(/relieve the congestion/i.test(saturated.suggestion || ''), isCongested, `${name}, fleet ${fid}: congested() = ${isCongested}, suggestion "${saturated.suggestion}"`);
+    }
+  }
+  assert.ok(compared >= 3, `${compared} comparisons`);
+  assert.ok(congestedCount >= 1 && congestedCount < compared, 'both outcomes were compared');
+});

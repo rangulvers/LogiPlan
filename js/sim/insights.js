@@ -200,14 +200,14 @@ function aroundHotspots(ctx, count) {
 // ---- transport verdicts: the single source of truth for every "add a vehicle" / "fewer vehicles" statement ------
 
 /** Share of a fleet's driving time spent waiting in traffic: the same measure as traffic.waitShare. */
-function fleetWaitShare(f) {
+export function fleetWaitShare(f) {
   const waiting = f.shares?.waiting || 0;
   const moving = (f.shares?.driving || 0) + waiting;
   return moving > 0 ? waiting / moving : 0;
 }
 
 /** True when more vehicles would only add to the traffic: the plant, or the fleet itself, loses too much time waiting. */
-const congested = (ctx, f) => ctx.traffic.waitShare >= TRAFFIC_WAIT_SHARE || fleetWaitShare(f) >= TRAFFIC_WAIT_SHARE;
+export const congested = (ctx, f) => ctx.traffic.waitShare >= TRAFFIC_WAIT_SHARE || fleetWaitShare(f) >= TRAFFIC_WAIT_SHARE;
 
 /**
  * Fleet with several vehicles that works only a small part of the time it could work. Vehicles that charge or
