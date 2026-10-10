@@ -148,6 +148,23 @@ export function createSimulatePanel(ctx) {
     onChange: (on) => store.setUi({ warmRestart: on }),
   });
 
+  // ---- statistics of clicked items (view preferences, like the switch above: not undoable, not saved in the project)
+  const detail = switchField({
+    label: 'Collect statistics for clicked items', checked: store.getState().ui.detail !== false,
+    hint: 'Lets a click on a vehicle, a station, a flow or a road show its numbers and, for a vehicle, the routes it usually takes. It makes the simulation a little slower (about 10 %). Turned on while the simulation runs, it counts from that moment.',
+    onChange: (on) => store.setUi({ detail: on }),
+  });
+  const statsDock = selectField({
+    label: 'Statistics on click', value: store.getState().ui.statsDock,
+    options: [
+      { value: 'data', label: 'When the simulation has data' },
+      { value: 'always', label: 'Always' },
+      { value: 'never', label: 'Never' },
+    ],
+    onChange: (v) => store.setUi({ statsDock: v }),
+  });
+  statsDock.el.append(hintLine('When a click on an item opens the Statistics panel over the plan. The key I opens or closes it for the selected item, whatever is chosen here. "When the simulation has data" waits until it has measured 30 seconds.'));
+
   const el = h('div', { class: 'stack', style: { '--gap': '0' }, 'data-panel': 'simulate' },
     h('div', { class: 'stack', style: { padding: '12px', '--gap': '8px' } },
       h('span', { class: 'eyebrow' }, 'What-if'),
@@ -162,7 +179,8 @@ export function createSimulatePanel(ctx) {
     section({ title: 'Experiment length' },
       h('div', { class: 'field-grid' }, duration.el, warmup.el), measured,
       hintLine('Used by experiments and reports. Changing the warm-up restarts the running simulation.')).el,
-    section({ title: 'After you edit the plant' }, warm.el).el);
+    section({ title: 'After you edit the plant' }, warm.el).el,
+    section({ title: 'Statistics', aside: 'view' }, detail.el, statsDock.el).el);
 
   function update(state) {
     const s = state.layout.settings;
@@ -184,6 +202,8 @@ export function createSimulatePanel(ctx) {
     measured.textContent = result.text;
     measured.style.color = result.warn ? 'var(--warn-text)' : '';
     if (document.activeElement !== warm.input) warm.set(state.ui.warmRestart !== false);
+    if (document.activeElement !== detail.input) detail.set(state.ui.detail !== false);
+    statsDock.set(state.ui.statsDock);
     const hint = warmHint(s.warmup);
     const hintEl = warm.el.querySelector('.field__hint');
     if (hintEl.textContent !== hint) hintEl.textContent = hint;

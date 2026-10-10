@@ -3,11 +3,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  createLayout, addStation, addFlow, addFleet, addObstacle, addLabel, paintRoadPath, cloneLayout, resizeGrid, checkInvariants, roadAt,
+  createLayout, addStation, addFlow, addFleet, updateFleet, addObstacle, addLabel, paintRoadPath, cloneLayout, resizeGrid, checkInvariants, roadAt,
 } from '../js/model/layout.js';
 import { DIR_BIT, E, W } from '../js/util/grid.js';
 import {
-  linkState, setLinkState, roadNeighbourMask, plantSummary, describeResize, breakdownSummary, stationStatus, removeSelection,
+  linkState, setLinkState, roadNeighbourMask, plantSummary, describeResize, breakdownSummary, stationStatus, removeSelection, describeVehicle,
 } from '../js/ui/panels/inspector.js';
 import { formatFactor, factorSummary, nextSeed, measuredWindow } from '../js/ui/panels/simulate.js';
 import { groupIssues, focusTarget } from '../js/ui/panels/checks.js';
@@ -163,7 +163,23 @@ test('removeSelection deletes stations (with their flows), obstacles, labels and
   assert.deepEqual(checkInvariants(layout), []);
 });
 
+// ---- a vehicle in Properties ------------------------------------------------------------------------------
+
+test('describeVehicle: the summary of the vehicle\u2019s fleet, titled with the vehicle', () => {
+  const layout = createLayout();
+  const fleet = addFleet(layout, 'forklift');
+  updateFleet(layout, fleet.id, { name: 'Lifters', count: 4 });
+  const info = describeVehicle(`${fleet.id}#3`)(layout);
+  assert.equal(info.kind, 'Vehicle');
+  assert.equal(info.title, 'Lifters 3');
+  assert.deepEqual(info.rows[0], ['Fleet', 'Lifters'], 'the fleet is named first');
+  assert.ok(info.rows.some(([k, v]) => k === 'Vehicles' && /^4 \u00d7 Forklift/.test(v)), 'then the fleet\u2019s own rows');
+  assert.equal(info.icon, 'forklift');
+  assert.equal(describeVehicle(`${fleet.id}#1`)(layout).title, 'Lifters 1');
+});
+
 // ---- what-if ---------------------------------------------------------------------------------------------
+
 
 test('formatFactor drops trailing zeros', () => {
   assert.equal(formatFactor(1), '1×');

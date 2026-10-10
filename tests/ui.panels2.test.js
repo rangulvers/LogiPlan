@@ -10,7 +10,7 @@ import { exportProject, shareUrl } from '../js/model/serialize.js';
 import { EXAMPLES } from '../js/model/examples.js';
 import {
   COLOR_CHOICES, PRESET_KEYS, presetName, presetPatch, presetChanges, describeChanges, fleetSummary, vehicleGroup, fleetCounts,
-  restrictedFlows, chargingDepots, vehicleBreakdownSummary, batterySummary, homeOptions, idleHint,
+  restrictedFlows, chargingDepots, vehicleBreakdownSummary, batterySummary, homeOptions, idleHint, vehicleRows, VEHICLE_LIST_LIMIT,
 } from '../js/ui/panels/fleet.js';
 import {
   pairProblem, senders, receivers, missingStations, percentages, outputSplits, outputShare, flowSummary, weightHint, chainChoices, chainPlan, typeName,
@@ -105,6 +105,24 @@ test('fleetCounts adds up per fleet and ignores nothing', () => {
 });
 
 // ---- fleet: wording and layout queries ----------------------------------------------------------------------------
+
+test('vehicleRows lists the vehicles of a fleet with their ids, live state and trips per hour; the Fleet tab shows twelve before "Show all"', () => {
+  const layout = createLayout();
+  const fleet = addFleet(layout, 'agv');
+  updateFleet(layout, fleet.id, { name: 'AGVs', count: 30 });
+  const f = layout.fleets[0];
+  const plain = vehicleRows(f, null, null);
+  assert.equal(plain.length, VEHICLE_LIST_LIMIT, 'twelve at first');
+  assert.deepEqual(plain[0], { id: 'v1#1', name: 'AGVs 1', group: null, tripsPerHour: null }, 'without a simulation: ids and names only');
+  assert.equal(vehicleRows(f, null, null, 999).length, 30, '"Show all"');
+  assert.equal(vehicleRows({ ...f, count: 0 }, null, null).length, 0);
+  const sim = { vehicles: [{ id: 'v1#1', fleetId: 'v1', state: 'toDrop', tv: { waiting: false } }, { id: 'v1#2', fleetId: 'v1', state: 'toPickup', tv: { waiting: true } }, { id: 'v9#1', fleetId: 'v9', state: 'idle' }] };
+  const report = { window: { duration: 1800, warmingUp: false }, fleets: { v1: { vehicleTrips: { 'v1#1': 9, 'v1#2': 0 } } } };
+  const live = vehicleRows(f, sim, report, 3);
+  assert.deepEqual(live.map((r) => [r.id, r.group, r.tripsPerHour]), [['v1#1', 'working', 18], ['v1#2', 'waiting', 0], ['v1#3', null, null]], 'trips per hour of the report\u2019s window; a vehicle the simulation does not know has no state');
+  assert.equal(vehicleRows(f, sim, { window: { duration: 0 }, fleets: report.fleets }, 1)[0].tripsPerHour, null, 'no window yet: no rate (never a division by zero)');
+  assert.equal(vehicleRows(f, sim, { window: report.window, fleets: { v1: { vehicleTrips: { 'v1#1': NaN } } } }, 1)[0].tripsPerHour, null, 'a junk count is no number');
+});
 
 test('vehicleBreakdownSummary explains availability and nags about a missing repair time', () => {
   assert.deepEqual(vehicleBreakdownSummary(0, 0), { aside: 'never', hint: 'Vehicles never break down.', warn: false });

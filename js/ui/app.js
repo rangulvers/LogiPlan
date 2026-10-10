@@ -55,6 +55,7 @@ import { downloadReport, printReport, exportLayoutPng, exportLayoutJson } from '
 import { callout, emptyState } from './panels/fields.js';
 import { createInspectorPanel } from './panels/inspector.js';
 import { createFleetPanel } from './panels/fleet.js';
+import { createStatsDock, refsOf } from './panels/stats-dock.js';
 import { createFlowsPanel } from './panels/flows.js';
 import { createSimulatePanel } from './panels/simulate.js';
 import { createChecksPanel } from './panels/checks.js';
@@ -96,6 +97,7 @@ const OVERLAY_FLAGS = Object.freeze([
   ['flows', 'Flows', 'Show the material flows between stations'],
   ['docks', 'Docks', 'Mark the road cells where vehicles load and unload'],
   ['jobs', 'Jobs', 'While the simulation runs: show where each vehicle is heading and where loads wait for pickup'],
+  ['routes', 'Routes', 'Draw the usual trips of the selected vehicle or item on the plan while its statistics are open'],
   ['labels', 'Labels', 'Show station names and text labels'],
   ['ids', 'Vehicle IDs', 'Write a number on every vehicle'],
 ]);
@@ -127,6 +129,7 @@ const FOCUS_PADDING = 96;
 const FOCUS_MARGIN = 64;
 const FOCUS_MAX_ZOOM = 30;
 const FOCUS_MS = 150;
+const REVEAL_MARGIN = 24; // px kept free around an item that revealMinimal pans into view
 const ZOOM_STEP = 1.25;
 const STEP_SECONDS = 1;
 const ISSUES_INTERVAL_MS = 200;
@@ -168,6 +171,19 @@ export function selectionFor(refs) {
   return null;
 }
 
+/**
+ * The smallest pan (px) that brings a box {x0, y0, x1, y1} (screen px) into a free area {left, top, right, bottom}: none when it is inside, the distance to
+ * the nearest edge when it sticks out on one side. A box bigger than the area cannot be shown whole: it stays where it is while part of it is in the area
+ * (a planner zoomed in on a big station who clicks it sees no jump) and is centred only when none of it is.
+ */
+export function minimalPan(box, free) {
+  const along = (a, b, lo, hi) => {
+    if (b - a > hi - lo) return b <= lo || a >= hi ? (lo + hi) / 2 - (a + b) / 2 : 0;
+    return a < lo ? lo - a : b > hi ? hi - b : 0;
+  };
+  return { dx: along(box.x0, box.x1, free.left, free.right), dy: along(box.y0, box.y1, free.top, free.bottom) };
+}
+
 /** The smallest rectangle {x, y, w, h} in metres that holds everything `refs` points at, or null. */
 export function focusRect(layout, refs, vehicles = []) {
   const cs = layout.grid.cellSize;
@@ -189,6 +205,10 @@ export function focusRect(layout, refs, vehicles = []) {
     if (flow) { stationBox(flow.from); stationBox(flow.to); }
   }
   for (const id of refs.fleetIds || []) fleetBoxes(id);
+  for (const id of refs.vehicleIds || []) { // single vehicles (the Statistics dock): the cell the vehicle is on; none while it is not on the road
+    const v = vehicles.find((x) => x.id === id);
+    if (v && v.visible !== false && Number.isFinite(v.x) && Number.isFinite(v.y)) boxes.push({ x: v.x - cs / 2, y: v.y - cs / 2, w: cs, h: cs });
+  }
   for (const [cx, cy] of refs.cells || []) cellBox(cx, cy, 1, 1);
   return unionOf(boxes);
 }
@@ -512,7 +532,7 @@ function createAnalysis(store, onSettled) {
 // Camera control: fit, zoom, glide to a target
 // ---------------------------------------------------------------------------------------------------------
 
-function createCameraControl({ camera, canvas, store, coveredAtTop }) {
+function createCameraControl({ camera, canvas, store, coveredAtTop, coveredAtBottom = () => 0 }) {
   let frame = 0;
   let pendingFit = false;
   let lastFit = null; // the view of the latest fit: while the camera still shows it, a resized stage re-fits
@@ -554,22 +574,58 @@ function createCameraControl({ camera, canvas, store, coveredAtTop }) {
     if (!(w > 0 && hgt > 0)) { pendingFit = true; return; }
     pendingFit = false;
     const margin = clamp(Math.round(Math.min(w, hgt) * FIT_MARGIN_SHARE), FIT_PADDING_MIN, FIT_PADDING); // less on a phone
-    const top = Math.min(coveredAtTop(), hgt / 2); // the plan goes into the free part below the floating controls
-    const target = camera.clone().fit(store.getState().layout, w, hgt - top, margin);
-    target.y -= top / 2 / target.zoom; // fitted into the free part, whose centre lies top / 2 below the centre of the canvas
+    const top = Math.min(coveredAtTop(), hgt / 2); // the plan goes into the free part below the floating controls ...
+    const bottom = Math.min(coveredAtBottom(), hgt / 2); // ... and above the Statistics dock, which is an overlay (the canvas keeps its size)
+    const target = camera.clone().fit(store.getState().layout, w, hgt - top - bottom, margin);
+    target.y -= (top - bottom) / 2 / target.zoom; // fitted into the free part, whose centre lies (top - bottom) / 2 below the centre of the canvas
     camera.setViewport(w, hgt);
     lastFit = { x: target.x, y: target.y, zoom: target.zoom };
     if (animate) glide(target); else jump(target);
   }
 
-  /** Bring a world rectangle into view; nothing moves when it is already comfortably visible. */
+  /** Bring a world rectangle into view; nothing moves when it is already comfortably visible. The part under the Statistics dock does not count as visible. */
   function reveal(rect) {
     const [w, hgt] = size();
     if (!rect || !(w > 0 && hgt > 0)) return;
+    const bottom = Math.min(coveredAtBottom(), hgt / 2);
     const view = camera.visibleRect();
+    view.y1 -= bottom / camera.zoom;
     const m = FOCUS_MARGIN / camera.zoom;
     const inside = rect.x >= view.x0 + m && rect.y >= view.y0 + m && rect.x + rect.w <= view.x1 - m && rect.y + rect.h <= view.y1 - m;
-    if (!inside) glide(camera.clone().fitRect(rect, w, hgt, FOCUS_PADDING, FOCUS_MAX_ZOOM));
+    if (inside) return;
+    const target = camera.clone().fitRect(rect, w, hgt - bottom, FOCUS_PADDING, FOCUS_MAX_ZOOM);
+    target.y += bottom / 2 / target.zoom; // the free part is centred bottom / 2 above the centre of the canvas
+    glide(target);
+  }
+
+  /**
+   * Pan by the LEAST that brings a world rectangle out from under the top controls and the Statistics dock; never zooms. Does nothing when the
+   * rectangle is already in the free part. (A rectangle bigger than the free part stays while part of it shows, else it is centred: see minimalPan.) True when the camera is moving.
+   */
+  function revealMinimal(rect) {
+    const [w, hgt] = size();
+    if (!rect || !(w > 0 && hgt > 0)) return false;
+    const top = Math.min(coveredAtTop(), hgt / 2);
+    const bottom = Math.min(coveredAtBottom(), hgt / 2);
+    const m = REVEAL_MARGIN;
+    const [x0, y0] = camera.worldToScreen(rect.x, rect.y);
+    const x1 = x0 + rect.w * camera.zoom;
+    const y1 = y0 + rect.h * camera.zoom;
+    const { dx, dy } = minimalPan({ x0, y0, x1, y1 }, { left: m, top: top + m, right: w - m, bottom: hgt - bottom - m });
+    if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) return false;
+    glide({ x: camera.x - dx / camera.zoom, y: camera.y - dy / camera.zoom, zoom: camera.zoom });
+    return true;
+  }
+
+  /** Fit a world rectangle into the free part of the canvas (this one may zoom): "Show route on plan" of the dock. */
+  function showRect(rect) {
+    const [w, hgt] = size();
+    if (!rect || !(w > 0 && hgt > 0)) return;
+    const top = Math.min(coveredAtTop(), hgt / 2);
+    const bottom = Math.min(coveredAtBottom(), hgt / 2);
+    const target = camera.clone().fitRect(rect, w, Math.max(1, hgt - top - bottom), FOCUS_PADDING, FOCUS_MAX_ZOOM);
+    target.y -= (top - bottom) / 2 / target.zoom;
+    glide(target);
   }
 
   function zoomBy(factor) {
@@ -588,7 +644,7 @@ function createCameraControl({ camera, canvas, store, coveredAtTop }) {
     if (pendingFit || untouched) fit();
   }
 
-  return { fit, reveal, zoomBy, stop, resized };
+  return { fit, reveal, revealMinimal, showRect, zoomBy, stop, resized };
 }
 
 // ---------------------------------------------------------------------------------------------------------
@@ -1337,8 +1393,15 @@ function createActions(ctx, parts) {
       const target = selectionFor(refs);
       if (!target) return;
       store.select(target.kind, target.ids);
+      parts.statsDock?.request('focus', { reveal: false }); // an insight or a check pointing at an item: its statistics open too (preference "Statistics on click")
       parts.cameraControl.reveal(focusRect(store.getState().layout, refs || {}, ctx.runner.sim?.vehicles || []));
       parts.drawer.close(false);
+    },
+    /** Open the Statistics dock for the selection (the vehicle buttons of the Fleet tab): an explicit request, whatever "Statistics on click" says. */
+    showStatistics(opts) {
+      if (!parts.statsDock?.open({ reveal: 'always', ...opts })) return false; // the vehicle may be anywhere on the plan: bring it out from under the dock
+      parts.drawer.close(false);
+      return true;
     },
     setTool: (name) => parts.editor.setTool(name),
     /** Start connecting on the plan: { fromId } asks where a station's loads go, { toId } what feeds it (editor.startConnect). */
@@ -1357,7 +1420,12 @@ function createActions(ctx, parts) {
       if (!example) { toast('That example is not available.', { kind: 'error' }); return false; }
       if (!(await confirmReplace(ctx, { title: 'Open this example?', confirmLabel: 'Open example' }))) return false;
       store.newProject(example.build());
-      toast(`Opened the example “${example.name}”. Press ${isTouchOnly() ? 'the' : 'Space or the'} play button to run it.`, { kind: 'success' });
+      const message = `Opened the example “${example.name}”. Press ${isTouchOnly() ? 'the' : 'Space or the'} play button to run it.`;
+      // the lessons of an example live in its tips: one press on the toast opens them (Help > Examples, scrolled to this example)
+      const action = Array.isArray(example.tips) && example.tips.length
+        ? { label: 'Things to try', onClick: () => ctx.dialogs.openHelp({ tab: 'examples', example: id }) }
+        : null;
+      toast(message, action ? { kind: 'success', action, ms: 10000 } : { kind: 'success' });
       return true;
     },
     async newProject() {
@@ -1392,7 +1460,8 @@ function createCore(region, signal) {
   const status = createStatusLine({ textEl: region['status-text'], metaEl: region['status-meta'], store });
   const compact = globalThis.matchMedia(COMPACT_QUERY);
   const coveredAtTop = () => (compact.matches ? Math.max(0, region.floating.getBoundingClientRect().bottom - canvas.getBoundingClientRect().top) : 0);
-  const parts = { cameraControl: createCameraControl({ camera, canvas, store, coveredAtTop }), editor: null, host: null, refresh: () => {} };
+  const coveredAtBottom = () => (parts.statsDock ? parts.statsDock.covered() : 0); // the Statistics dock is an overlay of the stage: it covers the bottom of the canvas
+  const parts = { cameraControl: createCameraControl({ camera, canvas, store, coveredAtTop, coveredAtBottom }), editor: null, host: null, statsDock: null, refresh: () => {} };
   const analysis = createAnalysis(store, () => parts.refresh());
   const drawerClose = iconButton('close', 'Close the details panel', { className: 'btn--ghost side__close', tip: 'Close' });
   region.tabbar.append(drawerClose);
@@ -1426,6 +1495,7 @@ function createChrome(region, core, signal) {
   const dayHint = createDayHint(ctx); // "Time of day matters. Compare whole days." in its place for a plant that follows a timetable
   region.floating.append(h('div', { class: 'simcol' }, simBar.el, impactHint.el, dayHint.el), overlayBar.el);
   region.zoom.append(createZoomBar({ zoomBy: cameraControl.zoomBy, fit: cameraControl.fit }));
+  parts.statsDock = createStatsDock(ctx, { stage: region.stage, editor, cameraControl, rectOf: (selection) => focusRect(store.getState().layout, refsOf(selection), runner.sim?.vehicles || []) });
   createPanelResizer({ handle: region.resize, app: region.app, signal });
   installShortcuts({ ctx, editor, drawer, signal });
   installFileDrop({ ctx, signal });
@@ -1551,6 +1621,7 @@ export function createApp(root) {
       lifetime.abort();
       loop.stop();
       resizeObserver.disconnect();
+      parts.statsDock?.destroy();
       parts.editor.destroy();
       ctx.runner.destroy();
       parts.host.destroy();

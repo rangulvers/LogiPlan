@@ -268,3 +268,122 @@ test('the collector is a pure observer: the position of every vehicle is the sam
   };
   assert.equal(run(true), run(false));
 });
+
+// ---- the core fixer's regressions (the reviews of the statistics: tests/stats.engine.review.test.js, tests/stats.truth.review.test.js) -------------------------------------------
+
+test('STAT-ENG-REV-1 (collector side): once the leg log has wrapped, `since` is sound: every leg that started after it is in the log, and every query counts the same legs', () => {
+  // The same seed twice: a log of 150 rows that wraps, and a log that never does. Determinism makes their legs identical, so the big one is the truth about which legs the small one lost.
+  const make = (opts) => { const sim = new Simulation(example('two-lines'), { seed: 1 }); const det = sim.enableDetail(opts); sim.advance(3 * 3600); return { sim, det }; };
+  const small = make({ legCap: 150, legStart: 64 });
+  const big = make({ legCap: 1 << 16 });
+  const cover = small.det.legCoverage();
+  assert.ok(cover.wrapped && cover.rows === 150 && !big.det.legCoverage().wrapped);
+  assert.ok(cover.since > small.det.windowStart + 3600, `the small log covers only the last stretch (since ${cover.since.toFixed(0)} s of ${small.sim.time.toFixed(0)})`);
+  const startsAfter = (det, t) => { const L = det.legs; const out = []; for (let k = 0; k < L.size; k++) { const r = L.at(k); if (L.t0[r] > t) out.push(`${L.veh[r]}:${L.kind[r]}:${L.t0[r]}`); } return out.sort(); };
+  assert.deepEqual(startsAfter(small.det, cover.since), startsAfter(big.det, cover.since), 'the legs that started after `since` are the same legs in both logs');
+  // and the queries that read the legs count exactly those legs
+  const ws = small.det.windowOf('start'); const wb = big.det.windowOf('start');
+  const tripsAfter = (det, i, t) => { const L = det.legs; let n = 0; for (let k = 0; k < L.size; k++) { const r = L.at(k); if (L.veh[r] === i && L.kind[r] === 1 && L.t0[r] >= t - 1e-9) n++; } return n; };
+  let compared = 0;
+  for (let i = 0; i < small.det.nV; i++) {
+    const got = small.det.routesOf(i, ws, [1]).reduce((n, r) => n + r.trips, 0);
+    assert.equal(got, tripsAfter(big.det, i, cover.since), `vehicle ${i}: the loaded legs since ${cover.since.toFixed(0)} s`);
+    compared += got;
+  }
+  assert.ok(compared > 20, `${compared} loaded legs compared`);
+  assert.equal(small.det.loadedRoutes({}, ws).reduce((n, r) => n + r.trips, 0), big.det.loadedRoutes({}, { ...wb, t0: cover.since }).reduce((n, r) => n + r.trips, 0), 'the plant-wide query follows the same boundary');
+  // the report counters do not depend on the log
+  assert.equal(small.det.counts(0, ws).trips, big.det.counts(0, wb).trips);
+});
+
+test('STAT-ENG-REV-4: the cell tables hold their seconds in float64: a queue that adds 0.05 s every tick leaves no phantom seconds on its cell', () => {
+  const sim = new Simulation(dockPlant(DOCKPLANT_SEEDS[3]), { seed: 1 });
+  sim.settings.dt = 0.05;
+  const det = sim.enableDetail();
+  sim.advance(600);
+  assert.ok(det.hotQ.secs instanceof Float64Array && det.hot.secs instanceof Float64Array && det.hotStray.secs instanceof Float64Array && det.idleHot.secs instanceof Float64Array);
+  let queued = 0; let rows = 0;
+  for (let i = 0; i < det.nV; i++) {
+    for (let k = i * 24; k < (i + 1) * 24; k++) {
+      const key = det.hotQ.keys[k];
+      if (key < 0) continue;
+      queued += det.hotQ.secs[k];
+      // the part of a cell that is a queue can never be more than the cell (a float32 sum made it up to 2e-4 of itself more)
+      let cell = 0; for (let m = i * 24; m < (i + 1) * 24; m++) if (det.hot.keys[m] === key) cell += det.hot.secs[m];
+      if (det.curNode[i] === key) cell += det.curSecs[i];
+      assert.ok(det.hotQ.secs[k] <= cell + 1e-9, `vehicle ${i} cell ${key}: ${det.hotQ.secs[k]} s queued of ${cell} s`);
+    }
+    for (const c of det.hotspots(i, 24).cells) { assert.ok(c.seconds > 1e-6, `vehicle ${i} cell ${c.node}: ${c.seconds} s is a phantom row`); rows++; }
+  }
+  assert.ok(queued > 20, `${queued.toFixed(0)} s of dock queue in the tables`);
+  assert.ok(rows > 0);
+});
+
+test('STAT-ENG-REV-6: a restart of the collector keeps the path pool, so a path id means the same cells before and after', () => {
+  const sim = new Simulation(example('two-lines'), { seed: 1 });
+  const det = sim.enableDetail();
+  sim.advance(900);
+  const pool = det.pool;
+  const before = [0, 1, 2].map((id) => Array.from(pool.nodes(id)).join());
+  assert.ok(pool.size >= 3);
+  sim.logistics.removeVehicle(sim.logistics.vehicles[0]);
+  sim.advance(300);
+  assert.ok(det.notices.length >= 1, 'the collector restarted');
+  assert.equal(det.pool, pool, 'the same pool');
+  assert.deepEqual([0, 1, 2].map((id) => Array.from(det.pool.nodes(id)).join()), before);
+  assert.ok(det.pool.size >= pool.size);
+});
+
+test('STAT-ENG-REV-3: a charge session knows the depot it charged at; chargeStopsAt answers for one depot', () => {
+  const layout = example('two-lines');
+  const sim = new Simulation(layout, { seed: 1 });
+  const det = sim.enableDetail();
+  sim.advance(2 * 3600);
+  const depots = det.stations.map((st, i) => [st, i]).filter(([st]) => st.type === 'depot');
+  assert.ok(det.charges.count > 0, 'sessions were recorded');
+  const w = det.windowOf('start');
+  let total = 0;
+  for (const [, i] of depots) {
+    const here = det.chargeStopsAt(i, w);
+    total += here.length;
+    for (const s of here) assert.ok(Number.isInteger(s.veh) && s.minutes > 0 && s.b1 >= s.b0 - 1e-6, `${JSON.stringify(s)}`);
+  }
+  assert.equal(total, det.charges.count, 'every session belongs to a depot');
+  for (let k = 0; k < det.charges.count; k++) assert.ok(det.charges.dep[k] !== NO_STATION, `session ${k} has a depot`);
+  assert.deepEqual(det.chargeStopsAt(-1, w), []); assert.deepEqual(det.chargeStopsAt(9999, w), []);
+  // a later window drops the sessions that ended before it
+  assert.ok(det.chargeStopsAt(depots[0][1], { ...w, t0: sim.time + 1 }).length === 0);
+});
+
+test('STAT-ENG-REV-7: cellUse through the cell index equals a scan that decodes every path, also for paths interned after the index was built', () => {
+  const sim = new Simulation(example('warehouse-first-day'), { seed: 1 });
+  const det = sim.enableDetail();
+  sim.advance(1800);
+  const brute = (nodes, w) => {
+    const want = new Set(nodes); const L = det.legs; const by = new Map(); let legs = 0;
+    for (let k = 0; k < L.size; k++) {
+      const r = L.at(k);
+      if (L.t0[r] < w.t0 - 1e-9 || L.path[r] < 0 || !Array.from(det.pool.nodes(L.path[r])).some((n) => want.has(n))) continue;
+      legs++;
+      const key = `${L.kind[r] === 1 ? 'loaded' : L.kind[r] === 0 ? 'empty' : 'depot'}|${L.flow[r]}`;
+      by.set(key, (by.get(key) || 0) + 1);
+    }
+    return { legs, byFlow: [...by].map(([key, n]) => ({ key, n })).sort((a, b) => b.n - a.n || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0)) };
+  };
+  const w = det.windowOf('start');
+  const g = sim.graph;
+  const some = [...new Set(Array.from({ length: det.pool.size }, (_, id) => det.pool.nodes(id)[3]).filter((n) => n !== undefined))].slice(0, 12);
+  assert.ok(some.length > 3 && det.legs.size > 50);
+  for (const nodes of [[some[0]], [some[1], some[2]], some.slice(0, 6), [-1, 1e9, some[3]], []]) assert.deepEqual(det.cellUse(nodes, w), brute(nodes.filter((n) => n >= 0 && n < g.nodeCount), w), JSON.stringify(nodes));
+  // a path that is interned later (and a leg that uses it) is found by the next call
+  const entries = det.pool.entries;
+  const first = det.pool.nodes(0);
+  const route = { nodes: Array.from(first), edges: Array.from(first).slice(1).map((n, k) => g.out[first[k]].find((e) => g.edges[e].to === n)) };
+  route.nodes.push(...[]); const id = det.pool.intern({ nodes: route.nodes.slice(0, 6), edges: route.edges.slice(0, 5) });
+  assert.ok(id >= 0);
+  det.legs.push(0, 1, 0, 1, 0, id, sim.time, 5, 0, 0, 1, 0, 5);
+  const cell = det.pool.nodes(id)[2];
+  assert.deepEqual(det.cellUse([cell], w), brute([cell], w));
+  assert.ok(det.pool.entries >= entries, 'the index was extended, not rebuilt');
+  assert.ok(det.cellUse([cell], w).legs >= 1);
+});

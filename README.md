@@ -8,6 +8,10 @@ It is a **static web app** (vanilla ES modules, no build step, no runtime depend
 
 > Live site (once GitHub Pages is switched on, see *Deploy*): `https://rangulvers.github.io/LogiPlan/`. The version number and the short code of the build at the bottom right of the window say which deploy you are looking at; click it for the build, its date and what is new (see *Versioning*).
 
+**New here? Read [How LogiPlan works](how/index.html)** (served at `/how/`, also linked from the version dialog of the app): what it is for, how a plant goes from an empty baseplate to an answer, a live simulation that runs the real engine in your browser, and a plain list of what is not built. Its numbers are generated from this repository and tested.
+
+<p><img src="how/img/run.light.webp" alt="The plant running in LogiPlan: vehicles on the roads, loads queuing in front of a workstation, key figures along the top." width="760"></p>
+
 ---
 
 ## What you can do
@@ -18,10 +22,21 @@ It is a **static web app** (vanilla ES modules, no build step, no runtime depend
 | **Describe the work** | Draw **flows** (arrows) between stations: where loads go next, in what share, how many a process consumes per cycle, batch sizes, priorities, optional restriction to one fleet. |
 | **Add vehicles** | Fleets of AGVs, forklifts, tugger trains or custom vehicles: speed, acceleration, length, capacity, load/unload time, batteries and charging, breakdowns, parking behaviour. |
 | **Receive and ship trucks** | Give a Goods in or Goods out **dock doors** with one button: trucks arrive at a rate or on a timetable you paste from Excel, wait at a gate, check in, are unloaded or loaded by your forklifts and AGVs, and leave. Results shows the gate wait, the door time and how busy the doors are, says whether the doors or the forklifts are the limit, and warns when the docks of a station lie in a row and cannot share the work. The examples **Dock lab** and **Warehouse: first day** show both. |
+| **Learn from examples** | Eleven ready plants in five levels, from *Hello, pallet* (one forklift) through a charging corner, a yard shuttle, a morning-peak cross-dock and a whole components plant to *Two plants, one yard*. Each has "things to try" (Help > Examples) whose numbers were measured. |
 | **Simulate** | Live, 1× to 1200×. Collision-free traffic with junction blocking, dead-end reversing, deadlock detection, machine and vehicle breakdowns, battery charging. What-if sliders (demand, vehicle speed, process time) apply while it runs. |
 | **Understand** | KPI dashboard (throughput, lead time, work in progress, utilisation, time stuck in traffic), per-station and per-fleet views, a traffic heatmap, a "Jobs" overlay showing where every vehicle is heading, and plain-language findings such as *"Final assembly is the bottleneck: busy 96 % while 8 loads wait in front of it."* |
+| **Click for statistics** | Click any item on the plan and a **Statistics** panel opens over the bottom of it: six numbers with a counting rule behind each (i), for a workstation, Goods in, storage, Goods out, depot, flow, road cell, fleet or several items. Click a **vehicle** and the plan also draws where it usually drives (width = trips, colour = time lost waiting, dashed = empty) while the panel shows how its time splits, where it is held up, its usual trips by dock and its usual round. See *Statistics on click* below. |
 | **Decide** | Keep several **variants** (A, B, C…), compare them side by side with repeated runs, sweep a parameter ("how many AGVs do I need?"), and export a self-contained **report** (HTML/print/PDF), a PNG of the layout, or the project as JSON. Share a plant as a link. |
 | **Get guidance** | A "next steps" coach tells you what a plant still needs ("Goods in 2 is not connected yet — where should its loads go?"), with one-click fixes, a connector handle on the canvas, and a Help chapter on how vehicles find work. |
+
+### Statistics on click
+
+Click an item (or, from the keyboard, pick a vehicle in the **Fleet** tab and press Enter) and the **Statistics** panel shows what a logistics planner asks first: six numbers, each with its fleet or peer value and an (i) that states exactly how it is counted. A **vehicle** is selectable on its own now (its fleet is one click away in the panel header) and gets three more blocks: *where its time goes* (driving loaded, empty, to a depot, waiting in traffic, in a dock queue, loading, unloading, no job, parked, charging, broken), *where it is held up* (the docks it queues for and the junctions that block it) and *trips*: the loaded origin-destination pairs it drives, the docks they use, the usual round and a few plain sentences, including a labelled workload estimate of whether the fleet needs that vehicle. The same trips are drawn on the plan.
+
+* **Windows.** *Since start* (the Results tab's own window, warm-up excluded) or *Last 30 min*; the panel says how long it measured and since when it counts, calls anything under 20 minutes *indicative*, and keeps a number that has no 30-minute version at its since-start value and says so. Statistics start counting when the collector is switched on (**Simulate > Collect statistics for clicked items**, on by default), so a plant that was already running shows the time since then.
+* **Opening.** The panel opens when a click ends on an item and the tool is not busy, never in the middle of a drag (a drag, a resize or a marquee never opens it and the plan never moves under your pointer). Simulate > *Statistics on click* chooses *when the simulation has data* (the default), *always* or *never*. **I** shows or hides it for the selection, **[** and **]** step to the previous or next item of the same kind, **Esc** closes it. On a phone it is a sheet with three heights. The *Routes on plan* switch (and the **Routes** chip of the overlay bar) draws or hides the trips of the selected vehicle; hovering a trip row in the panel draws that route strongly and dims the others.
+* **Cost.** The collector is only switched on by the browser app (headless runs, experiments and the tests never have one); on the examples it costs about 5 to 15 % more CPU (they still run at tens of thousands of times real time) and 1.5 to 2.6 MB on the largest plant, and it cannot stop the simulation: if it fails the panel says *Statistics stopped* and offers *Count again*. It changes none of the numbers the Results tab shows (the golden tests run with and without it).
+* **Not yet.** The full pages of the other kinds (the Goods in yard and release-to-pickup time, the lead-time chain of a Goods out, storage trends, the fleet table, comparison tables for several items), the plant overview when nothing is selected and the measured what-if are planned (docs/ENTITY-INSIGHTS-DESIGN.md, steps S2 and S3).
 
 ### How the model works (the short version)
 
@@ -55,6 +70,7 @@ Opening `index.html` directly from disk does not work (browsers block ES modules
 | `Space` | Play / pause | `.` | Step |
 | `+` / `−` | Simulation speed | `?` | Help |
 | `Ctrl/⌘ Z`, `Shift+Z` / `Y` | Undo, redo | `Ctrl/⌘ D`, `Del` | Duplicate, delete |
+| `I` | Statistics for the selection, show / hide | `[` / `]` | Previous / next item of the same kind |
 | `Shift`-drag (road tools) | One straight line | `Shift`-click | Line from the end of the last road |
 
 ---

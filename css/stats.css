@@ -1,0 +1,1098 @@
+/* The Statistics dock and the vocabulary of its content (docs/ENTITY-INSIGHTS-DESIGN.md 2 and 7; owner: SHELL builder). Loaded after layout.css.
+ *
+ * The dock is an OVERLAY of the stage (position: absolute in the stage cell), never a row of the app grid: the canvas keeps its size, so the camera
+ * never re-fits and a held pointer keeps its world point. js/ui/panels/stats-dock.js sets --dock-covered on the stage (the part of the stage the dock
+ * covers) and the floating controls move above it. Below 900 px the same element is a bottom sheet with three snap points.
+ *
+ * The class names of the content (.insight__strip, .tile, .split, .hbar, .facts, .trips, .trip, .compare, .where, .kv ...) are the ones of the design
+ * mock-ups, which js/ui/panels/stats-view.js builds; the colours of the route overlay (--route-*) are tokens read by js/ui/render/routes.js too.
+ * Tokens only, no hex values, except the route ramp (two themes, defined once below).
+ */
+
+:root {
+  /* the delay ramp of the route overlay: time lost waiting per trip, none -> much. Blue, amber and red keep their order in lightness; the legend and the
+     labels carry the numbers, so colour is never the only signal. */
+  --route-calm: #2f6fdd;
+  --route-some: #e39a0b;
+  --route-much: #d23a45;
+  --route-halo: rgb(255 255 255 / 0.85);
+  --route-scrim: rgb(238 241 246 / 0.46);
+  --route-chevron: #ffffff;
+  --stats-compact-h: 144px; /* the compact dock never gets lower than this, so the camera can reserve its height before the content has loaded */
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --route-calm: #62a0ff;
+    --route-some: #ffb92e;
+    --route-much: #ff6b73;
+    --route-halo: rgb(14 18 24 / 0.85);
+    --route-scrim: rgb(14 18 24 / 0.5);
+    --route-chevron: #0e1218;
+  }
+}
+
+:root[data-theme='dark'] {
+  --route-calm: #62a0ff;
+  --route-some: #ffb92e;
+  --route-much: #ff6b73;
+  --route-halo: rgb(14 18 24 / 0.85);
+  --route-scrim: rgb(14 18 24 / 0.5);
+  --route-chevron: #0e1218;
+}
+
+/* ---- the stage's floating controls make room for the dock ------------------------------------------------------------------------------------ */
+
+.stage__zoom,
+.stage__options {
+  bottom: calc(var(--sp-2) + var(--dock-covered, 0px));
+}
+
+/* the toasts are not inside the stage: stats-dock.js sets --dock-lift on the page (the distance from the bottom of the window to the top edge of the dock, 0 while it is
+   closed) and a toast stands above the dock instead of over its numbers */
+.toast-region {
+  bottom: max(var(--sp-4), var(--dock-lift, 0px));
+}
+
+@media (max-width: 899.98px) {
+  .toast-region {
+    bottom: max(calc(var(--sp-4) + var(--narrow-toast-lift)), var(--dock-lift, 0px));
+  }
+}
+
+/* the "next steps" chip sits at the bottom left of the plan (css/guidance.css) */
+.guide-chip {
+  bottom: calc(44px + var(--dock-covered, 0px));
+}
+
+.guide-chip.is-lifted {
+  bottom: calc(98px + var(--dock-covered, 0px));
+}
+
+/* ---- the dock ---------------------------------------------------------------------------------------------------------------------------------- */
+
+.insight {
+  position: absolute;
+  z-index: var(--z-float);
+  right: var(--sp-3);
+  bottom: var(--sp-3);
+  left: var(--sp-3);
+  display: flex;
+  min-width: 0;
+  max-height: 44vh;
+  flex-direction: column;
+  border: 1px solid var(--border); /* no overflow clipping on a desktop screen: the tooltips of the buttons and of the (i) of a number reach out of the dock */
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-3);
+  transition: opacity var(--t-base) var(--ease);
+}
+
+.insight[hidden] {
+  display: none;
+}
+
+.insight[data-state='compact'] {
+  min-height: var(--stats-compact-h);
+}
+
+.insight[data-state='open'] {
+  height: var(--dock-h, 360px);
+}
+
+/* While a drag, a resize or a marquee runs on the plan the dock steps aside: half transparent and no pointer, so the planner sees the plan and the gesture can end beneath it. */
+.insight.is-dragging {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.insight.is-resizing {
+  transition: none;
+  user-select: none;
+}
+
+/* The root of the view (whatever element and class stats-view.js gives it) takes no box of its own: its strip and body are rows of the dock. */
+.insight__content,
+.insight__content > * {
+  display: contents;
+}
+
+.insight__grip {
+  position: relative;
+  height: 10px;
+  flex: none;
+  cursor: ns-resize;
+  touch-action: none;
+}
+
+.insight__grip::after {
+  position: absolute;
+  top: 4px;
+  left: 50%;
+  width: 36px;
+  height: 3px;
+  border-radius: var(--radius-pill);
+  background: var(--border-strong);
+  content: '';
+  transform: translateX(-50%);
+}
+
+.insight__grip:hover::after,
+.insight__grip:focus-visible::after,
+.insight.is-resizing .insight__grip::after {
+  background: var(--accent);
+}
+
+.insight__grip:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: -2px;
+}
+
+.insight__head {
+  container-type: inline-size; /* the live line moves to a row of its own when the dock is narrow (the container query below) */
+  display: flex;
+  min-height: 40px;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px var(--sp-3);
+  padding: 0 var(--sp-3) var(--sp-2);
+}
+
+.insight__title {
+  display: flex;
+  min-width: 0;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0;
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-tight);
+}
+
+.insight__title .truncate {
+  min-width: 0;
+}
+
+.insight__crumb {
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-regular);
+  white-space: nowrap;
+}
+
+.insight__live {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 0;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  color: var(--text-dim);
+  font-size: var(--fs-md);
+  white-space: nowrap;
+}
+
+.insight__live > span:not(.dot) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis; /* the whole line ("Carrying 2 loads to Press line · 84 m to go") ends in one ellipsis */
+}
+
+.insight__live strong {
+  color: var(--text);
+  font-weight: var(--fw-medium);
+}
+
+/* The live line is what the vehicle is doing and where it goes: it takes all the room the header has left (the spacer would share it half and half and cut the line
+   at half its length), and a dock narrower than 960 px gives it a row of its own under the title and the controls instead of squeezing it to nothing. */
+.insight__live:not([hidden]) ~ .spacer {
+  flex: 0 0 0;
+}
+
+@container (max-width: 960px) {
+  .insight__live {
+    order: 5;
+    flex: 1 1 100%;
+  }
+
+  .insight__live:not([hidden]) ~ .spacer {
+    flex: 1 1 0;
+  }
+}
+
+.insight__head .segmented,
+.insight__head .switch,
+.insight__head .btn {
+  flex: none;
+}
+
+.insight__head .switch {
+  white-space: nowrap;
+}
+
+.insight__head [hidden] {
+  display: none;
+}
+
+.insight__measured {
+  color: var(--text-faint);
+  font-size: var(--fs-sm);
+  white-space: nowrap;
+}
+
+/* "Last 30 min" is dimmed where the item has no 30-minute figure, but it stays focusable and answers a tap with a sentence (`aria-disabled`, not `disabled`) */
+.insight .segmented__item[aria-disabled='true'] {
+  opacity: 0.55;
+  cursor: help;
+}
+
+.insight .segmented__item[aria-disabled='true']:hover {
+  color: var(--text-dim);
+}
+
+/* one sentence about the window, only when there is something to explain (docs: the window text of the dock) */
+.insight__note {
+  flex: none;
+  padding: 5px var(--sp-3);
+  border-top: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+}
+
+/* "Statistics stopped": the collector failed, the simulation runs on; or the planner switched statistics off */
+.insight__notice {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: 6px var(--sp-3);
+  border-top: 1px solid var(--border);
+  background: var(--warn-soft);
+  color: var(--warn-text);
+  font-size: var(--fs-sm);
+}
+
+.insight__notice[hidden] {
+  display: none;
+}
+
+.insight__notice-text {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.insight__notice .link {
+  flex: none;
+  color: inherit;
+  font-weight: var(--fw-medium);
+}
+
+/* the compact state: header and the strip of six numbers; the three blocks open on demand */
+.insight[data-state='compact'] .insight__body {
+  display: none;
+}
+
+.insight__strip {
+  display: grid;
+  flex: none;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  border-top: 1px solid var(--border);
+}
+
+.insight__strip .tile {
+  padding: var(--sp-2) var(--sp-4) 10px;
+}
+
+.insight__strip .tile + .tile {
+  border-left: 1px solid var(--border);
+}
+
+/* The body scrolls when the dock is lower than its content (44 vh at most). While there is more below, the last 22 px of what is on the screen fade out (the dock sets
+   data-more), so that text cut off at the bottom edge reads as "more below" and not as a clipped sentence; a thin scrollbar alone is hidden by many systems. The middle
+   column (the sentences) is the widest because it is the one that grows tallest. */
+.insight__body {
+  display: grid;
+  min-height: 0;
+  flex: 1 1 auto;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.45fr) minmax(0, 1.1fr);
+  overflow: auto;
+  border-top: 1px solid var(--border);
+}
+
+.insight[data-more='true'] .insight__body {
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 22px), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 22px), transparent);
+}
+
+.insight__block {
+  min-width: 0;
+  padding: var(--sp-3) var(--sp-4) var(--sp-2);
+}
+
+.insight__block + .insight__block {
+  border-left: 1px solid var(--border);
+}
+
+.insight__block > h3 {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  margin: 0 0 10px;
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.insight__block > h3 .aside {
+  color: var(--text-faint);
+  font-weight: var(--fw-regular);
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+/* ---- the numbers ------------------------------------------------------------------------------------------------------------------------------- */
+
+.insight .tiles {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--sp-3) var(--sp-4);
+  margin: 0;
+}
+
+.insight .tile {
+  min-width: 0;
+}
+
+.insight .tile__value {
+  font-size: var(--fs-2xl);
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--fw-semibold);
+  line-height: 1.15;
+  white-space: nowrap;
+}
+
+.insight .tile__value small {
+  margin-left: 2px;
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-regular);
+}
+
+.insight .tile__label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  overflow: hidden;
+  margin-bottom: 2px;
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.insight .tile__ref {
+  margin-top: 1px;
+  color: var(--text-faint);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+  white-space: normal;
+}
+
+.insight .tile__ref .up {
+  color: var(--good-text);
+}
+
+.insight .tile__ref .down {
+  color: var(--bad-text);
+}
+
+.insight .tile[data-tone='warn'] .tile__value {
+  color: var(--warn-text);
+}
+
+.insight .tile[data-tone='bad'] .tile__value {
+  color: var(--bad-text);
+}
+
+/* the (i) button of a number: its text is the counting rule */
+.insight .def {
+  all: unset;
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  color: var(--text-faint);
+  cursor: help;
+}
+
+.insight .def:hover,
+.insight .def:focus-visible {
+  color: var(--accent);
+  outline: var(--focus-ring);
+  outline-offset: 1px;
+}
+
+.insight .def[data-tip]:hover::after,
+.insight .def[data-tip]:focus-visible::after {
+  position: absolute;
+  z-index: var(--z-dropdown);
+  max-width: 260px;
+  margin: 22px 0 0 -8px;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--inverse-bg);
+  box-shadow: var(--shadow-2);
+  color: var(--inverse-text);
+  content: attr(data-tip);
+  font-size: var(--fs-sm);
+  line-height: 1.35;
+  white-space: normal;
+}
+
+/* ---- where the time goes ----------------------------------------------------------------------------------------------------------------------- */
+
+.insight .split {
+  display: grid;
+  gap: var(--sp-2);
+}
+
+.insight .split__legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px 14px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--fs-sm);
+}
+
+.insight .split__legend li {
+  display: flex;
+  min-width: 0;
+  flex: none;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.insight .split__legend .num {
+  margin-left: 2px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.insight .split__spark {
+  margin-top: var(--sp-1);
+}
+
+.insight .split__spark-label {
+  display: flex;
+  justify-content: space-between;
+  color: var(--text-faint);
+  font-size: var(--fs-xs);
+}
+
+/* the kinds of time that are not a state of the kit: three kinds of driving, and the queue for a dock */
+.tone-dockq { --c: var(--state-waiting); }
+.tone-driving-empty { --c: color-mix(in oklab, var(--state-driving), var(--surface) 52%); }
+.tone-driving-depot { --c: color-mix(in oklab, var(--state-driving), var(--surface) 18%); }
+
+.progress__bar.tone-dockq {
+  background: repeating-linear-gradient(135deg, var(--c) 0 3px, color-mix(in oklab, var(--c), var(--surface) 55%) 3px 6px);
+}
+
+.progress__bar.tone-driving-depot {
+  background: repeating-linear-gradient(135deg, var(--c) 0 3px, color-mix(in oklab, var(--c), var(--surface) 60%) 3px 6px);
+}
+
+.dot.tone-dockq {
+  background: repeating-linear-gradient(135deg, var(--c) 0 2px, color-mix(in oklab, var(--c), var(--surface) 55%) 2px 4px);
+}
+
+.dot.tone-driving-depot {
+  background: repeating-linear-gradient(135deg, var(--c) 0 2px, color-mix(in oklab, var(--c), var(--surface) 60%) 2px 4px);
+}
+
+.insight .hbars {
+  display: grid;
+  gap: 4px;
+}
+
+.insight .hbar {
+  display: grid;
+  grid-template-columns: 150px minmax(0, 1fr) 34px;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-sm);
+}
+
+.insight .hbar .truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.insight .hbar__track {
+  height: 6px;
+  overflow: hidden;
+  border-radius: var(--radius-pill);
+  background: var(--track);
+}
+
+.insight .hbar__track > i {
+  display: block;
+  width: var(--w);
+  height: 100%;
+  border-radius: inherit;
+  background: var(--c, var(--accent));
+}
+
+.insight .hbar .num {
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.insight .where {
+  margin-top: var(--sp-2);
+}
+
+.insight .where .tile__label {
+  margin-bottom: 4px;
+}
+
+.insight .where .aside {
+  margin-left: auto;
+  color: var(--text-faint);
+  font-weight: var(--fw-regular);
+}
+
+.insight .how {
+  margin: var(--sp-2) 0 0;
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+}
+
+.insight .round {
+  margin: var(--sp-2) 0 0;
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+}
+
+.insight .round strong {
+  color: var(--text);
+}
+
+.insight .disclose {
+  all: unset;
+  display: inline-flex;
+  flex-wrap: wrap; /* "Other drives" stays one word group; its aside goes to the next line when the column is narrow */
+  align-items: center;
+  gap: 0 4px;
+  margin-top: var(--sp-2);
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.insight .disclose span {
+  white-space: nowrap;
+}
+
+.insight .disclose .aside {
+  white-space: normal;
+}
+
+.insight .disclose:hover {
+  color: var(--text);
+}
+
+.insight .disclose:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.insight .kv {
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 3px var(--sp-3);
+  margin: 0;
+}
+
+.insight .kv dt {
+  color: var(--text-dim);
+}
+
+.insight .kv dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+/* ---- facts -------------------------------------------------------------------------------------------------------------------------------------- */
+
+.insight .facts {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.insight .fact {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: var(--sp-2);
+  font-size: var(--fs-md);
+  line-height: 1.4;
+}
+
+.insight .fact .icon {
+  margin-top: 2px;
+  color: var(--info);
+}
+
+.insight .fact[data-tone='warn'] .icon {
+  color: var(--warn);
+}
+
+.insight .fact[data-tone='good'] .icon {
+  color: var(--good);
+}
+
+.insight .fact[data-tone='bad'] .icon {
+  color: var(--bad);
+}
+
+.insight .link {
+  display: inline;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent-text);
+  font: inherit;
+  font-size: var(--fs-sm);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.insight .link:hover {
+  color: var(--accent-hover);
+}
+
+/* ---- trips and routes ----------------------------------------------------------------------------------------------------------------------- */
+
+.insight .trips {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.insight .trip {
+  display: grid;
+  grid-template-columns: 22px 52px minmax(0, 1fr);
+  align-items: center;
+  gap: var(--sp-3);
+  padding: 6px var(--sp-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  cursor: default;
+}
+
+.insight .trip:hover,
+.insight .trip:focus-visible,
+.insight .trip.is-hot {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+
+.insight .trip__rank {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--inverse-bg);
+  color: var(--inverse-text);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+}
+
+.insight .trip__shape {
+  width: 52px;
+  height: 28px;
+  overflow: visible;
+}
+
+.insight .trip__name {
+  display: -webkit-box;
+  overflow: hidden;
+  font-weight: var(--fw-medium);
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2; /* "Goods receiving -> Central warehouse" is the answer to "which way does it go": two lines before an ellipsis */
+  line-clamp: 2;
+}
+
+.insight .trip__meta {
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.insight .trip__share {
+  color: var(--text-dim);
+}
+
+.insight .trip__wait {
+  margin-left: 4px;
+  font-weight: var(--fw-medium);
+  white-space: nowrap; /* "waits 35 s" never breaks between the number and the unit */
+}
+
+.insight .trip__wait[data-tone='some'] {
+  color: var(--warn-text);
+}
+
+.insight .trip__wait[data-tone='much'] {
+  color: var(--bad-text);
+}
+
+.route-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px var(--sp-3);
+  margin-top: var(--sp-3);
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+}
+
+.route-legend__ramp {
+  width: 88px;
+  height: 6px;
+  border-radius: var(--radius-pill);
+  background: linear-gradient(90deg, var(--route-calm), var(--route-some) 55%, var(--route-much));
+}
+
+/* the legend card on the plan, bottom left, above the dock */
+.route-key {
+  position: absolute;
+  z-index: var(--z-float);
+  bottom: calc(var(--sp-2) + var(--dock-covered, 0px));
+  left: var(--sp-2);
+  display: flex;
+  max-width: 420px;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-2);
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+}
+
+.route-key strong {
+  color: var(--text);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+}
+
+.key-ring {
+  width: 12px;
+  height: 12px;
+  border: 2px dashed var(--route-much);
+  border-radius: 50%;
+}
+
+/* ---- the comparison table of several selected items and the docks of a station -------------------------------------------------------------- */
+
+.insight .compare {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-md);
+  font-variant-numeric: tabular-nums;
+}
+
+.insight .compare th,
+.insight .compare td {
+  white-space: nowrap;
+}
+
+.insight .compare th {
+  padding: 4px var(--sp-3);
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  letter-spacing: 0.04em;
+  text-align: right;
+  text-transform: uppercase;
+}
+
+.insight .compare th:first-child,
+.insight .compare td:first-child {
+  text-align: left;
+}
+
+.insight .compare td {
+  padding: 6px var(--sp-3);
+  border-top: 1px solid var(--border);
+  text-align: right;
+}
+
+.insight .compare .bar {
+  display: inline-block;
+  width: 56px;
+  height: 6px;
+  margin-right: 6px;
+  border-radius: var(--radius-pill);
+  background: var(--track);
+  vertical-align: middle;
+}
+
+.insight .compare .bar > i {
+  display: block;
+  width: var(--w);
+  height: 100%;
+  border-radius: inherit;
+  background: var(--c, var(--accent));
+}
+
+/* ---- narrow screens: the dock is a bottom sheet over the plan, above the tool strip -------------------------------------------------------------
+   Three snap points (data-snap): peek (title, live line, the three headline numbers), half (54 % of the stage) and full (86 %). The plan stays
+   tappable above it; the grip taps to the next snap point and swipes. */
+
+@media (max-width: 899.98px) {
+  .insight {
+    right: 0;
+    bottom: 0;
+    left: 0;
+    max-height: none;
+    overflow: hidden; /* a sheet never grows past its snap point (no tooltips on a touch screen) */
+    border-width: 1px 0 0;
+    border-radius: var(--radius-xl) var(--radius-xl) 0 0;
+  }
+
+  .insight[data-state='compact'],
+  .insight[data-state='open'] {
+    min-height: 0;
+    height: auto;
+  }
+
+  /* peek is as high as its content (the grip, the title, the live line, one row of three numbers): a fixed height clipped it as soon as the numbers had a second line */
+  .insight[data-snap='peek'] {
+    height: auto;
+    min-height: 0;
+  }
+
+  /* the minimum heights (the same numbers as SNAP_MIN_PX of stats-dock.js) keep half and full above the peek on a very short stage (300 % zoom, a phone held sideways) */
+  .insight[data-snap='half'] {
+    height: 54%;
+    min-height: min(100%, 260px);
+  }
+
+  .insight[data-snap='full'] {
+    height: 86%;
+    min-height: min(100%, 300px);
+  }
+
+  .insight__grip {
+    height: 16px;
+  }
+
+  .insight__grip::after {
+    top: 6px;
+    width: 44px;
+    height: 4px;
+  }
+
+  .insight__head {
+    position: relative;
+    flex-wrap: wrap;
+    gap: 6px var(--sp-2);
+    padding: 0 var(--sp-3) var(--sp-2);
+    touch-action: none; /* a swipe that starts on the title row drags the sheet (the buttons in it still tap) */
+  }
+
+  .insight__title {
+    flex: 1 1 100%;
+    padding-right: 36px;
+  }
+
+  .insight__live {
+    order: 2;
+    flex: 1 1 100%;
+  }
+
+  .insight__head .spacer {
+    display: none;
+  }
+
+  .insight__head .segmented {
+    order: 3;
+  }
+
+  .insight__head .switch {
+    order: 4;
+    margin-left: auto;
+  }
+
+  .insight__head .insight__details,
+  .insight__head .insight__minimise {
+    display: none;
+  }
+
+  .insight__head .insight__close {
+    position: absolute;
+    top: -8px;
+    right: var(--sp-2);
+  }
+
+  .insight__strip {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .insight__strip .tile {
+    padding: var(--sp-2) var(--sp-3);
+  }
+
+  .insight__strip .tile:nth-child(n + 4) {
+    border-top: 1px solid var(--border);
+  }
+
+  .insight__strip .tile:nth-child(3n + 1) {
+    border-left: 0;
+  }
+
+  .insight .tile__value {
+    font-size: var(--fs-xl);
+  }
+
+  /* on a phone the body is always there (half, full): the compact state of the desktop has no meaning here */
+  .insight[data-state='compact'] .insight__body {
+    display: flex;
+  }
+
+  .insight__body {
+    flex-direction: column;
+  }
+
+  .insight__block + .insight__block {
+    border-top: 1px solid var(--border);
+    border-left: 0;
+  }
+
+  /* what a planner on a phone wants first: the trips, then the sentences, then the detail */
+  .insight__block:nth-child(3) {
+    order: 1;
+  }
+
+  .insight__block:nth-child(2) {
+    order: 2;
+  }
+
+  .insight__block:nth-child(1) {
+    order: 3;
+  }
+
+  .insight .hbar {
+    grid-template-columns: 110px minmax(0, 1fr) 34px;
+  }
+
+  /* peek: the name, what it does right now and the three numbers that matter; swipe up or tap the grip for more */
+  .insight[data-snap='peek'] .insight__body,
+  .insight[data-snap='peek'] .insight__head .segmented,
+  .insight[data-snap='peek'] .insight__head .switch,
+  .insight[data-snap='peek'] .insight__strip .tile:nth-child(n + 4) {
+    display: none;
+  }
+
+  .insight[data-snap='peek'] .insight__head {
+    padding-bottom: var(--sp-1);
+  }
+
+  /* the sheet at full height would cover the zoom buttons: they step aside (and the "next steps" chip, which would end up on the simulation bar) */
+  .stage[data-dock='full'] .stage__zoom,
+  .stage[data-dock='full'] .stage__options,
+  .stage[data-dock='full'] .guide-chip {
+    display: none;
+  }
+
+  .route-key {
+    display: none;
+  }
+}
+
+/* Touch screens (any width): every control of the dock reaches the 40 px of the kit (--control-h; docs/ENTITY-INSIGHTS-DESIGN.md 2.4). The grip is the one thing that taps and swipes. */
+@media (pointer: coarse) {
+  .insight__grip {
+    height: 40px;
+  }
+
+  .insight__grip::after {
+    top: 18px;
+  }
+
+  .insight__head .btn {
+    min-width: 40px;
+    min-height: 40px;
+  }
+
+  .insight__head .segmented__item {
+    min-height: 40px;
+  }
+
+  /* the link to the fleet is small text: its touch area grows beyond it without moving the layout */
+  .insight__crumb .link {
+    margin: -13px -6px;
+    padding: 13px 6px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .insight,
+  .progress__bar {
+    transition: none;
+  }
+}
+
+@media (forced-colors: active) {
+  .insight {
+    border-color: CanvasText;
+  }
+
+  .insight__grip::after {
+    background: CanvasText;
+  }
+
+  .insight .trip:hover,
+  .insight .trip:focus-visible,
+  .insight .trip.is-hot {
+    border-color: Highlight;
+  }
+}
+
+@media print {
+  .insight,
+  .route-key {
+    display: none !important;
+  }
+}

@@ -113,7 +113,9 @@ test('a new store holds one valid empty scenario "A" and nothing to undo', () =>
   assert.deepEqual(s.lastCommit, { label: '', kind: 'none' });
   assert.deepEqual(s.ui.selection, { kind: null, ids: [] });
   assert.equal(s.ui.theme, 'auto');
-  assert.deepEqual(s.ui.overlays, { grid: true, studs: true, flows: true, docks: false, jobs: true, heat: 'off', ids: false, labels: true });
+  assert.deepEqual(s.ui.overlays, { grid: true, studs: true, flows: true, docks: false, jobs: true, heat: 'off', ids: false, labels: true, routes: true }); // routes: the route overlay of the Statistics dock (default on)
+  assert.equal(s.ui.detail, true, 'the statistics collector is on by default');
+  assert.equal(s.ui.statsDock, 'data', 'a click opens the Statistics dock once the simulation has data');
 });
 
 test('state objects are frozen so identity-based change detection can be trusted', () => {
@@ -600,12 +602,82 @@ test('select accepts a single id, drops unknown ids and unknown kinds, and clear
   store.select('station', ['ghost']);
   assert.deepEqual(store.getState().ui.selection, { kind: null, ids: [] });
   store.select('station', ['s1']);
-  store.select('vehicle', ['v1#1']);
+  store.select('truck', ['v1#1']); // ('vehicle' became a real kind with the Statistics dock; see "vehicle selections" below)
   assert.deepEqual(store.getState().ui.selection, { kind: null, ids: [] });
   store.select('station', ['s1']);
   assert.equal(store.clearSelection(), true);
   assert.equal(store.clearSelection(), false);
   assert.ok(SELECTION_KINDS.includes('cell'));
+});
+
+// ---- vehicle selections (the Statistics dock: docs/ENTITY-INSIGHTS-DESIGN.md 9.1, S1.6) -------------------------------------------
+
+test('vehicle selections hold "<fleetId>#<n>" ids that exist: the fleet exists and 1 <= n <= its count', () => {
+  const { store } = plantWithTwoStations();
+  store.commit('Three vehicles', (l) => { L.updateFleet(l, 'v1', { count: 3 }); });
+  assert.ok(SELECTION_KINDS.includes('vehicle'));
+  store.select('vehicle', ['v1#2', 'v1#2', 'v1#4', 'v1#0', 'v1#', 'v2#1', 'v1#01', 'junk', 7, null, 'v1#3']);
+  assert.deepEqual(store.getState().ui.selection, { kind: 'vehicle', ids: ['v1#2', 'v1#3'] }, 'unique, existing, in the order given');
+  store.select('vehicle', 'v1#1');
+  assert.deepEqual(store.getState().ui.selection, { kind: 'vehicle', ids: ['v1#1'] }, 'a single id is accepted');
+  store.select('vehicle', ['v1#4']);
+  assert.deepEqual(store.getState().ui.selection, { kind: null, ids: [] }, 'a new choice of a vehicle that does not exist selects nothing (no fleet fallback)');
+});
+
+test('an edit that removes the selected vehicle falls back to its fleet; an edit that keeps it keeps it; a removed fleet drops the selection', () => {
+  const { store } = plantWithTwoStations();
+  store.commit('Three vehicles', (l) => { L.updateFleet(l, 'v1', { count: 3 }); });
+  store.select('vehicle', ['v1#2', 'v1#3']);
+  store.commit('Two vehicles', (l) => { L.updateFleet(l, 'v1', { count: 2 }); });
+  assert.deepEqual(store.getState().ui.selection, { kind: 'vehicle', ids: ['v1#2'] }, 'the vehicle that is left stays selected');
+  store.commit('One vehicle', (l) => { L.updateFleet(l, 'v1', { count: 1 }); });
+  assert.deepEqual(store.getState().ui.selection, { kind: 'fleet', ids: ['v1'] }, 'no vehicle left: the fleet is selected');
+  store.undo();
+  assert.deepEqual(store.getState().ui.selection, { kind: 'fleet', ids: ['v1'] }, 'undo does not bring the vehicle selection back (the selection is not part of the history)');
+  store.select('vehicle', ['v1#2']);
+  store.commit('Move a station', (l) => { L.updateStation(l, 's1', { name: 'Gate' }); });
+  assert.deepEqual(store.getState().ui.selection, { kind: 'vehicle', ids: ['v1#2'] }, 'an edit elsewhere keeps the selection (as does a warm restart: the plan is not changed)');
+  store.commit('Remove the fleet', (l) => { L.removeFleet(l, 'v1'); });
+  assert.deepEqual(store.getState().ui.selection, { kind: null, ids: [] }, 'the fleet is gone too: nothing to fall back to');
+});
+
+test('vehicle selections of several fleets fall back to every fleet that is left', () => {
+  const { store } = plantWithTwoStations();
+  store.commit('Two fleets', (l) => { L.updateFleet(l, 'v1', { count: 2 }); L.addFleet(l, 'forklift'); L.updateFleet(l, 'v2', { count: 2 }); });
+  store.select('vehicle', ['v1#2', 'v2#2', 'v1#1']);
+  assert.equal(store.getState().ui.selection.ids.length, 3);
+  store.commit('Fewer', (l) => { L.updateFleet(l, 'v1', { count: 0 }); L.updateFleet(l, 'v2', { count: 0 }); });
+  assert.deepEqual(store.getState().ui.selection, { kind: 'fleet', ids: ['v1', 'v2'] });
+});
+
+test('loading another plant or switching the variant clears a vehicle selection; renaming the fleet keeps it', () => {
+  const { store } = plantWithTwoStations();
+  store.commit('Two vehicles', (l) => { L.updateFleet(l, 'v1', { count: 2 }); });
+  store.select('vehicle', ['v1#2']);
+  store.commit('Rename the fleet', (l) => { L.updateFleet(l, 'v1', { name: 'Shuttles' }); });
+  assert.deepEqual(store.getState().ui.selection, { kind: 'vehicle', ids: ['v1#2'] });
+  store.addScenario('B');
+  assert.deepEqual(store.getState().ui.selection, { kind: null, ids: [] });
+});
+
+test('the Statistics dock preferences are validated, saved with the session and come back', () => {
+  const { store, storage } = makeStore();
+  assert.equal(store.setUi({ detail: false, statsDock: 'always' }), true);
+  assert.equal(store.getState().ui.detail, false);
+  assert.equal(store.getState().ui.statsDock, 'always');
+  assert.equal(store.setUi({ detail: 'yes', statsDock: 'sometimes' }), false, 'junk is ignored');
+  assert.equal(store.getState().ui.detail, false);
+  assert.equal(store.getState().ui.statsDock, 'always');
+  store.setUi({ overlays: { routes: false } });
+  assert.equal(store.getState().ui.overlays.routes, false);
+  store.persist();
+  const back = makeStore({ storage });
+  assert.equal(back.store.restore(), true);
+  const ui = back.store.getState().ui;
+  assert.deepEqual([ui.detail, ui.statsDock, ui.overlays.routes], [false, 'always', false]);
+  const old = makeStore({ storage: fakeStorage({ 'logiplan:v1': JSON.stringify({ ...JSON.parse(storage.data.get('logiplan:v1')), session: { ui: { theme: 'dark' }, dirty: false } }) }) });
+  assert.equal(old.store.restore(), true, 'a session saved before the dock existed still loads');
+  assert.deepEqual([old.store.getState().ui.detail, old.store.getState().ui.statsDock, old.store.getState().ui.overlays.routes], [true, 'data', true], 'and gets the defaults');
 });
 
 test('cell selections use road cell keys; [cx, cy] pairs are accepted and non-road cells are dropped', () => {
@@ -693,7 +765,7 @@ test('a layout commit leaves ui parts untouched and other scenarios identical', 
 test('setUi merges overlays per flag and validates heat, theme and flags', () => {
   const { store } = makeStore();
   store.setUi({ overlays: { grid: false, heat: 'traffic', docks: 'yes', nonsense: true } });
-  assert.deepEqual(store.getState().ui.overlays, { grid: false, studs: true, flows: true, docks: false, jobs: true, heat: 'traffic', ids: false, labels: true });
+  assert.deepEqual(store.getState().ui.overlays, { grid: false, studs: true, flows: true, docks: false, jobs: true, heat: 'traffic', ids: false, labels: true, routes: true });
   store.setUi({ overlays: { heat: 'lava' }, theme: 'neon', followSim: 'maybe', tool: '', rightTab: 42 });
   const ui = store.getState().ui;
   assert.equal(ui.overlays.heat, 'traffic');
@@ -1308,13 +1380,13 @@ test('persist and restore round-trip: scenarios, active scenario, names, ui pref
   assert.deepEqual(L.checkInvariants(b.layout), []);
 });
 
-test('only theme, overlays, rightTab, warmRestart and toolOptions are saved as ui preferences, next to a normal project export', () => {
+test('only theme, overlays, rightTab, warmRestart, toolOptions, detail and statsDock are saved as ui preferences, next to a normal project export', () => {
   const { store, storage } = makeStore();
   store.setUi({ tool: 'oneway', theme: 'light', toolOptions: { drawMode: 'free' } });
   store.select('cell', ['1,1']);
   store.persist();
   const saved = JSON.parse(storage.data.get('logiplan:v1'));
-  assert.deepEqual(Object.keys(saved.session.ui).sort(), ['overlays', 'rightTab', 'theme', 'toolOptions', 'warmRestart']);
+  assert.deepEqual(Object.keys(saved.session.ui).sort(), ['detail', 'overlays', 'rightTab', 'statsDock', 'theme', 'toolOptions', 'warmRestart']);
   assert.equal(saved.session.ui.toolOptions.drawMode, 'free');
   const back = makeStore({ storage });
   assert.equal(back.store.restore(), true);

@@ -17,6 +17,7 @@ const MIME = {
   '.json': 'application/json; charset=utf-8',
   '.svg': 'image/svg+xml',
   '.png': 'image/png',
+  '.webp': 'image/webp',
   '.ico': 'image/x-icon',
   '.txt': 'text/plain; charset=utf-8',
   '.md': 'text/markdown; charset=utf-8',
@@ -27,6 +28,11 @@ export function createServer() {
     try {
       const url = new URL(req.url, 'http://localhost');
       let rel = decodeURIComponent(url.pathname);
+      // GitHub Pages answers a folder without its slash with a redirect; so does the dev server (/how -> /how/)
+      if (!rel.endsWith('/') && !path.extname(rel) && (await stat(path.resolve(root, '.' + rel)).catch(() => null))?.isDirectory()) {
+        res.writeHead(301, { location: rel + '/' + url.search }).end();
+        return;
+      }
       if (rel.endsWith('/')) rel += 'index.html';
       const file = path.resolve(root, '.' + rel);
       if (!file.startsWith(root + path.sep) && file !== root) { res.writeHead(403).end('Forbidden'); return; }

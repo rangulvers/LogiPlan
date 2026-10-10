@@ -56,13 +56,13 @@ jobs:
   heavy:
     # The shards are the groups of HEAVY_SHARDS in scripts/test-tiers.mjs. The list below must name 1 to SHARD_COUNT: a missing number
     # would silently skip those tests, so tests/test-tiers.test.js fails when this list and the script disagree.
-    name: Tests (heavy ${{ matrix.shard }}/7)
+    name: Tests (heavy ${{ matrix.shard }}/10)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
     steps:
       - uses: actions/checkout@v4
         with:

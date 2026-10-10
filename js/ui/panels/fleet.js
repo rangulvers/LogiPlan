@@ -20,7 +20,7 @@ import { getFleet, addFleet, updateFleet, removeFleet, duplicateFleet } from '..
 import { formatNumber, round } from '../../util/format.js';
 import { numberField, selectField, textField, segmentedField, stepperField, switchField, section, emptyState, callout, humanSeconds, uid } from './fields.js';
 import { createGuidanceHeader, forFleet } from './nextsteps.js';
-import { createFleetStatus } from './fleet-status.js';
+import { createFleetStatus, statusGroup, STATUS_GROUPS } from './fleet-status.js';
 import { createFleetJobs } from './jobs-view.js';
 
 const INLINE_W = '120px';
@@ -93,6 +93,29 @@ export function fleetCounts(vehicles) {
     c[vehicleGroup(vehicle)] += 1;
   }
   return counts;
+}
+
+/** Vehicles of a fleet listed before "Show all": the Fleet tab is no table of hundreds of buttons. */
+export const VEHICLE_LIST_LIMIT = 12;
+
+/**
+ * The vehicles of a fleet for its list in the Fleet tab, from the plant (numbers 1 to `count`: the id of vehicle n is "<fleetId>#<n>", what a click on the plan selects) and,
+ * while a simulation exists, its live state and the trips per hour of the report's window. `first`: how many rows (the rest is "Show all").
+ * -> [{ id, name, group (a fleet-status group key or null), tripsPerHour (number or null) }]
+ */
+export function vehicleRows(fleet, sim, report, first = VEHICLE_LIST_LIMIT) {
+  const live = new Map();
+  for (const v of (sim && sim.vehicles) || []) if (v.fleetId === fleet.id) live.set(v.id, v);
+  const entry = report && report.fleets ? report.fleets[fleet.id] : null;
+  const hours = report && report.window && report.window.duration > 0 ? report.window.duration / 3600 : 0;
+  const rows = [];
+  for (let n = 1; n <= Math.min(fleet.count, first); n++) {
+    const id = `${fleet.id}#${n}`;
+    const v = live.get(id);
+    const trips = entry && entry.vehicleTrips ? entry.vehicleTrips[id] : undefined;
+    rows.push({ id, name: `${fleet.name || fleet.id} ${n}`, group: v ? statusGroup(v) : null, tripsPerHour: hours > 0 && Number.isFinite(trips) ? trips / hours : null });
+  }
+  return rows;
 }
 
 /** Flows that only this fleet may serve. */
@@ -441,6 +464,66 @@ function breakdownSection(env) {
   return sec;
 }
 
+/**
+ * The vehicles of the fleet as buttons (state dot, trips per hour): the reliable way to pick one vehicle, because clicking a moving vehicle at 600x is not.
+ * A press (Enter, Space or a click) selects the vehicle and opens its statistics in the dock over the plan (ctx.actions.showStatistics).
+ */
+function vehiclesSection(env) {
+  const { ctx, id, syncs, memory } = env;
+  const list = h('div', { class: 'stack', style: { '--gap': '2px' }, 'data-role': 'vehicles' });
+  const draw = keyedRender(list);
+  const sec = rememberedSection(memory, `${id}:vehicles`, true, 'Vehicles', '', list);
+  const buttons = new Map();
+  let showAll = false;
+  let selected = new Set();
+
+  const pick = (e, vehicleId) => {
+    ctx.store.select('vehicle', [vehicleId]);
+    if (ctx.actions && ctx.actions.showStatistics) ctx.actions.showStatistics({ focus: e.detail === 0 }); // from the keyboard the focus goes to the dock too
+  };
+
+  function build(rows, total) {
+    buttons.clear();
+    const out = rows.map((row) => {
+      const dot = h('span', { class: 'dot tone-idle', 'aria-hidden': 'true' });
+      const rate = h('span', { class: 'text-dim tnum' });
+      const button = h('button', {
+        class: 'btn btn--ghost btn--sm', type: 'button', style: { width: '100%', justifyContent: 'flex-start' }, dataset: { vehicle: row.id },
+        'aria-label': `Statistics for ${row.name}`, onclick: (e) => pick(e, row.id),
+      }, dot, h('span', { class: 'truncate' }, row.name), h('span', { class: 'spacer' }), rate);
+      buttons.set(row.id, { button, dot, rate });
+      return button;
+    });
+    if (total > VEHICLE_LIST_LIMIT) {
+      out.push(h('button', { class: 'btn btn--ghost btn--sm', type: 'button', dataset: { role: 'more' }, onclick: () => { showAll = !showAll; if (latest) paint(latest); list.querySelector('[data-role=more]').focus(); } },
+        showAll ? 'Show fewer' : `Show all ${total} vehicles`));
+    }
+    return out;
+  }
+
+  let latest = null;
+  function paint(fleet, state) {
+    latest = fleet;
+    const sim = ctx.runner && ctx.runner.sim;
+    const report = sim && ctx.runner.kpis ? ctx.runner.kpis() : null;
+    const rows = vehicleRows(fleet, sim, report, showAll ? fleet.count : VEHICLE_LIST_LIMIT);
+    draw(`${showAll}|${fleet.count}|${rows.map((r) => r.id).join(',')}`, () => (fleet.count === 0 ? [hintLine('No vehicles yet.')] : build(rows, fleet.count)));
+    for (const row of rows) {
+      const parts = buttons.get(row.id);
+      if (!parts) continue;
+      const group = STATUS_GROUPS.find((g) => g.key === row.group);
+      const cls = `dot tone-${group ? group.tone : 'idle'}`;
+      if (parts.dot.getAttribute('class') !== cls) parts.dot.setAttribute('class', cls);
+      const text = row.tripsPerHour === null ? '' : `${formatNumber(row.tripsPerHour, row.tripsPerHour < 10 ? 1 : 0)} /h`;
+      if (parts.rate.textContent !== text) parts.rate.textContent = text;
+      parts.button.setAttribute('aria-pressed', String(selected.has(row.id)));
+    }
+    sec.setAside(plural(fleet.count, 'vehicle'));
+  }
+  syncs.push(paint);
+  return { ...sec, setSelected(ids) { selected = new Set(ids); for (const [vid, parts] of buttons) parts.button.setAttribute('aria-pressed', String(selected.has(vid))); } };
+}
+
 /** "Jobs this fleet serves": which flows the fleet carries, how many flows share its vehicles, and the switch that dedicates a flow to it (jobs-view.js). */
 function jobsSection(env) {
   const { ctx, id, syncs, memory } = env;
@@ -542,7 +625,8 @@ function createFleetCard(ctx, initial, memory, open) {
   const body = h('div', { class: 'stack', style: { '--gap': '0', borderTop: '1px solid var(--border)' }, id: `fleet-body-${env.id}` });
   const head = cardHeader(env, () => setExpanded(!expanded));
   head.toggle.setAttribute('aria-controls', body.id);
-  body.append(jobsSection(env).el, vehicleSection(env).el, batterySection(env).el, breakdownSection(env).el, parkingSection(env).el);
+  const vehicles = vehiclesSection(env);
+  body.append(jobsSection(env).el, vehicles.el, vehicleSection(env).el, batterySection(env).el, breakdownSection(env).el, parkingSection(env).el);
   const live = createFleetStatus(ctx, env.id);
   const el = h('div', { class: 'card', role: 'group', 'aria-label': `Fleet ${initial.name}`, dataset: { fleet: env.id } }, head.el, live.el, body);
 
@@ -554,8 +638,10 @@ function createFleetCard(ctx, initial, memory, open) {
   setExpanded(open);
 
   // Using a card selects its fleet on the plan, so the planner sees which vehicles belong to it.
-  el.addEventListener('focusin', () => {
+  el.addEventListener('focusin', (e) => {
     const selection = ctx.store.getState().ui.selection;
+    if (selection.kind === 'vehicle' && selection.ids.every((vid) => vid.startsWith(`${env.id}#`))) return; // a vehicle of this fleet is selected: working in the card keeps it
+    if (e.target.closest && e.target.closest('[data-role="vehicles"]')) return; // the vehicle buttons choose a vehicle (or Show all) themselves
     if (selection.kind !== 'fleet' || selection.ids.length !== 1 || selection.ids[0] !== env.id) ctx.store.select('fleet', [env.id]);
   });
 
@@ -567,6 +653,7 @@ function createFleetCard(ctx, initial, memory, open) {
       live.update(state);
     },
     setSelected(on) { el.classList.toggle('card--selected', on); },
+    setSelectedVehicles(ids) { vehicles.setSelected(ids); },
     /** Bring a fleet that was selected elsewhere into view, unless the planner is working inside this card right now. */
     reveal() {
       if (el.contains(document.activeElement)) return;
@@ -653,8 +740,12 @@ export function createFleetPanel(ctx) {
   }
 
   function showSelection(selection) {
-    const ids = selection.kind === 'fleet' ? selection.ids : [];
-    for (const [id, card] of cards) card.setSelected(ids.includes(id));
+    const vehicleIds = selection.kind === 'vehicle' ? selection.ids : [];
+    const ids = selection.kind === 'fleet' ? selection.ids : [...new Set(vehicleIds.map((vid) => vid.slice(0, vid.lastIndexOf('#'))))]; // a selected vehicle lights up the card of its fleet
+    for (const [id, card] of cards) {
+      card.setSelected(ids.includes(id));
+      card.setSelectedVehicles(vehicleIds);
+    }
     const signature = ids.join(',');
     if (signature !== lastSelection) {
       lastSelection = signature;

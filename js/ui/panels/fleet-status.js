@@ -15,7 +15,7 @@ import { formatNumber } from '../../util/format.js';
 
 /** Live groups in display order: key, dot tone of the kit, word. `rare` groups only show while somebody is in them. */
 export const STATUS_GROUPS = Object.freeze([
-  { key: 'working', tone: 'driving', word: 'working', tip: 'Driving to a pickup or a drop, loading or unloading' },
+  { key: 'working', tone: 'driving', word: 'working', tip: 'Driving to a pickup or a drop, loading or unloading. A drive to a charger counts as charging and a drive to park as idle, so this is not the "Busy, incl. waiting" of the statistics, which counts every drive and all waiting.' },
   { key: 'waiting', tone: 'waiting', word: 'waiting', tip: 'Standing still in traffic: another vehicle, a junction or a broken-down vehicle is in the way' },
   { key: 'idle', tone: 'idle', word: 'idle', tip: 'Free and waiting for a job on the road' },
   { key: 'parked', tone: 'parked', word: 'parked', tip: 'Parked in a depot' },

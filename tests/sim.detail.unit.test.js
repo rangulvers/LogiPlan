@@ -376,9 +376,12 @@ test('workingSeries gives the busy share of each 30 s bucket, oldest first', () 
   assert.deepEqual(det.workingSeries(0, 2).map((x) => Math.round(x * 100) / 100), [0, 0.5]);
 });
 
-test('the leg ring grows by doubling, wraps at its cap, keeps the newest rows in order and says where it now begins', () => {
+test('the leg ring grows by doubling, wraps at its cap, keeps the newest rows in order and says from when its legs are complete', () => {
   const { sim, det } = plant({ dt: 1 });
   det.legs = new det.legs.constructor(8, 2); // 8 rows at most, 2 at the start
+  const filed = []; // every leg the poll files: [start, filing time]
+  const push = det.legs.push.bind(det.legs);
+  det.legs.push = (...a) => { filed.push([a[6], a[6] + a[12]]); push(...a); };
   const v = sim.veh('v1#1');
   for (let k = 0; k < 13; k++) job(sim, v);
   const L = det.legs;
@@ -386,14 +389,24 @@ test('the leg ring grows by doubling, wraps at its cap, keeps the newest rows in
   const starts = []; for (let k = 0; k < L.size; k++) starts.push(L.t0[L.at(k)]);
   assert.deepEqual(starts, [...starts].sort((a, b) => a - b), 'oldest first');
   const cov = det.legCoverage();
-  assert.equal(cov.wrapped, true); assert.equal(cov.rows, 8); assert.equal(cov.since, starts[0]); assert.ok(cov.since > det.windowStart);
-  const r = det.routesOf(0, det.windowOf('start'), [1])[0];
-  assert.equal(r.trips, 4, 'the four loaded legs among the eight newest rows');
+  assert.equal(cov.wrapped, true); assert.equal(cov.rows, 8);
+  // `since` is when the newest DROPPED leg was filed: the legs filed before it are the ones that may be missing, every leg that started after it is here
+  const dropped = filed.slice(0, filed.length - 8);
+  assert.equal(dropped.length, 18);
+  assert.equal(cov.since, Math.max(...dropped.map((f) => f[1])), 'the latest filing time of a leg the ring dropped');
+  assert.ok(cov.since > det.windowStart);
+  for (const [t0] of filed) if (t0 > cov.since) assert.ok(starts.includes(t0), `a leg that started at ${t0}, after ${cov.since}, is still in the log`);
+  const w = det.windowOf('start');
+  const r = det.routesOf(0, w, [1])[0];
+  assert.ok(r.trips <= 4, 'the loaded legs among the eight newest rows');
   assert.equal(det.counts(0).trips, 13, 'the report counters are not limited by the ring');
+  // a query counts the legs that started in the window AND after `since`: the same set whatever the window said
+  assert.equal(r.trips, starts.filter((t) => t >= cov.since - 1e-9).length / 2, 'half of the legs of a job are loaded, and only those after `since` count');
   // growth keeps the rows: a log that starts small holds what a big one holds
   const small = new det.legs.constructor(64, 2); const big = new det.legs.constructor(64, 64);
-  for (let k = 0; k < 40; k++) { small.push(1, 1, 2, 3, 4, 5, k, 6, 7, 8, 9, 0); big.push(1, 1, 2, 3, 4, 5, k, 6, 7, 8, 9, 0); }
-  assert.equal(small.rows, 64); assert.equal(small.bytes, 64 * 36);
+  for (let k = 0; k < 40; k++) { small.push(1, 1, 2, 3, 4, 5, k, 6, 7, 8, 9, 0, 6); big.push(1, 1, 2, 3, 4, 5, k, 6, 7, 8, 9, 0, 6); }
+  assert.equal(small.rows, 64); assert.equal(small.bytes, 64 * 40);
+  assert.equal(small.lostUntil, 0, 'nothing dropped, nothing lost');
   for (let k = 0; k < 40; k++) assert.equal(small.t0[small.at(k)], big.t0[big.at(k)]);
   const extra = new Detail(sim, { legStart: 4 });
   assert.equal(extra.legs.rows, 4);

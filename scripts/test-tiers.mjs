@@ -75,6 +75,9 @@ export const HEAVY_SHARDS = Object.freeze([
     'sim.detail.fingerprint.test.js', // ~9  (12)  S1.1: full-state fingerprint of 80 hostile plants with the collector on / off / on in the middle
     'sim.detail.fuzz.test.js', //       ~15  (19)  loaded-leg balance on 270 plants, audits every 120 s, properties of every query (no NaN, no share above 100 %)
     'sim.detail.perf.test.js', //       ~16  (18)  S1.5 with loose bounds: 500 x on the examples, +25 % over off on Two lines, the 320 x 320 plant, 3.5 MB, query times
+    // The reviews of the statistics (truth of the numbers and honesty of the sentences, neutrality / containment / cost of the collector): the fixed defects are regression tests now; their opt-in checks need STATS_TRUTH_HEAVY=1 / STATS_ENGINE_REVIEW_HEAVY=1.
+    'stats.truth.review.test.js', //     ~7  (10)  34 tests: every vehicle number against an independent per-tick observer, the fleet question against a real run with one vehicle less, 22 STAT-REV regressions
+    'stats.engine.review.test.js', //    ~9  (12)  32 tests: 1,400-run neutrality corpus at a smaller scale, a read-only view of the simulation, the runner, the ledger, 7 STAT-ENG-REV regressions
   ),
   whole(
     'sim.trucks.fuzz.test.js', //       48.6  M1: 200 random plants with trucks, every invariant on every tick, report.ops, dt and fork independence at scale (A1.3, A1.4, A1.8, A1.9)
@@ -102,6 +105,20 @@ export const HEAVY_SHARDS = Object.freeze([
     'sim.largegrid.test.js', //          6.2  320 x 320 cells, performance bound
     'm1.sim.review.test.js', //         ~9    the adversarial review of the truck engine (M1): independent audit of 160 plants; fast tier before the fixes, moved here when the fixes added plants (about 15 CPU s beside other work, under 10 alone is not certain); its expensive checks are opt-in (M1_SIM_REVIEW_HEAVY=1)
     'sim.trucks.insights.test.js', //   ~9    M1: the five insight rules on engineered plants, thresholds, 60 random plants; the lane and supply tests of the review fixes were added
+  ),  // 8-10: the examples ladder (docs/EXAMPLES-DESIGN.md 8.6): every figure of every tip of the six new examples, 5 seeds x 8 simulated hours, on worker threads
+  // (tests/helpers/ladder-runs.js). CPU seconds as measured beside other work; the wall time on four idle cores is a quarter of that and a little more.
+  whole(
+    'sim.examples.ladder.test.js', //          ~36 CPU  the six in the simulation: 2 simulated hours healthy, 500 x real time, goods within 90 minutes, the components plant over 24 hours
+    'sim.examples.morning-peak.test.js', //    ~45 CPU  6 variants x 5 seeds (the clock at 14:00)
+    'sim.examples.charging-corner.test.js', // ~34 CPU  7 variants x 5 seeds, the charging wave hour by hour
+    'sim.examples.yard-shuttle.test.js', //    ~8 CPU   6 variants x 5 seeds
+    'sim.examples.hello-pallet.test.js', //    ~10 CPU  5 variants x 5 seeds
+  ),
+  whole(
+    'sim.examples.components-plant.test.js', // ~100 CPU 7 variants x 5 seeds (the plant needs a 2 hour warm-up)
+  ),
+  whole(
+    'sim.examples.twin-plants.test.js', //     ~190 CPU 7 variants x 5 seeds, the base run over 24 hours (the plant settles)
   ),
 ]);
 export const SHARD_COUNT = HEAVY_SHARDS.length;

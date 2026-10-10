@@ -10,6 +10,30 @@ that the history can be read. How to cut a new version is described in the READM
 ## [Unreleased]
 
 ### Added
+- **A page that explains LogiPlan: "How LogiPlan works".** It lives next to the planner (`/how/`) and is linked from the version dialog. It tells the story
+  from the problem to a decision, shows real screenshots of every step and has a live simulation of an example plant that runs the planner's own engine in
+  your browser: play, pause, switch on a second forklift and compare, or run a whole shift and see how long your machine needs. Every figure on it is
+  generated from the project or read from the running simulation, and it says plainly what the planner does not do yet. It sets no cookies and loads
+  nothing from other sites.
+- **Six new examples, from very simple to a two-plant campus.** The examples window is now a ladder in five levels. New: *Hello, pallet* (one forklift),
+  *Charging corner* (six electric forklifts), *Yard shuttle* (one truck over 280 metres), *Morning peak* (a cross-dock on a timetable),
+  *Components plant* (three kinds of vehicle) and *Two plants, one yard* (two plants on one baseplate that share a warehouse and a charging hall; one
+  plant model, not a multi-site one). Open an example and press *Things to try*, or use the new **Examples** tab in Help: every number there was measured.
+- **Click any item to see its statistics.** Click a workstation, Goods in, storage, Goods out, depot, flow, road cell, fleet or several items and a
+  **Statistics** panel opens over the bottom of the plan with six numbers. Each has an (i) that says exactly how it is counted. The panel shows
+  *Since start* or *Last 30 min*, says how long it has measured, and calls anything under 20 minutes *indicative*. It opens when your click ends on an
+  item and never in the middle of a drag, so the plan does not move under your pointer. **I** shows or hides it, **[** and **]** step to the previous or
+  next item of the same kind, **Esc** closes it. On a phone it is a sheet with three heights.
+- **Click a vehicle to see where it goes.** A vehicle can now be selected on its own (or chosen in the *Fleet* tab). The panel shows where its time
+  goes (driving loaded, empty, to a depot, waiting in traffic, in a dock queue, loading, unloading, no job, parked, charging, broken), where it is held
+  up (the docks it queues for and the junctions that block it), its usual trips with the docks they use, its usual round and a few plain sentences,
+  including a labelled estimate of whether the fleet needs this vehicle.
+- **The routes of a vehicle are drawn on the plan.** Line width shows how often a trip is driven, colour how much time is lost waiting, dashes
+  mark empty drives and drives to a depot. Hover a trip in the panel to see just that route. The *Routes on plan* switch and the *Routes* chip of the
+  overlay bar turn them off.
+- **New settings in Simulate.** *Collect statistics for clicked items* (on) and *Statistics on click*: when the simulation has data (default),
+  always, or never. Statistics only count while the collector is on; it changes none of the numbers in Results.
+- **Help explains every counting rule** in the new *Statistics* page.
 - **The version is shown in the app.** The number of the running version and the short code of its build (for example *v0.6.0 a45ce49*) sit at the bottom
   right of the window. The number changes with a release, the code with every update of the site. Click it to see which build you are using and when it
   was made, to copy that information for a bug report in one click, and to read this list of changes. When the window is too small for the bottom line,

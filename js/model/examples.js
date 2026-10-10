@@ -15,6 +15,7 @@ import { lPath } from '../util/grid.js';
 import {
   createLayout, setNotes, paintRoadPath, addStation, addFlow, addFleet, addObstacle, addLabel, translateAll, eraseRoadCell, moveStation,
 } from './layout.js';
+import { NEW_EXAMPLES } from './examples/index.js';
 
 /** Throw if a mutator rejected a request: an example that does not build is a bug, not a soft failure. */
 function must(value, what) {
@@ -274,7 +275,10 @@ export function buildWarehouseFirstDay() {
 
 /**
  * Worked examples for the welcome dialog. `build()` returns a fresh layout every call; `tips` are things to try.
- * @type {Array<{id: string, name: string, description: string, tips: string[], build: () => object}>}
+ * The five first entries are the original examples (their builders, ids, names, descriptions and tips never change); the six after them are the
+ * ladder of docs/EXAMPLES-DESIGN.md (js/model/examples/<id>.js, appended below). `level` (1 to 5) and `rank` (1 to 11, the recommended path) order the
+ * gallery, `learn` is the one-line lesson of a card and `chips` (at most 4) its tags; the array order stays: tests pin it.
+ * @type {Array<{id: string, name: string, description: string, tips: string[], level: number, rank: number, learn: string, chips: string[], notes?: string, build: () => object}>}
  */
 export const EXAMPLES = [
   {
@@ -287,6 +291,10 @@ export const EXAMPLES = [
       'Try: raise "Demand ×" in the Simulate tab to 1.5. The assembly runs flat out (about 99 % busy), the AGVs follow at about 90 % and the output tops out near 30 pallets/h.',
       'Try: drag Dispatch with the Select tool and redraw the road so it touches again; the Checks tab warns while a station has no dock.',
     ],
+    level: 1,
+    rank: 2,
+    learn: 'The smallest complete plant: a source, a workstation, a sink and two AGVs.',
+    chips: ['2 AGVs', 'loop road'],
     build: buildStarter,
   },
   {
@@ -299,6 +307,10 @@ export const EXAMPLES = [
       'Try: raise the AGV charge time to 60 min in the Fleet tab. The AGVs now spend about 28 % of their time on the chargers instead of 8 %; the output holds, but loads wait about 40 % longer for a vehicle. Then cut the chargers in AGV charging to 1: the charger becomes the bottleneck, the work in process climbs without limit and the output falls by more than 40 %.',
       'Try: give the Press line a repair time (MTTR) of 30 min in the Properties tab. Stops strike at random, so a single 8-hour run can show anything from hardly any change to a lead time several times longer; on average over ten runs the work in process doubles, the lead time grows by about 60 % and the output falls by about 5 %. Use several replications in the Experiments tab.',
     ],
+    level: 3,
+    rank: 6,
+    learn: 'Forklifts and AGVs, a bill of materials and the bottleneck it makes.',
+    chips: ['forklifts and AGVs', 'bill of materials', 'breakdowns'],
     build: buildTwoLines,
   },
   {
@@ -312,6 +324,10 @@ export const EXAMPLES = [
       'Try: cut the load and unload time in the Fleet tab from 24 s to 12 s. The docks free up sooner and the wait share falls by more than half.',
       'Try: draw a one-way road from the cross aisle just below Inbound B east along the north side of Packing and down to the main aisle (cells 24,4 → 32,4 → 32,8). Packing gets a second dock and the traffic wait share drops by about 40 %: vehicles then take whichever of its docks is free.',
     ],
+    level: 3,
+    rank: 7,
+    learn: 'Traffic: a deliberately awkward plant, and the fixes.',
+    chips: ['one-way loop', 'congestion'],
     build: buildCongestionLab,
   },
   {
@@ -323,6 +339,10 @@ export const EXAMPLES = [
       'Try: erase the three side roads above Goods in and drag Goods in down until it touches the street. The docks now lie in a row on one lane. A forklift cannot drive past a parked one, so the first dock takes about 97 % of the visits and the others stand empty. The Checks tab says "docks share a lane", the forklifts work about 10 % harder for the same pallets (58 % busy instead of 53 %) and a truck holds its door about 2 minutes longer (33 instead of 31).',
       'Try: add a sixth forklift in the Fleet tab. Trucks are unloaded a little sooner (door time 30 instead of 31 minutes), but the street fills up: waiting in traffic rises from 9 % to 14 %. In the row it rises to 20 % and the extra forklift cannot reach the empty docks.',
     ],
+    level: 2,
+    rank: 5,
+    learn: 'Docks share the work only when each has its own side road.',
+    chips: ['trucks and doors', 'docks'],
     build: () => buildDockLab('bays'),
   },
   {
@@ -335,6 +355,11 @@ export const EXAMPLES = [
       'Try: add a fifth forklift in the Fleet tab instead. The door time falls to about 26 minutes, the gate stays empty and the forklifts are busy about 89 % of the time. A sixth brings the door time to about 22 minutes, at the price of a busier street: waiting in traffic doubles, from 5 % to 10 %.',
       'The door check in the Properties tab (Goods in, Trucks and doors) says 2.7 doors are busy at once at the busiest hour, so 3 doors are enough on paper. It assumes 90 seconds per pallet; in a run the forklifts decide how long a truck stays, and after a run the check uses the door time measured here.',
     ],
+    level: 3,
+    rank: 8,
+    learn: 'Trucks, doors and forklifts: which one limits the gate?',
+    chips: ['trucks and doors', 'forklifts'],
     build: buildWarehouseFirstDay,
   },
+  ...NEW_EXAMPLES,
 ];

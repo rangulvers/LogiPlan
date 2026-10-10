@@ -368,10 +368,11 @@ export function openAbout(ctx, dlg, { build = BUILD, fetchFn } = {}) {
   };
   const unsubscribe = watcher ? watcher.subscribe(onUpdate) : () => {};
 
+  const howLink = () => h('a', { href: 'how/' }, 'How LogiPlan works'); // the landing page next to the app (how/index.html): relative, so it works under any path prefix
   const links = b.repository
-    ? h('div', { class: 'about__links' },
+    ? h('div', { class: 'about__links' }, howLink(),
       link(`${b.repository}/blob/main/LICENSE`, 'Licence (MIT)'), link(b.repository, 'Source code on GitHub'), link(`${b.repository}/issues`, 'Report a problem'))
-    : h('div', { class: 'about__links' }, h('span', null, 'Licence: MIT'));
+    : h('div', { class: 'about__links' }, howLink(), h('span', null, 'Licence: MIT'));
 
   const body = h('div', { class: 'about' },
     h('div', { class: 'about__head' },

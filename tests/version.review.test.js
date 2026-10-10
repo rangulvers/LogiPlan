@@ -754,6 +754,7 @@ test('5.3 the whole About dialog with a hostile changelog, a live build and a ho
     const { body } = shown[0];
     assertInert(dom, body, { tags: new Set([...ALLOWED_TAGS, 'dl', 'dt', 'dd', 'a', 'img', 'section', 'h3', 'p']), attrs: new Set([...ALLOWED_ATTRS, 'href', 'target', 'rel', 'src', 'alt', 'aria-labelledby']) });
     for (const a of dom.elements(body).filter((e) => e.localName === 'a')) {
+      if (a.getAttribute('href') === 'how/') continue; // the one link of the dialog to the landing page next to the app (relative, same tab)
       assert.match(a.getAttribute('href'), /^https:\/\/github\.com\/rangulvers\/LogiPlan(\/[A-Za-z0-9/._-]*)?$/, 'every address is the repository\'s');
       assert.equal(a.getAttribute('target'), '_blank');
       assert.match(a.getAttribute('rel'), /noopener/);

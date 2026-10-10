@@ -5,7 +5,7 @@
 //   dialogs.confirm({ title, text, confirmLabel, danger })      -> Promise<boolean>
 //   dialogs.prompt({ title, label, value, placeholder, ... })   -> Promise<string | null>
 //   dialogs.openWelcome({ auto })  welcome screen: examples with previews, empty plant, continue; `auto: true` honours "Don't show again"
-//   dialogs.openHelp({ tab })      quick start, tools and shortcuts, how vehicles find work ('vehicles'), how the simulation works, tips
+//   dialogs.openHelp({ tab })      quick start, examples with their tips ({ tab: 'examples', example: id }), tools and shortcuts, how vehicles find work ('vehicles'), how the simulation works, tips
 //   dialogs.openShare()            share link with copy button, or the project file when the link would be too long
 //   dialogs.openImportExport()     download the project file; open one from a file, drag and drop, pasted text or a share link
 //   dialogs.openAbout()            the version of this copy, its build, a copy-for-bug-reports button and what is new (js/ui/about.js)
@@ -29,7 +29,9 @@ import { formatNumber } from '../util/format.js';
 import { numberField, textField, segmentedField, callout, uid } from './panels/fields.js';
 import { createVehiclesHelp } from './panels/jobs-view.js';
 import { createTrucksHelp } from './panels/trucks-help.js';
+import { createStatsHelp } from './panels/stats-help.js';
 import { openAbout } from './about.js';
+import { groupByLevel, sortExamples, galleryLevel, cardExtras, isWideExample, createExamplesHelp } from './examples-gallery.js';
 
 const plural = (n, one, many = `${one}s`) => `${formatNumber(n)} ${n === 1 ? one : many}`;
 const quoted = (name) => `“${name}”`;
@@ -450,15 +452,20 @@ function thumbnailFor(example, layout, mode) {
 const currentThemeMode = () => resolveThemeMode(document.documentElement.dataset.theme || 'auto');
 
 function exampleCard(example, layout, onPick) {
-  const thumb = h('div', { style: { aspectRatio: '16 / 9', display: 'grid', placeItems: 'center', background: 'var(--surface-2)', color: 'var(--text-faint)', borderBottom: '1px solid var(--border)' } }, icon('grid', { size: 28 }));
+  const wide = isWideExample(layout); // a plan much wider than high (the twin plants) gets a card across two columns
+  const thumb = h('div', { style: { aspectRatio: wide ? '21 / 9' : '16 / 9', display: 'grid', placeItems: 'center', background: 'var(--surface-2)', color: 'var(--text-faint)', borderBottom: '1px solid var(--border)' } }, icon('grid', { size: 28 }));
+  const extras = cardExtras(example);
   const el = h('button', {
-    class: 'card card--interactive', type: 'button', onclick: onPick, dataset: { example: example.id },
+    class: `card card--interactive example-card${wide ? ' example-card--wide' : ''}`, type: 'button', onclick: onPick, dataset: { example: example.id },
     style: { display: 'flex', flexDirection: 'column', padding: '0', overflow: 'hidden', textAlign: 'left', font: 'inherit', color: 'inherit' },
   },
   thumb,
   h('div', { class: 'stack', style: { padding: '12px', '--gap': '6px' } },
+    extras.badge,
     h('strong', null, example.name),
-    h('span', { class: 'text-dim', title: example.description, style: { fontSize: 'var(--fs-sm)', lineHeight: 'var(--lh)', display: '-webkit-box', WebkitLineClamp: '3', WebkitBoxOrient: 'vertical', overflow: 'hidden' } }, example.description),
+    h('span', { class: 'text-dim', title: example.description, dataset: { role: 'description' }, style: { fontSize: 'var(--fs-sm)', lineHeight: 'var(--lh)', display: '-webkit-box', WebkitLineClamp: '3', WebkitBoxOrient: 'vertical', overflow: 'hidden' } }, example.description),
+    extras.learn,
+    extras.chips,
     h('span', { class: 'text-faint tnum', style: { fontSize: 'var(--fs-sm)' } }, layoutFacts(layout))));
   return {
     el,
@@ -522,7 +529,7 @@ function openWelcome(ctx, dlg, { auto = false } = {}) {
   let handle = null;
   let replaced = false;
 
-  const cards = EXAMPLES.map((example) => {
+  const cards = sortExamples(EXAMPLES).map((example) => {
     const layout = example.build();
     return { example, layout, card: exampleCard(example, layout, () => pickExample(example)) };
   });
@@ -538,7 +545,9 @@ function openWelcome(ctx, dlg, { auto = false } = {}) {
   }
   sections.push(
     h('section', { 'aria-label': 'Examples' }, heading('Start from an example'),
-      h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(230px, 1fr))', gap: '12px' } }, cards.map((c) => c.card.el))),
+      stackOf(18,
+        paragraph('New here? Start at the top and work down: every plant builds on the ones before it. Each card opens a plant you can run at once; its tips are in Help > Examples.'),
+        ...groupByLevel(EXAMPLES).map((group) => galleryLevel(group, cards.filter((c) => group.examples.includes(c.example)).map((c) => c.card.el))))),
     h('section', { 'aria-label': 'Empty plant' }, heading('Or start with an empty plant'), emptyPlantForm(createEmpty)));
 
   const hide = h('input', { type: 'checkbox', checked: isWelcomeHidden(), onchange: () => setWelcomeHidden(hide.checked) });
@@ -633,6 +642,8 @@ const KEY_TABLE = [
   [['Delete'], 'Delete the selection'],
   [['←', '↑', '→', '↓'], 'Move the selection by one cell (hold Shift for five)'],
   [['Esc'], 'Cancel what you are doing, then clear the selection'],
+  [['I'], 'Show or hide the statistics of the selected item (a click on an item opens them too, once the simulation has run a little)'],
+  [['[', ']'], 'Select the previous or next item of the same kind and show its statistics'],
   [['Space'], 'Play or pause the simulation (hold it and drag to pan)'],
   [['.'], 'Advance the simulation by one step'],
   [['+', '−'], 'Faster or slower simulation'],
@@ -734,18 +745,39 @@ function tipsTab() {
   return h('ul', { style: { margin: 0, paddingLeft: '22px', display: 'flex', flexDirection: 'column', gap: '10px', lineHeight: 'var(--lh)', maxWidth: READING_WIDTH } }, TIPS.map((tip) => h('li', null, tip)));
 }
 
-function openHelp(dlg, { tab } = {}, onAbout = null) {
+/**
+ * The Help page "Examples": every example with its tips; "Open this example" loads it (the same confirm-replace flow as the gallery) and closes the Help.
+ * `openHelp({ tab: 'examples', example: id })` opens the page scrolled to that example.
+ */
+function examplesTab(ctx, getHandle) {
+  return createExamplesHelp({
+    examples: EXAMPLES,
+    onOpen: async (example) => {
+      const result = await ctx.actions.loadExample(example.id);
+      if (result === false) return;
+      const handle = getHandle();
+      if (handle) handle.close();
+    },
+  });
+}
+
+function openHelp(ctx, dlg, { tab, example } = {}, onAbout = null) {
+  let handle = null;
+  const examples = examplesTab(ctx, () => handle);
   const tabs = createTabs([
     { id: 'quick', label: 'Quick start', content: quickStartTab() },
     { id: 'tools', label: 'Tools & shortcuts', content: toolsTab() },
     { id: 'vehicles', label: 'How vehicles find work', content: createVehiclesHelp() },
     { id: 'trucks', label: 'Trucks and dock doors', content: createTrucksHelp() },
+    { id: 'statistics', label: 'Statistics of an item', content: createStatsHelp() },
     { id: 'simulation', label: 'How the simulation works', content: simulationTab() },
     { id: 'tips', label: 'Tips', content: tipsTab() },
+    { id: 'examples', label: 'Examples', content: examples.el },
   ], tab, 'Help topics');
   // The way to the version and "what is new" that never goes away: on a phone held sideways the status line (where the version chip sits) is hidden
   const about = onAbout ? h('button', { class: 'btn btn--ghost btn--sm', type: 'button', 'data-role': 'help-about', onclick: () => { handle.close(); onAbout(); } }, icon('info', { size: 14 }), 'About and what is new') : null;
-  const handle = dlg.show({ title: 'Help', size: 'lg', body: tabs.el, leading: about, actions: [{ label: 'Close', variant: 'primary' }] });
+  handle = dlg.show({ title: 'Help', size: 'lg', body: tabs.el, leading: about, actions: [{ label: 'Close', variant: 'primary' }] });
+  if (tab === 'examples' && example) examples.reveal(example);
   return handle;
 }
 
@@ -922,7 +954,7 @@ export function createDialogs(ctx) {
     confirm: dlg.confirm,
     prompt: dlg.prompt,
     openWelcome: (options) => openWelcome(ctx, dlg, options),
-    openHelp: (options) => openHelp(dlg, options, () => openAbout(ctx, dlg)),
+    openHelp: (options) => openHelp(ctx, dlg, options, () => openAbout(ctx, dlg)),
     openShare: () => openShare(ctx, dlg),
     openImportExport: () => openImportExport(ctx, dlg),
     openAbout: (options) => openAbout(ctx, dlg, options),

@@ -7,7 +7,7 @@
 //   station / obstacle / label   select it (Shift toggles); dragging moves the whole selection of that kind
 //   resize handle                resize the single selected station or obstacle
 //   flow handle                  drag to another station to connect them with a flow; a click starts connect mode (connector.js)
-//   flow curve / vehicle         click selects the flow / the vehicle's fleet; dragging draws a marquee
+//   flow curve / vehicle         click selects the flow / the vehicle (its statistics: ui/panels/stats-dock.js; Shift toggles); dragging draws a marquee
 //   road cell or empty space     click selects the road cell (or clears the selection); dragging draws a marquee
 //
 // Beyond the edge. With the pointer beyond an edge of the baseplate a moved or resized station, wall or label may leave it: the plan
@@ -47,8 +47,17 @@ function hoverOf(layout, hit) {
   return roadAt(layout, hit.cell[0], hit.cell[1]) ? { kind: 'cell', cell: hit.cell } : null;
 }
 
+/** "AGVs 1" for the vehicle "v2#1": the simulation's own name for it, else the fleet's name and the number from the "<fleetId>#<n>" id. */
+export function vehicleName(layout, sim, id) {
+  const v = sim && sim.vehicles && sim.vehicles.find((x) => x.id === id);
+  if (v && v.name) return v.name;
+  const at = String(id).lastIndexOf('#');
+  const fleet = at > 0 ? layout.fleets.find((f) => f.id === id.slice(0, at)) : null;
+  return fleet ? `${fleet.name || fleet.id} ${id.slice(at + 1)}` : String(id);
+}
+
 /** One-line description of what the pointer is over, for the status line. */
-function describeHit(layout, hit) {
+function describeHit(layout, hit, sim = null, statsDock = 'data') {
   const cs = layout.grid.cellSize;
   if (hit.kind === 'station') {
     const s = getStation(layout, hit.id);
@@ -68,7 +77,7 @@ function describeHit(layout, hit) {
     const to = f && getStation(layout, f.to);
     return from && to ? `Flow ${from.name} → ${to.name}` : '';
   }
-  if (hit.kind === 'vehicle') return `Vehicle ${hit.id}. Click to select its fleet.`;
+  if (hit.kind === 'vehicle') return `Vehicle ${vehicleName(layout, sim, hit.id)}. ${statsDock === 'never' ? 'Click to select it, press I for its statistics.' : 'Click for statistics.'}`; // preference "Statistics on click: Never": a click only selects
   const road = roadAt(layout, hit.cell[0], hit.cell[1]);
   if (!road) return '';
   return road.limit < 1 ? `Road cell, speed limit ${Math.round(road.limit * 100)} %` : 'Road cell';
@@ -107,19 +116,15 @@ export function createSelectTool(ed) {
     g.rect0 = { x: item.x, y: item.y, w: item.w, h: item.h };
   }
 
-  /** A flow curve or a vehicle: a click selects it (its fleet, for a vehicle), a drag from it is a marquee like on empty ground. */
+  /**
+   * A flow curve or a vehicle: a click selects it (the vehicle itself, id "<fleetId>#<n>"; its fleet is one click away in the Statistics dock),
+   * Shift toggles it, a drag from it is a marquee like on empty ground.
+   */
   function armPick(p, hit) {
-    const kind = hit.kind === 'flow' ? 'flow' : 'fleet';
-    const id = kind === 'flow' ? hit.id : fleetOf(hit.id);
+    const kind = hit.kind === 'flow' ? 'flow' : 'vehicle';
+    const id = hit.id;
     g.arm = 'marquee';
     g.onClick = () => ed.setSelection(p.shift ? toggleInSelection(selection(), kind, id) : { kind, ids: [id] });
-  }
-
-  /** The fleet a vehicle belongs to: from the running simulation, else from the "<fleetId>#<n>" id format. */
-  function fleetOf(vehicleId) {
-    const sim = ed.renderer.sim;
-    const vehicle = sim && sim.vehicles && sim.vehicles.find((v) => v.id === vehicleId);
-    return vehicle && vehicle.fleetId ? vehicle.fleetId : String(vehicleId).split('#')[0];
   }
 
   /** The flow handle of the selected station: a drag connects, a click starts connect mode. */
@@ -317,7 +322,7 @@ export function createSelectTool(ed) {
       if (isHandle(hit.handle) && isResizable(selection())) ed.cursor(HANDLE_CURSORS[hit.handle]);
       else if (hit.handle === 'move') ed.cursor('move');
       else ed.cursor(ed.view.hover ? 'pointer' : 'default');
-      ed.hoverStatus(p, describeHit(layout, hit));
+      ed.hoverStatus(p, describeHit(layout, hit, ed.renderer.sim, ed.ui().statsDock));
     },
   };
 }

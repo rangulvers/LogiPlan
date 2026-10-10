@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1000" width="1600" height="1000" role="img" aria-labelledby="t">
+<title id="t">A truck arrives at the yard, checks in at the gate, backs to a dock door where forklifts unload it into storage. The time before the gate is the gate wait, the time at the door is the door time.</title>
+<style>
+:root{--bg:#f6f8fb;--plate:#dfe7f2;--stud:#cbd6e6;--road:#3b4658;--mark:#f4f6fa;--line:#c3ccda;--ink:#1c2230;--dim:#4f5d75;--src:#2f7df6;--stor:#f08a24;--truck:#eef1f6;--cab:#6b778c;--fork:#f5b82e;--acc:#1f5fd1;--gate:#cc7a00}
+@media(prefers-color-scheme:dark){:root{--bg:#1a202a;--plate:#263143;--stud:#324057;--road:#0f1319;--mark:#6b778c;--line:#3d495c;--ink:#e6ebf5;--dim:#a3afc4;--src:#2a71dd;--stor:#d87c20;--truck:#c9d2e2;--cab:#8a97ad;--fork:#f5b94c;--acc:#7fb1ff;--gate:#f5b94c}}
+.t{font:600 36px system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;fill:var(--ink)}
+.a{fill:var(--acc)}
+.b{font:700 26px system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+.v{fill:var(--truck);stroke:var(--line);stroke-width:3}
+.c{fill:var(--cab)}
+.k{fill:none;stroke:var(--acc);stroke-width:5}
+.l{fill:none;stroke:var(--dim);stroke-width:4}
+@media(prefers-reduced-motion:no-preference){.tr{animation:a 6s ease-in-out infinite}.fk{animation:f 3s ease-in-out infinite alternate}}
+@keyframes a{0%{transform:translateX(-150px)}35%,100%{transform:translateX(0)}}
+@keyframes f{to{transform:translateX(70px)}}
+</style>
+<defs><pattern id="s" width="40" height="40" patternUnits="userSpaceOnUse"><circle cx="20" cy="20" r="7" fill="var(--stud)"/></pattern></defs>
+<rect width="1600" height="1000" fill="var(--bg)"/>
+<rect x="40" y="40" width="1520" height="920" rx="28" fill="url(#s)" stroke="none"/>
+<rect x="40" y="40" width="1520" height="920" rx="28" fill="var(--plate)" opacity=".55"/>
+<g aria-hidden="true">
+<g stroke="var(--road)" stroke-width="90" fill="none"><path d="M60,300H645M600,160V640"/></g>
+<g stroke="var(--road)" stroke-width="96" fill="none"><path d="M600,230H940M600,400H1200M600,570H940"/></g>
+<path d="M60,300H560" stroke="var(--mark)" stroke-width="4" stroke-dasharray="18 14" fill="none"/>
+<rect x="940" y="150" width="100" height="500" rx="12" fill="var(--src)"/>
+<text class="b" x="990" y="400" text-anchor="middle" fill="#fff" transform="rotate(-90 990 400)">Goods in</text>
+<rect x="1200" y="150" width="330" height="500" rx="12" fill="var(--stor)"/>
+<text class="b" x="1365" y="410" text-anchor="middle" fill="#1c2230">Storage</text>
+<g><rect class="v" x="70" y="274" width="150" height="52" rx="8"/><rect class="c" x="222" y="276" width="44" height="48" rx="10"/></g>
+<g><rect class="v" x="280" y="274" width="150" height="52" rx="8"/><rect class="c" x="432" y="276" width="44" height="48" rx="10"/></g>
+<rect x="512" y="250" width="16" height="100" rx="5" fill="var(--gate)"/>
+<g><rect class="v" x="700" y="204" width="238" height="52" rx="8"/><rect class="c" x="652" y="206" width="46" height="48" rx="10"/></g>
+<g class="tr"><rect class="v" x="700" y="374" width="238" height="52" rx="8"/><rect class="c" x="652" y="376" width="46" height="48" rx="10"/></g>
+<g class="fk"><rect x="1060" y="380" width="70" height="40" rx="8" fill="var(--fork)"/><rect x="1128" y="386" width="40" height="6" fill="var(--fork)"/><rect x="1128" y="408" width="40" height="6" fill="var(--fork)"/></g>
+<path class="k" d="M70,410H480M70,395V425M480,395V425"/>
+<text class="t a" x="275" y="475" text-anchor="middle">Gate wait</text>
+<path class="k" d="M700,150H938M700,135V165M938,135V165"/>
+<text class="t a" x="819" y="108" text-anchor="middle">Door time</text>
+<text class="t" x="70" y="215">Trucks arrive</text>
+<path class="l" d="M520,820V360M800,820V620M1365,820V660"/>
+<text class="t" x="440" y="870" text-anchor="middle">Gate: check in</text>
+<text class="t" x="860" y="870" text-anchor="middle">Doors: unloading</text>
+<text class="t" x="1365" y="870" text-anchor="middle">Forklifts carry it in</text>
+</g>
+</svg>
