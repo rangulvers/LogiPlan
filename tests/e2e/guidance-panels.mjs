@@ -529,6 +529,8 @@ await withBrowser(async ({ browser, url, errors }) => {
     // collapse: remembered across a reload
     await explainer.locator('summary').click();
     eq(await explainer.locator('details').evaluate((el) => el.open), false);
+    // the <details> 'toggle' event that stores the choice is queued by the browser: on a slow machine (the weekly CI run) a reload right after the click came first
+    await page.waitForFunction(() => localStorage.getItem('logiplan:flows-explainer') === '0');
     await page.reload();
     await page.waitForFunction(() => document.getElementById('app')?.dataset.state === 'ready' && window.__logiplan);
     await closeDialogs(page);

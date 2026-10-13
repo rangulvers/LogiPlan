@@ -67,6 +67,7 @@ that the history can be read. How to cut a new version is described in the READM
 - **Clicking an item during the first minutes of a run now shows the Statistics panel at once.** While the plant is warming up (the first 10 simulated
   minutes are not counted) the panel opens with dashes and says that the plant is still warming up; the numbers fill in by themselves. Before, nothing opened
   and the panel never appeared later, which looked as if the feature was missing.
+- **The version number at the bottom right is a bigger target** (at least 44 px wide), so it is easy to click or tap even when the number is short.
 
 ## [0.6.0] - 2026-10-09
 

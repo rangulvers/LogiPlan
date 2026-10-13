@@ -15,6 +15,7 @@ import path from 'node:path';
 import { writeFileSync } from 'node:fs';
 import { withBrowser, OUT } from './browser.mjs';
 import { EXAMPLES } from '../../js/model/examples.js';
+import { isDayPlant } from '../../js/ui/day-plant.js';
 import * as L from '../../js/model/layout.js';
 import { Simulation } from '../../js/sim/engine.js';
 import { describeLabels } from '../../js/ui/panels/impact.js';
@@ -662,7 +663,8 @@ await withBrowser(async ({ browser, url, errors }) => {
     ok(two.editToSwapMs.every((ms) => ms <= SHOW_WITHIN_MS), `every edit is shown within ${SHOW_WITHIN_MS} ms: ${two.editToSwapMs.join(', ')}`);
 
     // the other examples
-    for (const example of EXAMPLES.filter((e) => e.id !== 'two-lines')) {
+    // a plant that follows a daily timetable (Morning peak) restarts COLD after an edit by design (docs/WAREHOUSE-DESIGN.md, day plants): there is no warm swap to wait for
+    for (const example of EXAMPLES.filter((e) => e.id !== 'two-lines' && !isDayPlant(e.build()))) {
       await startExample(page, example.id, { tabName: 'results', speed: 600, seconds: 1500 });
       const r = summarize(await measurePriming(page, 2));
       results[example.id] = r;
