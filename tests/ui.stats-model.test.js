@@ -868,7 +868,7 @@ test('S1.13: the strips work without the collector and without the simulation; b
     for (const state of [{ sim: null, report: null, insights: [], detail: false }, { report: tweak(TWO, (c) => { c.report.window = { start: 600, end: 600, duration: 0, warmingUp: false }; }).report }, { report: tweak(TWO, (c) => { c.report.window.warmingUp = true; }).report }]) {
       const m = buildStatsModel({ ...fixtureInput(TWO, sel, withoutCollector), ...state, sim: state.sim === undefined ? null : state.sim });
       assert.equal(m.status, 'waiting', `${JSON.stringify(sel)}: before data`);
-      assert.match(m.statusText, /^Press play to see statistics for /);
+      assert.match(m.statusText, /^(Press play to see statistics for |The plant is still warming up)/);
       assert.equal(m.tiles.length, 6);
       assert.ok(m.tiles.every((t) => t.value === '–' && t.raw === null && t.def.length > 20), 'six dashes, each with its counting rule');
       assert.deepEqual(modelProblems(m), []);
@@ -1222,4 +1222,14 @@ test('the fleet\'s own loads an hour stand behind the fleet\'s trips, not the ve
   const hours = TWO.queries.start.vehicles[0].timeSplit.seconds / 3600;
   near(Number(mm[1]), mates.reduce((a, [, k]) => a + TWO.queries.start.vehicles[k].counts.qty, 0) / mates.length / hours, 0.06, 'the mean of the fleet');
   assert.match(tileOf(m, 'trips').def, /so it moved [\d.]+ loads an hour/, 'and the vehicle\'s own figure is in the (i)');
+});
+
+test('a click during the warm-up says that the warm-up is not counted, not "press play" (the plant is running)', () => {
+  const warm = tweak(TWO, (c) => { c.report.window = { start: 0, end: 300, duration: 300, warmingUp: true }; }).report;
+  for (const sel of [{ kind: 'vehicle', ids: ['v2#1'] }, { kind: 'station', ids: ['s5'] }, { kind: 'flow', ids: ['f2'] }, { kind: 'fleet', ids: ['v2'] }]) {
+    const m = buildStatsModel({ ...fixtureInput(TWO, sel, withoutCollector), report: warm });
+    assert.equal(m.status, 'waiting', JSON.stringify(sel));
+    assert.match(m.statusText, /^The plant is still warming up, and the warm-up is not counted/, JSON.stringify(sel));
+    assert.doesNotMatch(m.statusText, /Press play/, 'it is playing: "press play" would be wrong');
+  }
 });

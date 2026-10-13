@@ -1069,11 +1069,12 @@ test('UX-1: the click while the plant is playing and warming up tells how long, 
   h.runner.sim.settings = { warmup: 600 };
   h.runner.sim.time = 120;
   h.eh.mouse.click([13, 3]);
-  assert.equal(el(h).hidden, true, 'nothing to show yet');
+  assert.equal(el(h).hidden, false, 'while the plant plays the dock opens at once and shows the wait (the numbers fill in by themselves)');
   assert.equal(h.statuses.at(-1), 'Statistics for Press line start in about 50 s: the plant is warming up first.');
   h.runner.playing = false;
   h.eh.mouse.click([13, 3]);
   assert.equal(h.statuses.at(-1), 'Press play to see statistics for Press line.', 'paused again: the old advice');
+  assert.equal(h.runner.playing, false);
   h.dock.destroy();
 });
 
