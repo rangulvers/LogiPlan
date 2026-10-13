@@ -64,6 +64,9 @@ that the history can be read. How to cut a new version is described in the READM
 - **Typing a number above the limit in the Doors field** (33 doors) ends at the limit instead of at the first digit you typed, and a very long
   station name wraps inside a message instead of running out of it.
 - **A pasted row without an arrival time** (an empty cell before the number of pallets) says so instead of calling the pallets a bad time.
+- **Clicking an item during the first minutes of a run now shows the Statistics panel at once.** While the plant is warming up (the first 10 simulated
+  minutes are not counted) the panel opens with dashes and says that the plant is still warming up; the numbers fill in by themselves. Before, nothing opened
+  and the panel never appeared later, which looked as if the feature was missing.
 
 ## [0.6.0] - 2026-10-09
 

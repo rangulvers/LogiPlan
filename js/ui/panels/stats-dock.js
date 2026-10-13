@@ -1112,7 +1112,9 @@ export function createStatsDock(ctx, options = {}) {
       if (!decision.open) {
         // nothing measured yet: "Press play ..." while paused, "... start in about 1 min: the plant is warming up first" while it runs
         if (decision.reason === 'nodata') say(waitText(selection, state.layout, runner ? runner.sim : null, report, run));
-        return;
+        // While the plant PLAYS the planner is watching it and expects something to happen: the dock opens at once and shows the wait (dashes and the reason);
+        // the numbers fill in by themselves. A closed dock that never opens later looked like a feature that does not exist.
+        if (decision.reason !== 'nodata' || !(run && run.playing === true)) return;
       }
       open({ reveal: true });
       if (selection.kind === 'cell' && selection.ids.length === 1) { const hint = fastClickText(run); if (hint) say(hint); } // a click aimed at a fast vehicle that landed on the road under it

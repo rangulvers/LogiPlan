@@ -712,13 +712,18 @@ function liveLine(layout, vr, toGo, held) {
 
 // ---- the answer when there is nothing to show yet ----
 
+/** What the dock says while nothing is measured: "press play" before the run, "still warming up" while it runs through its warm-up (which is not counted). */
+const WARMING_LEAD = 'The plant is still warming up';
+const waitingText = (name, report) => (report && report.window && report.window.warmingUp === true
+  ? `${WARMING_LEAD}, and the warm-up is not counted, so ${name} has no numbers yet. They appear as soon as the simulation has measured a little: keep it running.`
+  : `Press play to see statistics for ${name}. The numbers appear as soon as the simulation has measured something.`);
 const hasMeasured = (report) => Boolean(report && report.window && report.window.warmingUp !== true && isNum(report.window.duration) && report.window.duration > 0);
 
 function statusModel({ kind, variant, ids, tiles, status, statusText, name, live = null, windows = { last30: false, note: 'Nothing has been measured yet.' } }) {
   return {
     kind, variant, status, statusText, ids,
     // before the first measured second the header says what to do, so that the compact dock (the body is closed) is not just dashes
-    header: { live: live || (status === 'waiting' ? { tone: 'idle', strong: 'Press play', rest: 'to see the numbers' } : { tone: '', strong: '', rest: '' }) },
+    header: { live: live || (status === 'waiting' ? (String(statusText).startsWith(WARMING_LEAD) ? { tone: 'idle', strong: 'Warming up', rest: 'the numbers start soon' } : { tone: 'idle', strong: 'Press play', rest: 'to see the numbers' }) : { tone: '', strong: '', rest: '' }) },
     ariaLabel: `Statistics for ${name}`,
     announce: `${name} selected. ${statusText}`,
     windows, routes: false,
@@ -748,7 +753,7 @@ function vehicleModel(input, id) {
   const specs = dashTiles(VEHICLE_SPECS(battery).map(([tid, def]) => [tid, def]));
   if (!fleetDef) return statusModel({ kind: 'vehicle', variant: 'vehicle', ids, tiles: specs, status: 'gone', statusText: 'This vehicle is not in the plant any more.', name });
   if (!hasMeasured(report)) {
-    return statusModel({ kind: 'vehicle', variant: 'vehicle', ids, tiles: specs, status: 'waiting', statusText: `Press play to see statistics for ${name}. The numbers appear as soon as the simulation has measured something.`, name, windows: { last30: true } });
+    return statusModel({ kind: 'vehicle', variant: 'vehicle', ids, tiles: specs, status: 'waiting', statusText: waitingText(name, report), name, windows: { last30: true } });
   }
   if (!det) return vehicleReportModel(input, id, { fleetDef, fleetRep, name, battery });
   const i = typeof det.vehicleIndex === 'function' ? det.vehicleIndex(id) : det.V.findIndex((v) => v.id === id);
@@ -759,7 +764,7 @@ function vehicleModel(input, id) {
   }
   const w = det.windowOf(windowKind);
   if (!(n0(w.seconds) > 0)) {
-    return statusModel({ kind: 'vehicle', variant: 'vehicle', ids, tiles: specs, status: 'waiting', statusText: `Press play to see statistics for ${name}. The numbers appear as soon as the simulation has measured something.`, name, windows: { last30: true } });
+    return statusModel({ kind: 'vehicle', variant: 'vehicle', ids, tiles: specs, status: 'waiting', statusText: waitingText(name, report), name, windows: { last30: true } });
   }
   const vr = det.V[i];
   const info = windowInfo(input, w);
@@ -1368,7 +1373,7 @@ function stationModel(input, id) {
   const name = def.name;
   const rep = report && report.stations ? report.stations[id] : null;
   if (!hasMeasured(report) || !rep) {
-    return statusModel({ kind: 'station', variant: type, ids, tiles: dashTiles(SPECS[type]), status: 'waiting', statusText: `Press play to see statistics for ${name}. The numbers appear as soon as the simulation has measured something.`, name, windows: { last30: false, note: NOT_30 } });
+    return statusModel({ kind: 'station', variant: type, ids, tiles: dashTiles(SPECS[type]), status: 'waiting', statusText: waitingText(name, report), name, windows: { last30: false, note: NOT_30 } });
   }
   const info = reportWindow(input);
   const c = { rep, def, layout, report, sim, detail, hours: info.hours, winWords: 'Window: since start.' };
@@ -1388,7 +1393,7 @@ function flowModel(input, id) {
   const name = `${stationName(layout, def.from)} → ${stationName(layout, def.to)}`;
   const rep = report && report.flows ? report.flows[id] : null;
   if (!hasMeasured(report) || !rep) {
-    return statusModel({ kind: 'flow', variant: 'flow', ids, tiles: dashTiles(SPEC), status: 'waiting', statusText: `Press play to see statistics for ${name}. The numbers appear as soon as the simulation has measured something.`, name, windows: { last30: false, note: NOT_30 } });
+    return statusModel({ kind: 'flow', variant: 'flow', ids, tiles: dashTiles(SPEC), status: 'waiting', statusText: waitingText(name, report), name, windows: { last30: false, note: NOT_30 } });
   }
   const info = reportWindow(input);
   const hours = info.hours;
@@ -1416,7 +1421,7 @@ function fleetModel(input, id) {
   const name = def.name;
   const rep = report && report.fleets ? report.fleets[id] : null;
   if (!hasMeasured(report) || !rep) {
-    return statusModel({ kind: 'fleet', variant: 'fleet', ids, tiles: dashTiles(SPEC), status: 'waiting', statusText: `Press play to see statistics for ${name}. The numbers appear as soon as the simulation has measured something.`, name, windows: { last30: false, note: NOT_30 } });
+    return statusModel({ kind: 'fleet', variant: 'fleet', ids, tiles: dashTiles(SPEC), status: 'waiting', statusText: waitingText(name, report), name, windows: { last30: false, note: NOT_30 } });
   }
   const info = reportWindow(input);
   const hours = info.hours;
