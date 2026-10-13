@@ -31,7 +31,7 @@ export const CHANGELOG_URL = 'CHANGELOG.md';
 const CHANGELOG_TIMEOUT_MS = 10_000;
 
 const CSS = `
-.versionchip{display:inline-flex;flex:none;align-items:center;gap:6px;height:24px;padding:0 var(--sp-2);border:0;border-radius:var(--radius-pill);background:transparent;
+.versionchip{display:inline-flex;flex:none;align-items:center;gap:6px;height:24px;min-width:44px;justify-content:center;padding:0 var(--sp-2);border:0;border-radius:var(--radius-pill);background:transparent;
   color:var(--text-dim);font-size:var(--fs-sm);font-weight:var(--fw-medium);line-height:1;white-space:nowrap;font-variant-numeric:tabular-nums}
 .versionchip:hover{background:var(--hover);color:var(--text)}
 .versionchip:active{background:var(--pressed)}
